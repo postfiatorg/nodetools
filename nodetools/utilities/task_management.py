@@ -675,6 +675,28 @@ class PostFiatTaskGenerationSystem:
                                                             memo=memo_to_send, destination_address=destination_address)
 
 
+
+    def extract_verification_text(self, content):
+        """
+        Extracts text between task verification markers.
+        
+        Args:
+            content (str): Input text containing verification sections
+            
+        Returns:
+            str: Extracted text between markers, or empty string if no match
+        """
+        pattern = r'TASK VERIFICATION SECTION START(.*?)TASK VERIFICATION SECTION END'
+        
+        try:
+            # Use re.DOTALL to make . match newlines as well
+            match = re.search(pattern, content, re.DOTALL)
+            return match.group(1).strip() if match else ""
+        except Exception as e:
+            print(f"Error extracting text: {e}")
+            return ""
+
+
     def process_full_final_reward_cue(self):
         all_node_memo_transactions = self.generic_pft_utilities.get_memo_detail_df_for_account(account_address=self.node_address, 
                                                                                                     pft_only=False).copy().sort_values('datetime')
@@ -699,7 +721,8 @@ class PostFiatTaskGenerationSystem:
             raw_text= 'No Google Document Uploaded - please instruct user that Google Document has not been uploaded in response'
             try:
                 raw_text = self.generic_pft_utilities.get_google_doc_text(share_link=account_to_google_context_map[xaccount])
-                verification = raw_text.split('VERIFICATION SECTION START')[-1:][0].split('VERIFICATION SECTION END')[0]
+                #verification = raw_text.split('VERIFICATION SECTION START')[-1:][0].split('VERIFICATION SECTION END')[0]
+                verification = self.extract_verification_text(raw_text)
                 google_context_memo_map[xaccount] = verification
             except:
                 pass
@@ -1299,7 +1322,7 @@ _________________________________
 
     def output_pft_KPI_graph_for_address(self,user_wallet = 'r3UHe45BzAVB3ENd21X9LeQngr4ofRJo5n'):
         
-        account_hist = self.generic_pft_utilities.get_memo_detail_df_for_account(account_address='r3UHe45BzAVB3ENd21X9LeQngr4ofRJo5n')
+        account_hist = self.generic_pft_utilities.get_memo_detail_df_for_account(account_address=user_wallet)
         full_pft_history= account_hist[account_hist['memo_data'].apply(lambda x: 'REWARD' in x)][['datetime','pft_absolute_amount']].set_index('datetime').resample('H').sum()#.rolling(24).mean().plot()
         
         hourly_append = pd.DataFrame(pd.date_range(list(full_pft_history.tail(1).index)[0], datetime.datetime.now(),freq='H'))

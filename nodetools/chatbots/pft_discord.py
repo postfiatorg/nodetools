@@ -56,7 +56,7 @@ class MyClient(discord.Client):
         print(f"Slash commands synced to guild ID: {guild_id}")
 
         self.bg_task = self.loop.create_task(self.transaction_checker())
-        self.bg_task_death_march = self.loop.create_task(self.death_march_reminder())
+        # self.bg_task_death_march = self.loop.create_task(self.death_march_reminder())
         # Ensure the command is registered
         @self.tree.command(name="pf_send", description="Open a transaction form")
         async def pf_send(interaction: Interaction):
@@ -1373,6 +1373,92 @@ Note: XRP wallets need 15 XRP to transact.
                     await message.reply(error_message, mention_author=True)
             else:
                 await message.reply("You must store a seed using /pf_store_seed before getting tactical advice.", mention_author=True)
+
+# Add this in the on_message handler section of your Discord bot
+
+        if message.content.startswith('!coach'):
+            if user_id in self.user_seeds:
+                seed = self.user_seeds[user_id]
+                
+                try:
+                    # Get user's wallet address
+                    user_wallet = self.generic_pft_utilities.spawn_user_wallet_from_seed(seed=seed)
+                    wallet_address = user_wallet.classic_address
+
+                    # Check PFT balance
+                    pft_balance = self.generic_pft_utilities.get_account_pft_balance(wallet_address)
+                    if pft_balance < 25000:
+                        await message.reply(
+                            f"You need at least 25,000 PFT to use the coach command. Your current balance is {pft_balance:,.2f} PFT.", 
+                            mention_author=True
+                        )
+                        return
+
+                    # Get user's full context
+                    full_context = self.generic_pft_utilities.get_full_user_context_string(account_address=wallet_address)
+                    
+                    # Get chat history
+                    chat_history = []
+                    if user_id in self.conversations:
+                        chat_history = [
+                            f"{msg['role'].upper()}: {msg['content']}"
+                            for msg in self.conversations[user_id][-10:]  # Get last 10 messages
+                        ]
+                    formatted_chat = "\n".join(chat_history)
+
+                    # Get the user's specific question/request
+                    user_query = message.content.replace('!coach', '').strip()
+                    if not user_query:
+                        user_query = "Please provide coaching based on my current context and history."
+
+                    # Create the user prompt
+                    user_prompt = f"""Based on the following context about me, please provide coaching and guidance.
+Rules of engagement:
+1. Take the role of a Tony Robbins Type highly paid executive coach while also fulfilling the ODV mandate
+2. The goal is to deliver a high NLP score to the user, or to neurolinguistically program them to be likely to fulfill the mandate
+provided
+3. Keep your advice succinct enough to get the job done but long enough to fully respond to the advice
+4. Have the frame that the user is paying 10% or more of their annual earnings to you so your goal is to MAXIMIZE 
+the user's earnings and therefore ability to pay you for advice
+
+FULL USER CONTEXT:
+{full_context}
+
+RECENT CHAT HISTORY:
+{formatted_chat}
+
+My specific question/request is: {user_query}"""
+
+                    # Add reaction to show processing
+                    await message.add_reaction('⏳')
+
+                    # Make the API call using o1_preview_simulated_request
+                    response = self.open_ai_request_tool.o1_preview_simulated_request(
+                        system_prompt=odv_system_prompt,
+                        user_prompt=user_prompt
+                    )
+                    
+                    # Extract content from response
+                    content = response.choices[0].message.content
+                    
+                    # Store the response in conversation history
+                    self.conversations[user_id].append({
+                        "role": 'assistant',
+                        "content": content
+                    })
+                    
+                    # Remove the processing reaction
+                    await message.remove_reaction('⏳', self.user)
+                    
+                    # Send the response
+                    await self.send_long_message(message, content)
+                    
+                except Exception as e:
+                    await message.remove_reaction('⏳', self.user)
+                    error_msg = f"An error occurred while processing your request: {str(e)}"
+                    await message.reply(error_msg, mention_author=True)
+            else:
+                await message.reply("You must store a seed using !store_seed before using the coach.", mention_author=True)
 
         if message.content.startswith('!blackprint'):
             if user_id in self.user_seeds:

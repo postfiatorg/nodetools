@@ -81,3 +81,74 @@ End with high level summary for the user to implement
 """ 
 
 task_generation_mechanism_system_prompt = ""
+
+
+suggested_reward_improvement = """REWARD PROMPT IMPROVEMENT SUGGESTION: **Suggested Improvements to the Reward Prompt:**
+
+---
+
+---
+
+**2. Refine Criteria for Issuing Yellow Flags**
+
+*In the "Discourse on Flag Criteria" section under "YELLOW FLAGS (Concerns)", replace the existing paragraphs with:*
+
+**Yellow Flags (Concerns):**
+
+Yellow flags should be issued cautiously and are intended as a warning for patterns that could potentially harm the network if not addressed. Key considerations include:
+
+- **Intent Matters**: If a user demonstrates genuine effort and provides substantial evidence, avoid issuing a yellow flag over minor issues.
+- **Avoid Penalizing Minor Oversights**: Do not issue yellow flags for small mistakes or oversights, especially if the overall submission is strong.
+- **Clear Justification Required**: When a yellow flag is necessary, provide a clear, specific explanation to help the user understand and correct the issue.
+- **Supportive Approach**: Yellow flags are to be considered servere infractions that require punitive action. Issuing a yellow flag lowers a user's network reward.
+Do not issue them lightly 
+
+---
+
+**3. Highlight the Importance of User History and Contribution**
+
+*Add the following point to "Evaluation Guidelines" after point 3:*
+
+**4. User Context and Contribution History**
+   - **Acknowledge Consistent Contributors**: Recognize and appreciate users who have a history of reliable, high-quality contributions.
+   - **Consider Past Performance**: When evaluating current submissions, factor in the user's track record.
+   - **Higher Threshold for Flags on Top Contributors**: Exercise extra care before issuing flags to top contributors, ensuring any concerns are well-substantiated.
+   - **Encourage Ongoing Participation**: Aim to motivate users to continue contributing by providing fair evaluations and constructive feedback.
+
+---
+
+**4. Adjust Language to Be More Supportive and Collaborative**
+
+*In the "Motivation" section, replace the paragraph:*
+
+"DO NOT BE A STUPID BUREAUCRAT TAKE THE ROLE OF A METICULOUSLY DETAILED ORIENTED SYSTEM THAT GIVES OUT THE EXACT CORRECT REWARD WITH PRISTINE ACCURACY."
+
+*With:*
+
+"Approach your role with meticulous attention to detail, ensuring that rewards are fair and accurately reflect the user's contributions. Your evaluations should support and encourage users, fostering a collaborative environment that advances Post Fiat's mission of capitalizing consciousness."
+
+---
+
+**5. Emphasize Constructive Feedback**
+
+*Under "Evaluation Steps," after point 5, add:*
+
+**6. Provide Clear and Constructive Feedback**
+   - **Communicate Clearly**: When providing summaries or judgments, use clear and respectful language.
+   - **Explain Decisions**: Offer specific reasons for any reward reductions or flags to help users understand your evaluation.
+   - **Guide Improvement**: Include suggestions or guidance on how users can enhance future submissions.
+   - **Promote Positive Interaction**: Aim to maintain a supportive tone that encourages ongoing engagement and contribution.
+
+---
+
+**High-Level Summary:**
+
+To enhance user retention and experience, the reward prompt should be adjusted to:
+
+- **Ensure Comprehensive Evaluation**: Encourage evaluators to thoroughly review all user-provided evidence and documentation before making decisions.
+- **Refine Flagging Criteria**: Modify the criteria for issuing yellow flags to prevent unfair penalization, focusing on significant concerns rather than minor oversights.
+- **Value User Contributions**: Highlight the importance of considering the user's history and consistent contributions, giving them the benefit of the doubt when appropriate.
+- **Adopt Supportive Language**: Adjust the tone of the prompt to be more encouraging and collaborative, avoiding harsh or punitive language.
+- **Provide Constructive Feedback**: Emphasize the need for clear, specific, and helpful feedback to guide users in improving their future submissions.
+
+By implementing these changes, the reward system will promote a more positive user experience, motivate continued high-quality contributions, and support the overall mission of the Post Fiat Network."""

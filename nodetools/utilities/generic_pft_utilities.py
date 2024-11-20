@@ -1852,7 +1852,7 @@ PFT WEEKLY AVG:   {weekly_pft_reward_avg}
         final_score_frame = pd.concat([top_score_frame,score_components],axis=1)
         final_score_frame['total_qualitative_score']=final_score_frame['total_qualitative_score'].fillna(50)
         final_score_frame['reward_percentile']=((final_score_frame['quant_score']*33)+100)/2
-        final_score_frame['overall_score']= (final_score_frame['reward_percentile']*.7)+(final_score_frame['reward_percentile']*.3)
+        final_score_frame['overall_score']= (final_score_frame['reward_percentile']*.7)+(final_score_frame['total_qualitative_score']*.3)
         final_leaderboard = final_score_frame[['account_name','total_rewards','yellow_flag_pct','reward_percentile','focus','motivation','efficacy','honesty','total_qualitative_score','overall_score']].copy()
         final_leaderboard['total_rewards']=final_leaderboard['total_rewards'].apply(lambda x: int(x))
         final_leaderboard.index.name = 'Foundation Node Leaderboard as of '+datetime.datetime.now().strftime('%Y-%m-%d')
@@ -2019,3 +2019,64 @@ PFT WEEKLY AVG:   {weekly_pft_reward_avg}
                 return None
         leaderboard_df = self.output_postfiat_foundation_node_leaderboard_df()
         test_leaderboard_creation(leaderboard_df=format_leaderboard_df(leaderboard_df))
+
+    def get_full_google_text_and_verification_stub_for_account(self,address_to_work = 'rwmzXrN3Meykp8pBd3Boj1h34k8QGweUaZ'):
+
+        all_account_memos = self.get_memo_detail_df_for_account(account_address=address_to_work)
+        google_acount = self.get_most_recent_google_doc_for_user(account_memo_detail_df
+                                                                                =all_account_memos, 
+                                                                                address=address_to_work)
+        user_full_google_acccount = self.generic_pft_utilities.get_google_doc_text(share_link=google_acount)
+        #verification #= user_full_google_acccount.split('VERIFICATION SECTION START')[-1:][0].split('VERIFICATION SECTION END')[0]
+        
+        import re
+        
+        def extract_verification_text(content):
+            """
+            Extracts text between task verification markers.
+            
+            Args:
+                content (str): Input text containing verification sections
+                
+            Returns:
+                str: Extracted text between markers, or empty string if no match
+            """
+            pattern = r'TASK VERIFICATION SECTION START(.*?)TASK VERIFICATION SECTION END'
+            
+            try:
+                # Use re.DOTALL to make . match newlines as well
+                match = re.search(pattern, content, re.DOTALL)
+                return match.group(1).strip() if match else ""
+            except Exception as e:
+                print(f"Error extracting text: {e}")
+                return ""
+        xstr =extract_verification_text(user_full_google_acccount)
+        return {'verification_text': xstr, 'full_google_doc': user_full_google_acccount}
+
+    def get_account_pft_balance(self, account_address: str) -> float:
+        """
+        Get the PFT balance for a given account address.
+        Returns the balance as a float, or 0.0 if no PFT trustline exists or on error.
+        
+        Args:
+            account_address (str): The XRPL account address to check
+            
+        Returns:
+            float: The PFT balance for the account
+        """
+        client = JsonRpcClient(self.mainnet_url)
+        try:
+            account_lines = AccountLines(
+                account=account_address,
+                ledger_index="validated"
+            )
+            account_line_response = client.request(account_lines)
+            pft_lines = [i for i in account_line_response.result['lines'] 
+                        if i['account'] == self.pft_issuer]
+            
+            if pft_lines:
+                return float(pft_lines[0]['balance'])
+            return 0.0
+        except Exception as e:
+            print(f"Error getting PFT balance for {account_address}: {str(e)}")
+            return 0.0
