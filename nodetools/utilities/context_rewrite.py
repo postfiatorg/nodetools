@@ -11,6 +11,7 @@ import logging
 import json
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+import nodetools.utilities.constants as constants
 
 @dataclass
 class TextImprovement:
@@ -441,7 +442,7 @@ class TextScoringSystem:
     def __init__(self, open_ai_request_tool, batch_size: int = 40):
         self.open_ai_request_tool = open_ai_request_tool
         self.batch_size = 40
-        self.model = 'chatgpt-4o-latest'
+        self.model = constants.DEFAULT_OPEN_AI_MODEL
     
     def create_scoring_api_prompt(self, original_text: str, final_text: str):
         api_args = {

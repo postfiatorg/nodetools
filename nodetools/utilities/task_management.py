@@ -1,8 +1,6 @@
 import pandas as pd
 from nodetools.ai.openai import OpenAIRequestTool
 from nodetools.prompts import task_generation
-from nodetools.utilities.settings import NODE_NAME
-from nodetools.utilities.settings import NODE_ADDRESS
 from nodetools.prompts.initiation_rite import phase_4__system
 from nodetools.prompts.initiation_rite import phase_4__user
 from nodetools.ai.openai import OpenAIRequestTool
@@ -40,14 +38,15 @@ import pandas as pd
 import matplotlib.pyplot as plt
 from matplotlib.dates import DateFormatter
 import matplotlib.ticker as ticker
+import nodetools.utilities.constants as constants
 
 class PostFiatTaskGenerationSystem:
     def __init__(self,pw_map):
         self.pw_map = pw_map
-        self.default_model = 'chatgpt-4o-latest'
+        self.default_model = constants.DEFAULT_OPEN_AI_MODEL
         self.openai_request_tool= OpenAIRequestTool(pw_map=self.pw_map)
-        self.generic_pft_utilities = GenericPFTUtilities(pw_map=self.pw_map, node_name=NODE_NAME)
-        self.node_address = NODE_ADDRESS
+        self.generic_pft_utilities = GenericPFTUtilities(pw_map=self.pw_map, node_name=constants.DEFAULT_NODE_NAME)
+        self.node_address = constants.DEFAULT_NODE_ADDRESS
         self.node_seed = self.pw_map['postfiatfoundation__v1xrpsecret']
         self.node_wallet = self.generic_pft_utilities.spawn_user_wallet_from_seed(seed=self.node_seed)
         self.stop_threads = False

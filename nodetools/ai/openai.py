@@ -1,7 +1,7 @@
 import pandas as pd
 import sqlalchemy
 import datetime
-from agti.utilities import settings as gset
+from nodetools.utilities import settings as gset
 import numpy as np
 import psycopg2
 import os
@@ -9,8 +9,9 @@ from openai import OpenAI, AsyncOpenAI
 import json
 import asyncio
 import nest_asyncio
-from agti.utilities.db_manager import DBConnectionManager
+from nodetools.utilities.db_manager import DBConnectionManager
 import uuid
+
 class OpenAIRequestTool:
     def __init__(self, pw_map):
         self.pw_map = pw_map

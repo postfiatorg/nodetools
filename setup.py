@@ -13,7 +13,10 @@ setup(
         'requests',
         'toml',
         'nest_asyncio','brotli','sec-cik-mapper','psycopg2-binary','quandl','schedule','openai','lxml',
-        'gspread_dataframe','gspread','oauth2client','discord','anthropic'
+        'gspread_dataframe','gspread','oauth2client','discord','anthropic',
+        'bs4',
+        'plotly',
+        'matplotlib'
     ],
     author='Alex Good',
     author_email='alex@agti.net',

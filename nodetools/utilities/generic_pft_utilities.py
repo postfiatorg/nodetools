@@ -44,27 +44,33 @@ from xrpl.wallet import Wallet
 from xrpl.clients import JsonRpcClient
 from xrpl.core.keypairs import derive_classic_address
 from nodetools.ai.openai import OpenAIRequestTool
+import nodetools.utilities.constants as constants
+
+USE_LOCAL_RIPPLED = False
+
+# TODO: Add loguru as dependency and use it for all logging
 
 class GenericPFTUtilities:
-    def __init__(self,pw_map,node_name='postfiatfoundation'):
-        self.pw_map= pw_map
-        self.pft_issuer = 'rnQUEEg8yyjrwk9FhyXpKavHyCRJM9BDMW'
-        self.mainnet_url= "http://127.0.0.1:5005" # This is the local rippled server
-        #self.public_rpc_url = "https://xrplcluster.com"
-        self.public_rpc_url = "https://s2.ripple.com:51234"
+    def __init__(self,pw_map,node_name=constants.DEFAULT_NODE_NAME):
+        self.pw_map= pw_map   # TODO: Replace with credential manager 
+        self.pft_issuer = constants.ISSUER_ADDRESS if not constants.USE_TESTNET else constants.TESTNET_ISSUER_ADDRESS
+        self.public_rpc_url = constants.MAINNET_URL if not constants.USE_TESTNET else constants.TESTNET_URL
+        self.local_rippled_url = "http://127.0.0.1:5005" if USE_LOCAL_RIPPLED else self.public_rpc_url  # Alex's local rippled node
         self.node_name = node_name
         ## NOTE THIS IS THE NODE ADDRESS FOR THE POST FIAT NODE
-        self.node_address='r4yc85M1hwsegVGZ1pawpZPwj65SVs8PzD'
+        self.node_address=constants.DEFAULT_NODE_ADDRESS if not constants.USE_TESTNET else constants.TESTNET_DEFAULT_NODE_ADDRESS
         self.db_connection_manager = DBConnectionManager(pw_map=pw_map)
         #return binascii.hexlify(string.encode()).decode()
         self.establish_post_fiat_tx_cache_as_hash_unique()
         self.post_fiat_holder_df = self.output_post_fiat_holder_df()
         self.open_ai_request_tool=OpenAIRequestTool(pw_map=pw_map)
+
     def convert_ripple_timestamp_to_datetime(self, ripple_timestamp = 768602652):
         ripple_epoch_offset = 946684800
         unix_timestamp = ripple_timestamp + ripple_epoch_offset
         date_object = datetime.datetime.fromtimestamp(unix_timestamp)
         return date_object
+
     def to_hex(self,string):
         return binascii.hexlify(string.encode()).decode()
 
@@ -82,7 +88,7 @@ class GenericPFTUtilities:
         the view of the issuer account so balances appear negative so the pft_holdings 
         are reverse signed.
         """
-        client = xrpl.clients.JsonRpcClient(self.mainnet_url)
+        client = xrpl.clients.JsonRpcClient(self.local_rippled_url)
         print("Getting all accounts holding PFT tokens...")
         response = client.request(xrpl.models.requests.AccountLines(
             account=self.pft_issuer,
@@ -106,6 +112,7 @@ class GenericPFTUtilities:
         # Take the first `length` characters of the base64-encoded hash
         utf8_friendly_hash = base64_hash[:length]
         return utf8_friendly_hash
+
     def get_number_of_bytes(self, text):
         text_bytes = text.encode('utf-8')
         return len(text_bytes)
@@ -156,6 +163,7 @@ class GenericPFTUtilities:
         return ret
     
     def convert_memo_dict__generic(self, memo_dict):
+        # TODO: Replace with MemoBuilder once MemoBuilder is implemented in Pftpyclient
         """Constructs a memo object with user, task_id, and full_output from hex-encoded values."""
         MemoFormat= ''
         MemoType=''
@@ -179,6 +187,8 @@ class GenericPFTUtilities:
         }
 
     def classify_task_string(self,string):
+        # TODO: Leverage Enums as defined in pftpyclient/wallet_ux/constants.py
+        # TODO: Reference classify_task_string in pftpyclient/task_manager/basic_tasks.py
         """ These are the canonical classifications for task strings 
         on a Post Fiat Node
         """
@@ -211,6 +221,7 @@ class GenericPFTUtilities:
         return output
     
     def construct_basic_postfiat_memo(self, user, task_id, full_output):
+        # TODO: Replace with MemoBuilder
         user_hex = self.to_hex(user)
         task_id_hex = self.to_hex(task_id)
         full_output_hex = self.to_hex(full_output)
@@ -221,6 +232,7 @@ class GenericPFTUtilities:
         return memo
 
     def construct_standardized_xrpl_memo(self, memo_data, memo_type, memo_format):
+        # TODO: Replace with MemoBuilder
         memo_hex = self.to_hex(memo_data)
         memo_type_hex = self.to_hex(memo_type)
         memo_format_hex = self.to_hex(memo_format)
@@ -231,12 +243,14 @@ class GenericPFTUtilities:
             memo_format=memo_format_hex
         )
         return memo
+
     def send_PFT_with_info(self, sending_wallet, amount, memo, destination_address, url=None):
+        # TODO: Replace with send_pft and _send_pft_single (reference pftpyclient/task_manager/basic_tasks.py)
         """ This sends PFT tokens to a destination address with memo information
         memo should be 1kb or less in size and needs to be in hex format
         """
         if url is None:
-            url = self.mainnet_url
+            url = self.local_rippled_url
 
         client = xrpl.clients.JsonRpcClient(url)
         amount_to_send = xrpl.models.amounts.IssuedCurrencyAmount(
@@ -255,8 +269,10 @@ class GenericPFTUtilities:
         return response
 
     def send_xrp_with_info__seed_based(self,wallet_seed, amount, destination, memo):
+        # TODO: Replace with send_xrp (reference pftpyclient/task_manager/basic_tasks.py)
+        # TODO: Passing around wallet_seed is not recommended, leverage credential manager
         sending_wallet =sending_wallet = xrpl.wallet.Wallet.from_seed(wallet_seed)
-        client = xrpl.clients.JsonRpcClient(self.mainnet_url)
+        client = xrpl.clients.JsonRpcClient(self.local_rippled_url)
         payment = xrpl.models.transactions.Payment(
             account=sending_wallet.address,
             amount=xrpl.utils.xrp_to_drops(int(amount)),
@@ -271,12 +287,15 @@ class GenericPFTUtilities:
         return response
 
     def spawn_user_wallet_from_seed(self, seed):
+        # TODO: Replace with spawn_user_wallet (reference pftpyclient/task_manager/basic_tasks.py)
         """ outputs user wallet initialized from seed"""
         wallet = xrpl.wallet.Wallet.from_seed(seed)
         print(f'User wallet classic address is {wallet.address}')
         return wallet
 
-    def spawn_user_wallet_based_on_name(self,user_name):
+    def spawn_user_wallet_based_on_name(self,user_name):    
+        # TODO: Replace with spawn_user_wallet (reference pftpyclient/task_manager/basic_tasks.py)
+        # TODO: If need a getter method based on user name, leverage credential manager
         """ outputs user wallet initialized from password map""" 
         user_seed= self.pw_map[f'{user_name}__v1xrpsecret']
         wallet = xrpl.wallet.Wallet.from_seed(user_seed)
@@ -327,7 +346,7 @@ class GenericPFTUtilities:
                                  ledger_index_min=-1,
                                  ledger_index_max=-1, limit=10,public=True):
         if public == False:
-            client = xrpl.clients.JsonRpcClient(self.mainnet_url)  #hitting local rippled server
+            client = xrpl.clients.JsonRpcClient(self.local_rippled_url)  #hitting local rippled server
         if public == True:
             client = xrpl.clients.JsonRpcClient(self.public_rpc_url) 
         all_transactions = []  # List to store all transactions
@@ -379,7 +398,7 @@ class GenericPFTUtilities:
                                 max_attempts=3,
                                 retry_delay=.2, public=False):
         if public == False:
-            client = xrpl.clients.JsonRpcClient(self.mainnet_url)  #hitting local rippled server
+            client = xrpl.clients.JsonRpcClient(self.local_rippled_url)  #hitting local rippled server
         if public == True:
             client = xrpl.clients.JsonRpcClient(self.public_rpc_url) 
 
@@ -418,6 +437,7 @@ class GenericPFTUtilities:
 
         return all_transactions
 
+    # TODO: Consider deprecating, not used anywhere
     def get_account_transactions__retry_version(self, account_address='r3UHe45BzAVB3ENd21X9LeQngr4ofRJo5n',
                                 ledger_index_min=-1,
                                 ledger_index_max=-1,
@@ -451,13 +471,14 @@ class GenericPFTUtilities:
         print(f"Longest list of transactions: {len(longest_transactions)} transactions")
         return longest_transactions
     
+    # TODO: Rename to get_pft_holder_df
     def output_post_fiat_holder_df(self):
         """ This function outputs a detail of all accounts holding PFT tokens
         with a float of their balances as pft_holdings. note this is from
         the view of the issuer account so balances appear negative so the pft_holdings 
         are reverse signed.
         """
-        client = xrpl.clients.JsonRpcClient(self.mainnet_url)
+        client = xrpl.clients.JsonRpcClient(self.local_rippled_url)
         print("Getting all accounts holding PFT tokens...")
         response = client.request(xrpl.models.requests.AccountLines(
             account=self.pft_issuer,
@@ -471,6 +492,7 @@ class GenericPFTUtilities:
         return full_post_fiat_holder_df
         
     def get_memo_detail_df_for_account(self,account_address,pft_only=True):
+        # TODO: Refactor, using get_memos_df as reference (pftpyclient/task_manager/basic_tasks.py)
         full_transaction_history = self.get_all_cached_transactions_related_to_account(account_address=account_address)
         validated_tx=full_transaction_history
         validated_tx['has_memos'] = validated_tx['tx_json'].apply(lambda x: 'Memos' in x.keys())
@@ -506,6 +528,7 @@ class GenericPFTUtilities:
         return live_memo_tx
 
     def convert_memo_detail_df_into_essential_caching_details(self, memo_details_df):
+        # TODO: Consider deprecating. This is not used anywhere
         """ 
         Takes a memo detail df and converts it into a raw detail df to be cached to a local db
         """
@@ -520,6 +543,7 @@ class GenericPFTUtilities:
         return full_memo_detail
 
     def send_PFT_chunk_message__seed_based(self, wallet_seed, user_name, full_text, destination_address):
+        # TODO: Consider deprecating, not used anywhere
         """ This takes a large message compresses the strings and sends it in hex to another address.
         Is based on a user spawned wallet and sends 1 PFT per chunk
         user_name = 'spm_typhus',full_text = big_string, destination_address='rKZDcpzRE5hxPUvTQ9S3y2aLBUUTECr1vN'"""     
@@ -541,6 +565,7 @@ class GenericPFTUtilities:
         final_response = yarr[-1] if yarr else None
         return final_response
     
+    # TODO: Consider deprecating, not used anywhere
     def send_PFT_chunk_message(self,user_name,full_text, destination_address):
         """
         This takes a large message compresses the strings and sends it in hex to another address.
@@ -563,7 +588,8 @@ class GenericPFTUtilities:
             yarr.append(xresp)
         final_response = yarr[-1] if yarr else None
         return final_response
-                
+    
+    # TODO: Consider deprecating, not used anywhere
     def get_all_account_chunk_messages(self,account_address='rKZDcpzRE5hxPUvTQ9S3y2aLBUUTECr1vN'):
         """ This pulls in all the chunk messages an account has received and cleans and aggregates
         the messages for easy digestion - implementing sorts, and displays some information associated with the messages """ 
@@ -594,6 +620,7 @@ class GenericPFTUtilities:
         grouped_memo_data['account']= last_slice['account']
         return grouped_memo_data
 
+    # TODO: Consider replacing with send_memo (reference pftpyclient/task_manager/basic_tasks.py)
     def send_pft_compressed_message_based_on_wallet_seed(self, wallet_seed, user_name, destination,memo, compress, message_id):
         """
         wallet_seed='s___5'
@@ -642,7 +669,6 @@ class GenericPFTUtilities:
             ))
         last_response = responses[-1:][0]
         return last_response
-
 
     def get_all_account_compressed_messages(self, account_address):
         all_account_memos = self.get_memo_detail_df_for_account(account_address=account_address, pft_only=True)
@@ -725,6 +751,7 @@ class GenericPFTUtilities:
         new_log_memo_df = full_memo_df.reset_index()
         return new_log_memo_df
 
+    # TODO: Consider deprecating, not used anywhere
     def process_memo_detail_df_to_daily_summary_df(self, memo_detail_df):
         """_summary_
         
@@ -748,6 +775,7 @@ class GenericPFTUtilities:
                     'combined_memo_type_and_data','pft_absolute_value','raw_date']].groupby('raw_date').sum()
         return {'daily_grouped_summary':daily_grouped_output_frame, 'raw_summary':output_frame}
     
+    # TODO: Replace with get_latest_outgoing_context_doc_link (reference pftpyclient/task_manager/basic_tasks.py)
     def get_most_recent_google_doc_for_user(self, account_memo_detail_df, address):
         """ This function takes a memo detail df and a classic address and outputs
         the associated google doc
@@ -766,6 +794,7 @@ class GenericPFTUtilities:
             pass
         return op
     
+    # TODO: Replace with is_valid_id (reference pftpyclient/task_manager/basic_tasks.py)
     def determine_if_map_is_task_id(self,memo_dict):
         """ task ID detection 
         """
@@ -779,6 +808,7 @@ class GenericPFTUtilities:
             return True
         return False
     
+    # TODO: Replace with sync_tasks (reference pftpyclient/task_manager/basic_tasks.py)
     def convert_all_account_info_into_simplified_task_frame(self, account_memo_detail_df):
         
         """ This takes all the Post Fiat Tasks and outputs them into a simplified
@@ -801,6 +831,7 @@ class GenericPFTUtilities:
         core_task_df['task_type']=core_task_df['MemoData'].apply(lambda x: self.classify_task_string(x))
         return core_task_df
     
+    # TODO: Replace with sync_tasks (reference pftpyclient/task_manager/basic_tasks.py)
     def convert_all_account_info_into_outstanding_task_df(self, account_memo_detail_df):
         """ This reduces all account info into a simplified dataframe of proposed 
         and accepted tasks """ 
@@ -1161,6 +1192,8 @@ class GenericPFTUtilities:
             # Return an error message if the request was unsuccessful
             return f"Failed to retrieve the document. Status code: {response.status_code}"
 
+    # TODO: Replace with retrieve_xrp_address_from_google_doc (reference pftpyclient/task_manager/basic_tasks.py)
+    # TODO: Add separate call to get_xrp_balance where relevant
     def check_if_there_is_funded_account_at_front_of_google_doc(self, google_url):
         """
         Checks if there is a balance bearing XRP account address at the front of the google document 
@@ -1177,7 +1210,6 @@ class GenericPFTUtilities:
         except:
             pass
         return balance
-
 
     def format_recent_chunk_messages(self, message_df):
         """
@@ -1197,8 +1229,7 @@ class GenericPFTUtilities:
         
         return "\n".join(formatted_messages)
 
-
-
+    # TODO: Leverage self.tasks
     def generate_refusal_frame(self, all_account_info):
         """ Takes all account info and transmutes into all historical task refusals and reasons 
         
@@ -1359,7 +1390,7 @@ THIS MESSAGE WILL AUTO DELETE IN 60 SECONDS
         except:
             pass
         
-        client = JsonRpcClient(self.mainnet_url)
+        client = JsonRpcClient(self.local_rippled_url)
         
         # Get XRP balance
         acct_info = AccountInfo(
@@ -1392,12 +1423,13 @@ PFT WEEKLY AVG:   {weekly_pft_reward_avg}
 """
         return account_info_string
 
+    # TODO: Refactor, using get_xrp_balance as reference (pftpyclient/task_manager/basic_tasks.py)
     def get_account_xrp_balance(self, account_address):
         """ 
         Example
         account_address = 'r3UHe45BzAVB3ENd21X9LeQngr4ofRJo5n'
         """
-        client = JsonRpcClient(self.mainnet_url)
+        client = JsonRpcClient(self.local_rippled_url)
         
         # Get XRP balance
         acct_info = AccountInfo(
@@ -1412,7 +1444,7 @@ PFT WEEKLY AVG:   {weekly_pft_reward_avg}
             pass
         return xrp_balance
 
-
+    # TODO: Refactor using get_verification_df as reference (pftpyclient/task_manager/basic_tasks.py)
     def convert_all_account_info_into_outstanding_verification_df(self,account_memo_detail_df):
         """ takes the outstanding account data and converts into outstanding memos """ 
         all_memos = account_memo_detail_df.copy()
@@ -1421,8 +1453,6 @@ PFT WEEKLY AVG:   {weekly_pft_reward_avg}
         verification_requirements = most_recent_memos[most_recent_memos['memo_data'].apply(lambda x: 'VERIFICATION PROMPT ' in x)][['memo_data','memo_format']].reset_index().copy()
         verification_requirements['original_task']=verification_requirements['memo_type'].map(task_id_to_original_task_map)
         return verification_requirements
-
-
 
     def format_outstanding_verification_df(self, verification_requirements):
         """
@@ -1442,7 +1472,6 @@ PFT WEEKLY AVG:   {weekly_pft_reward_avg}
             formatted_output += f"Original Task: {row['original_task']}\n"
             formatted_output += "-" * 50 + "\n"
         return formatted_output
-
 
     def create_full_outstanding_pft_string(self, account_address='r3UHe45BzAVB3ENd21X9LeQngr4ofRJo5n'):
         """ This takes in an account address and outputs the current state of its outstanding tasks
@@ -1560,9 +1589,6 @@ PFT WEEKLY AVG:   {weekly_pft_reward_avg}
         printable_string = self.extract_transaction_info_from_response_object(action_response)['clean_string']
         return printable_string
 
-
-
-
     def generate_trust_line_to_pft_token(self, wallet_seed):
         """ Note this transaction consumes XRP to create a trust
         line for the PFT Token so the holder DF should be checked 
@@ -1571,13 +1597,13 @@ PFT WEEKLY AVG:   {weekly_pft_reward_avg}
         
         #wallet_to_link =self.user_wallet
         wallet_to_link = xrpl.wallet.Wallet.from_seed(wallet_seed)
-        client = xrpl.clients.JsonRpcClient(self.mainnet_url)
+        client = xrpl.clients.JsonRpcClient(self.local_rippled_url)
         #currency_code = "PFT"
         trust_set_tx = xrpl.models.transactions.TrustSet(
                         account=wallet_to_link.classic_address,
                     limit_amount=xrpl.models.amounts.issued_currency_amount.IssuedCurrencyAmount(
                             currency="PFT",
-                            issuer='rnQUEEg8yyjrwk9FhyXpKavHyCRJM9BDMW',
+                            issuer=self.pft_issuer,
                             value='100000000',  # Large limit, arbitrarily chosen
                         )
                     )
@@ -1714,7 +1740,7 @@ PFT WEEKLY AVG:   {weekly_pft_reward_avg}
         account_modes = account_modes.sort_values('account')
         account_name_map = account_modes.groupby('account').first()['memo_format']
         past_month_transactions = all_accounts[all_accounts['datetime']>datetime.datetime.now()-datetime.timedelta(30)]
-        node_transactions = past_month_transactions[past_month_transactions['account']=='r4yc85M1hwsegVGZ1pawpZPwj65SVs8PzD'].copy()
+        node_transactions = past_month_transactions[past_month_transactions['account']==self.node_address].copy()
         rewards_only=node_transactions[node_transactions['memo_data'].apply(lambda x: 'REWARD RESPONSE' in x)].copy()
         rewards_only['count']=1
         rewards_only['PFT']=rewards_only['tx_json'].apply(lambda x: x['DeliverMax']['value']).astype(float)
@@ -1723,7 +1749,7 @@ PFT WEEKLY AVG:   {weekly_pft_reward_avg}
         
         total_reward_number= rewards_only[['count','destination']].groupby('destination').sum()['count']
         account_score_constructor = pd.DataFrame(account_name_map)
-        account_score_constructor=account_score_constructor[account_score_constructor.index!='r4yc85M1hwsegVGZ1pawpZPwj65SVs8PzD'].copy()
+        account_score_constructor=account_score_constructor[account_score_constructor.index!=self.node_address].copy()
         account_score_constructor['reward_count']=total_reward_number
         account_score_constructor['yellow_flags']=account_to_yellow_flag__count
         account_score_constructor=account_score_constructor[['reward_count','yellow_flags']].fillna(0).copy()
@@ -1801,7 +1827,7 @@ PFT WEEKLY AVG:   {weekly_pft_reward_avg}
         top_score_frame['user_prompt']=top_score_frame.apply(lambda x: x['user_prompt'].replace('__FULL_ACCOUNT_CONTEXT__',x['user_account_details']),axis=1)
         def construct_scoring_api_arg(user_prompt, system_prompt):
             gx ={
-                "model": 'chatgpt-4o-latest',
+                "model": constants.DEFAULT_OPEN_AI_MODEL,
                 "temperature":0,
                 "messages": [
                     {"role": "system", "content": system_prompt},
@@ -1857,6 +1883,7 @@ PFT WEEKLY AVG:   {weekly_pft_reward_avg}
         final_leaderboard['total_rewards']=final_leaderboard['total_rewards'].apply(lambda x: int(x))
         final_leaderboard.index.name = 'Foundation Node Leaderboard as of '+datetime.datetime.now().strftime('%Y-%m-%d')
         return final_leaderboard
+
     def format_and_write_leaderboard(self):
         """ This loads the current leaderboard df and writes it""" 
         def format_leaderboard_df(df):
@@ -2020,6 +2047,7 @@ PFT WEEKLY AVG:   {weekly_pft_reward_avg}
         leaderboard_df = self.output_postfiat_foundation_node_leaderboard_df()
         test_leaderboard_creation(leaderboard_df=format_leaderboard_df(leaderboard_df))
 
+    # TODO: Consider deprecating, not used anywhere
     def get_full_google_text_and_verification_stub_for_account(self,address_to_work = 'rwmzXrN3Meykp8pBd3Boj1h34k8QGweUaZ'):
 
         all_account_memos = self.get_memo_detail_df_for_account(account_address=address_to_work)
@@ -2064,7 +2092,7 @@ PFT WEEKLY AVG:   {weekly_pft_reward_avg}
         Returns:
             float: The PFT balance for the account
         """
-        client = JsonRpcClient(self.mainnet_url)
+        client = JsonRpcClient(self.local_rippled_url)
         try:
             account_lines = AccountLines(
                 account=account_address,

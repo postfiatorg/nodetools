@@ -5,9 +5,6 @@ from pathlib import Path
 from nodetools.security import hash_tools as pwl
 import getpass
 
-NODE_NAME= 'postfiatfoundation'
-NODE_ADDRESS = 'r4yc85M1hwsegVGZ1pawpZPwj65SVs8PzD'
-
 class CredentialManager:
     def __init__(self):
         self.credential_file_path = self.get_credential_file_path()

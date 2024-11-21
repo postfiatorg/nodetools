@@ -23,21 +23,13 @@ import asyncio
 from datetime import datetime, time
 import pytz
 import datetime
-password_map_loader = PasswordMapLoader()
-open_ai_request_tool = OpenAIRequestTool(pw_map=password_map_loader.pw_map)
-
-post_fiat_task_generation_system = PostFiatTaskGenerationSystem(pw_map=password_map_loader.pw_map)
-generic_pft_utilities = GenericPFTUtilities(pw_map=password_map_loader.pw_map, node_name='postfiatfoundation')
-generic_pft_utilities.run_transaction_history_updates()
-default_openai_model = 'chatgpt-4o-latest'
-remembrancer = 'rJ1mBMhEBKack5uTQvM8vWoAntbufyG9Yn'
-MAX_HISTORY = 15
-#post_fiat_task_generation_system.run_cue_processing()
-
-
+import nodetools.utilities.constants as constants
+    
 class MyClient(discord.Client):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
+        self.default_openai_model = constants.DEFAULT_OPEN_AI_MODEL
+        self.remembrancer = constants.TESTNET_REMEMBRANCER_ADDRESS if constants.USE_TESTNET else constants.REMEMBRANCER_ADDRESS
         self.conversations = {}
         self.user_seeds = {}
         self.tree = app_commands.CommandTree(self)
@@ -45,11 +37,8 @@ class MyClient(discord.Client):
         self.generic_pft_utilities = GenericPFTUtilities(pw_map=password_map_loader.pw_map, node_name='postfiatfoundation')
         self.post_fiat_task_generation_system = PostFiatTaskGenerationSystem(pw_map=password_map_loader.pw_map)
 
-
-    
-
     async def setup_hook(self):
-        guild_id = 1061800464045310053  # Your specific guild ID
+        guild_id = constants.MAINNET_DISCORD_GUILD_ID if not constants.USE_TESTNET else constants.TESTNET_DISCORD_GUILD_ID  # Your specific guild ID
         guild = Object(id=guild_id)
         self.tree.copy_global_to(guild=guild)
         await self.tree.sync(guild=guild)
@@ -332,12 +321,11 @@ class MyClient(discord.Client):
             await interaction.response.defer(ephemeral=True)
 
             try:
-                remembrancer = 'rJ1mBMhEBKack5uTQvM8vWoAntbufyG9Yn'
                 # Call the send_PFT_chunk_message__seed_based function
                 ### RETURN TO wallet_seed, user_name, destination,memo, compress
                 response = generic_pft_utilities.send_pft_compressed_message_based_on_wallet_seed(wallet_seed=seed, 
                                                                                                   user_name=user_name, 
-                                                                                                  destination=remembrancer,
+                                                                                                  destination=self.remembrancer,
                                                                                                   memo = message, message_id=None,
                                                                                                   compress=True)
                 
@@ -1232,7 +1220,7 @@ Note: XRP wallets need 15 XRP to transact.
         return sent_messages
 
     async def check_and_notify_new_transactions(self):
-        CHANNEL_ID = 1239280089699450920
+        CHANNEL_ID = constants.MAINNET_DISCORD_POSTFIATACTIVITY_CHANNEL_ID if not constants.USE_TESTNET else constants.TESTNET_DISCORD_POSTFIATACTIVITY_CHANNEL_ID
         channel = self.get_channel(CHANNEL_ID)
         
         if not channel:
@@ -1314,7 +1302,7 @@ Note: XRP wallets need 15 XRP to transact.
             "content": message.content})
 
         conversation = self.conversations[user_id]
-        if len(self.conversations[user_id]) > MAX_HISTORY:
+        if len(self.conversations[user_id]) > constants.MAX_HISTORY:
             del self.conversations[user_id][0]  # Remove the oldest message
 
         if message.content.startswith('!odv'):
@@ -1322,7 +1310,7 @@ Note: XRP wallets need 15 XRP to transact.
             system_content_message = [{"role": "system", "content": odv_system_prompt}]
             ref_convo = system_content_message + conversation
             api_args = {
-            "model": default_openai_model,
+            "model": self.default_openai_model,
             "messages": ref_convo}
             op_df = self.open_ai_request_tool.create_writable_df_for_chat_completion(api_args=api_args)
             content = op_df['choices__message__content'][0]
@@ -1356,7 +1344,7 @@ Note: XRP wallets need 15 XRP to transact.
                     """
                     
                     api_args = {
-                        "model": 'chatgpt-4o-latest',
+                        "model": constants.DEFAULT_OPEN_AI_MODEL,
                         "messages": [
                             {"role": "system", "content": odv_system_prompt},
                             {"role": "user", "content": user_prompt}
@@ -1619,14 +1607,39 @@ My specific question/request is: {user_query}"""
             #await self.send_long_message(message, escaped_output)
             await self.send_long_escaped_message(message, output_message)
 
-   
-        
+def init_bot():
+    """Initialize and return the Discord bot with required intents"""
+    intents = discord.Intents.default()
+    intents.message_content = True
+    intents.guild_messages = True
+    return MyClient(intents=intents)
 
-        #if message.content.startswith('!pf_message'):
+def init_services(pw_map):
+    """Initialize and return core services"""
+    print("---Initializing services---")
+    open_ai_request_tool = OpenAIRequestTool(pw_map=pw_map)
+    print("---OpenAIRequestTool initialized---")
+    post_fiat_task_generation_system = PostFiatTaskGenerationSystem(pw_map=pw_map)
+    print("---PostFiatTaskGenerationSystem initialized---")
+    generic_pft_utilities = GenericPFTUtilities(pw_map=pw_map, node_name='postfiatfoundation')
+    print("---GenericPFTUtilities initialized---")
+    generic_pft_utilities.run_transaction_history_updates()
 
-intents = discord.Intents.default()
-intents.message_content = True
-intents.guild_messages = True
+    return (
+        open_ai_request_tool,
+        post_fiat_task_generation_system,
+        generic_pft_utilities
+    )
 
-client = MyClient(intents=intents)
-client.run(password_map_loader.pw_map['discordbot_secret'])
+if __name__ == "__main__":
+    # Initialize password map
+    password_map_loader = PasswordMapLoader()
+
+    # Initialize services
+    open_ai_request_tool, post_fiat_task_generation_system, generic_pft_utilities = init_services(pw_map=password_map_loader.pw_map)
+
+    print("---Services initialized successfully!---")
+
+    # Initialize and run the bot
+    client = init_bot()
+    client.run(password_map_loader.pw_map['discordbot_secret'])

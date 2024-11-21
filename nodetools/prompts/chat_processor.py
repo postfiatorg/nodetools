@@ -5,15 +5,16 @@ from nodetools.utilities.task_management import PostFiatTaskGenerationSystem
 from nodetools.ai.openai import OpenAIRequestTool
 from nodetools.chatbots.personas.odv import odv_system_prompt
 import time
+import nodetools.utilities.constants as constants
 
 class ChatProcessor:
     def __init__(self,pw_map):
         self.pw_map = pw_map
-        self.generic_pft_utilities = GenericPFTUtilities(pw_map=pw_map, node_name='postfiatfoundation')
+        self.generic_pft_utilities = GenericPFTUtilities(pw_map=pw_map, node_name=constants.DEFAULT_NODE_NAME)
         self.open_ai_request_tool= OpenAIRequestTool(pw_map=pw_map)
 
     def process_chat_cue(self):
-        account_address='rJ1mBMhEBKack5uTQvM8vWoAntbufyG9Yn'
+        account_address=constants.TESTNET_REMEMBRANCER_ADDRESS if constants.USE_TESTNET else constants.REMEMBRANCER_ADDRESS
         full_holder_df = self.generic_pft_utilities.output_post_fiat_holder_df()
         full_holder_df['balance']=full_holder_df['balance'].astype(float)
         all_top_wallet_holders = full_holder_df.sort_values('balance',ascending=True)
