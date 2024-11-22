@@ -1,20 +1,9 @@
-
-
-import asyncio
-from nodetools.chatbots.personas.odv import odv_system_prompt
-from nodetools.ai.openai import OpenAIRequestTool
-from nodetools.utilities.settings import PasswordMapLoader
-from nodetools.utilities.generic_pft_utilities import *
-from nodetools.utilities.task_management import PostFiatTaskGenerationSystem
 from xrpl.wallet import Wallet
 import discord
-from discord import Object, Interaction, SelectOption
+from discord import Object, Interaction, SelectOption, app_commands
 from discord.ui import Modal, TextInput, View, Select
-from discord import app_commands
-# Import your other modules here...
-from nodetools.chatbots.personas.odv import odv_system_prompt
 from nodetools.ai.openai import OpenAIRequestTool
-from nodetools.utilities.settings import PasswordMapLoader
+from nodetools.utilities.credentials import CredentialManager
 from nodetools.utilities.generic_pft_utilities import *
 from nodetools.utilities.task_management import PostFiatTaskGenerationSystem
 from nodetools.utilities.generic_pft_utilities import GenericPFTUtilities
@@ -24,6 +13,7 @@ from datetime import datetime, time
 import pytz
 import datetime
 import nodetools.utilities.constants as constants
+import getpass
     
 class MyClient(discord.Client):
     def __init__(self, *args, **kwargs):
@@ -33,9 +23,9 @@ class MyClient(discord.Client):
         self.conversations = {}
         self.user_seeds = {}
         self.tree = app_commands.CommandTree(self)
-        self.open_ai_request_tool = OpenAIRequestTool(pw_map=password_map_loader.pw_map)
-        self.generic_pft_utilities = GenericPFTUtilities(pw_map=password_map_loader.pw_map, node_name='postfiatfoundation')
-        self.post_fiat_task_generation_system = PostFiatTaskGenerationSystem(pw_map=password_map_loader.pw_map)
+        self.open_ai_request_tool = OpenAIRequestTool()
+        self.generic_pft_utilities = GenericPFTUtilities(node_name='postfiatfoundation')
+        self.post_fiat_task_generation_system = PostFiatTaskGenerationSystem()
 
     async def setup_hook(self):
         guild_id = constants.MAINNET_DISCORD_GUILD_ID if not constants.USE_TESTNET else constants.TESTNET_DISCORD_GUILD_ID  # Your specific guild ID
@@ -1326,11 +1316,11 @@ Note: XRP wallets need 15 XRP to transact.
                 seed = self.user_seeds[user_id]
                 
                 try:
-                    generic_pft_utilities = GenericPFTUtilities(pw_map=password_map_loader.pw_map, node_name='postfiatfoundation')
+                    generic_pft_utilities = GenericPFTUtilities(node_name='postfiatfoundation')
                     user_wallet = generic_pft_utilities.spawn_user_wallet_from_seed(seed=seed)
                     full_user_context = generic_pft_utilities.get_full_user_context_string(user_wallet.classic_address)
                     
-                    open_ai_request_tool = OpenAIRequestTool(pw_map=password_map_loader.pw_map)
+                    open_ai_request_tool = OpenAIRequestTool()
                     
                     user_prompt = f"""You are ODV Tactician module.
                     The User has the following transaction context as well as strategic context
@@ -1453,7 +1443,6 @@ My specific question/request is: {user_query}"""
                 seed = self.user_seeds[user_id]
                 
                 try:
-                    #generic_pft_utilities = GenericPFTUtilities(pw_map=password_map_loader.pw_map, node_name='postfiatfoundation')
                     user_wallet = self.generic_pft_utilities.spawn_user_wallet_from_seed(seed=seed)
                     user_address = user_wallet.classic_address
                     #full_user_context = self.generic_pft_utilities.get_full_user_context_string(user_wallet.classic_address)
@@ -1473,7 +1462,6 @@ My specific question/request is: {user_query}"""
                 seed = self.user_seeds[user_id]
                 
                 try:
-                    #generic_pft_utilities = GenericPFTUtilities(pw_map=password_map_loader.pw_map, node_name='postfiatfoundation')
                     user_wallet = self.generic_pft_utilities.spawn_user_wallet_from_seed(seed=seed)
                     user_address = user_wallet.classic_address
                     #full_user_context = self.generic_pft_utilities.get_full_user_context_string(user_wallet.classic_address)
@@ -1492,7 +1480,6 @@ My specific question/request is: {user_query}"""
                 seed = self.user_seeds[user_id]
                 
                 try:
-                    #generic_pft_utilities = GenericPFTUtilities(pw_map=password_map_loader.pw_map, node_name='postfiatfoundation')
                     user_wallet = self.generic_pft_utilities.spawn_user_wallet_from_seed(seed=seed)
                     user_address = user_wallet.classic_address
                     #full_user_context = self.generic_pft_utilities.get_full_user_context_string(user_wallet.classic_address)
@@ -1511,7 +1498,6 @@ My specific question/request is: {user_query}"""
                 seed = self.user_seeds[user_id]
                 
                 try:
-                    #generic_pft_utilities = GenericPFTUtilities(pw_map=password_map_loader.pw_map, node_name='postfiatfoundation')
                     user_wallet = self.generic_pft_utilities.spawn_user_wallet_from_seed(seed=seed)
                     user_address = user_wallet.classic_address
                     #full_user_context = self.generic_pft_utilities.get_full_user_context_string(user_wallet.classic_address)
@@ -1614,14 +1600,14 @@ def init_bot():
     intents.guild_messages = True
     return MyClient(intents=intents)
 
-def init_services(pw_map):
+def init_services():
     """Initialize and return core services"""
     print("---Initializing services---")
-    open_ai_request_tool = OpenAIRequestTool(pw_map=pw_map)
+    open_ai_request_tool = OpenAIRequestTool()
     print("---OpenAIRequestTool initialized---")
-    post_fiat_task_generation_system = PostFiatTaskGenerationSystem(pw_map=pw_map)
+    post_fiat_task_generation_system = PostFiatTaskGenerationSystem()
     print("---PostFiatTaskGenerationSystem initialized---")
-    generic_pft_utilities = GenericPFTUtilities(pw_map=pw_map, node_name='postfiatfoundation')
+    generic_pft_utilities = GenericPFTUtilities(node_name='postfiatfoundation')
     print("---GenericPFTUtilities initialized---")
     generic_pft_utilities.run_transaction_history_updates()
 
@@ -1632,14 +1618,15 @@ def init_services(pw_map):
     )
 
 if __name__ == "__main__":
-    # Initialize password map
-    password_map_loader = PasswordMapLoader()
+    # Initialize credential manager
+    password = getpass.getpass("Enter your password: ")
+    cred_manager = CredentialManager(password)
 
     # Initialize services
-    open_ai_request_tool, post_fiat_task_generation_system, generic_pft_utilities = init_services(pw_map=password_map_loader.pw_map)
+    open_ai_request_tool, post_fiat_task_generation_system, generic_pft_utilities = init_services()
 
     print("---Services initialized successfully!---")
 
     # Initialize and run the bot
     client = init_bot()
-    client.run(password_map_loader.pw_map['discordbot_secret'])
+    client.run(cred_manager.get_credential('discordbot_secret'))

@@ -45,25 +45,25 @@ from xrpl.clients import JsonRpcClient
 from xrpl.core.keypairs import derive_classic_address
 from nodetools.ai.openai import OpenAIRequestTool
 import nodetools.utilities.constants as constants
+from nodetools.utilities.credentials import CredentialManager
 
 USE_LOCAL_RIPPLED = False
 
 # TODO: Add loguru as dependency and use it for all logging
 
 class GenericPFTUtilities:
-    def __init__(self,pw_map,node_name=constants.DEFAULT_NODE_NAME):
-        self.pw_map= pw_map   # TODO: Replace with credential manager 
+    def __init__(self, node_name=constants.DEFAULT_NODE_NAME):
         self.pft_issuer = constants.ISSUER_ADDRESS if not constants.USE_TESTNET else constants.TESTNET_ISSUER_ADDRESS
         self.public_rpc_url = constants.MAINNET_URL if not constants.USE_TESTNET else constants.TESTNET_URL
         self.local_rippled_url = "http://127.0.0.1:5005" if USE_LOCAL_RIPPLED else self.public_rpc_url  # Alex's local rippled node
         self.node_name = node_name
         ## NOTE THIS IS THE NODE ADDRESS FOR THE POST FIAT NODE
         self.node_address=constants.DEFAULT_NODE_ADDRESS if not constants.USE_TESTNET else constants.TESTNET_DEFAULT_NODE_ADDRESS
-        self.db_connection_manager = DBConnectionManager(pw_map=pw_map)
+        self.db_connection_manager = DBConnectionManager()
         #return binascii.hexlify(string.encode()).decode()
         self.establish_post_fiat_tx_cache_as_hash_unique()
         self.post_fiat_holder_df = self.output_post_fiat_holder_df()
-        self.open_ai_request_tool=OpenAIRequestTool(pw_map=pw_map)
+        self.open_ai_request_tool=OpenAIRequestTool()
 
     def convert_ripple_timestamp_to_datetime(self, ripple_timestamp = 768602652):
         ripple_epoch_offset = 946684800
@@ -270,7 +270,6 @@ class GenericPFTUtilities:
 
     def send_xrp_with_info__seed_based(self,wallet_seed, amount, destination, memo):
         # TODO: Replace with send_xrp (reference pftpyclient/task_manager/basic_tasks.py)
-        # TODO: Passing around wallet_seed is not recommended, leverage credential manager
         sending_wallet =sending_wallet = xrpl.wallet.Wallet.from_seed(wallet_seed)
         client = xrpl.clients.JsonRpcClient(self.local_rippled_url)
         payment = xrpl.models.transactions.Payment(
@@ -291,15 +290,6 @@ class GenericPFTUtilities:
         """ outputs user wallet initialized from seed"""
         wallet = xrpl.wallet.Wallet.from_seed(seed)
         print(f'User wallet classic address is {wallet.address}')
-        return wallet
-
-    def spawn_user_wallet_based_on_name(self,user_name):    
-        # TODO: Replace with spawn_user_wallet (reference pftpyclient/task_manager/basic_tasks.py)
-        # TODO: If need a getter method based on user name, leverage credential manager
-        """ outputs user wallet initialized from password map""" 
-        user_seed= self.pw_map[f'{user_name}__v1xrpsecret']
-        wallet = xrpl.wallet.Wallet.from_seed(user_seed)
-        print(f'User wallet for {user_name} is {wallet.address}')
         return wallet
     
     def test_url_reliability(self, user_wallet, destination_address):
@@ -565,60 +555,60 @@ class GenericPFTUtilities:
         final_response = yarr[-1] if yarr else None
         return final_response
     
-    # TODO: Consider deprecating, not used anywhere
-    def send_PFT_chunk_message(self,user_name,full_text, destination_address):
-        """
-        This takes a large message compresses the strings and sends it in hex to another address.
-        Is based on a user spawned wallet and sends 1 PFT per chunk
-        user_name = 'spm_typhus',full_text = big_string, destination_address='rKZDcpzRE5hxPUvTQ9S3y2aLBUUTECr1vN'"""     
+    # # TODO: Consider deprecating, not used anywhere
+    # def send_PFT_chunk_message(self,user_name,full_text, destination_address):
+    #     """
+    #     This takes a large message compresses the strings and sends it in hex to another address.
+    #     Is based on a user spawned wallet and sends 1 PFT per chunk
+    #     user_name = 'spm_typhus',full_text = big_string, destination_address='rKZDcpzRE5hxPUvTQ9S3y2aLBUUTECr1vN'"""     
         
-        wallet = self.spawn_user_wallet_based_on_name(user_name)
-        task_id = 'chunkm__'+self.generate_random_utf8_friendly_hash(6)
+    #     wallet = self.spawn_user_wallet_based_on_name(user_name)
+    #     task_id = 'chunkm__'+self.generate_random_utf8_friendly_hash(6)
         
-        all_chunks = self.split_text_into_chunks(full_text)
-        send_memo_map = {}
-        for xchunk in all_chunks:
-            chunk_num = int(xchunk.split('chunk_')[1].split('__')[0])
-            send_memo_map[chunk_num] = self.construct_basic_postfiat_memo(user=user_name, task_id=task_id, 
-                                        full_output=self.compress_string(xchunk))
-        yarr=[]
-        for xkey in send_memo_map.keys():
-            xresp = self.send_PFT_with_info(sending_wallet=wallet, amount=1, memo=send_memo_map[xkey], 
-                                destination_address=destination_address, url=None)
-            yarr.append(xresp)
-        final_response = yarr[-1] if yarr else None
-        return final_response
+    #     all_chunks = self.split_text_into_chunks(full_text)
+    #     send_memo_map = {}
+    #     for xchunk in all_chunks:
+    #         chunk_num = int(xchunk.split('chunk_')[1].split('__')[0])
+    #         send_memo_map[chunk_num] = self.construct_basic_postfiat_memo(user=user_name, task_id=task_id, 
+    #                                     full_output=self.compress_string(xchunk))
+    #     yarr=[]
+    #     for xkey in send_memo_map.keys():
+    #         xresp = self.send_PFT_with_info(sending_wallet=wallet, amount=1, memo=send_memo_map[xkey], 
+    #                             destination_address=destination_address, url=None)
+    #         yarr.append(xresp)
+    #     final_response = yarr[-1] if yarr else None
+    #     return final_response
     
-    # TODO: Consider deprecating, not used anywhere
-    def get_all_account_chunk_messages(self,account_address='rKZDcpzRE5hxPUvTQ9S3y2aLBUUTECr1vN'):
-        """ This pulls in all the chunk messages an account has received and cleans and aggregates
-        the messages for easy digestion - implementing sorts, and displays some information associated with the messages """ 
-        all_account_memos = self.get_memo_detail_df_for_account(account_address=account_address, pft_only=True)
-        all_chunk_messages = all_account_memos[all_account_memos['converted_memos'].apply(lambda x: 
-                                                                        'chunkm__' in x['MemoType'])].copy()
+    # # TODO: Consider deprecating, not used anywhere
+    # def get_all_account_chunk_messages(self,account_address='rKZDcpzRE5hxPUvTQ9S3y2aLBUUTECr1vN'):
+    #     """ This pulls in all the chunk messages an account has received and cleans and aggregates
+    #     the messages for easy digestion - implementing sorts, and displays some information associated with the messages """ 
+    #     all_account_memos = self.get_memo_detail_df_for_account(account_address=account_address, pft_only=True)
+    #     all_chunk_messages = all_account_memos[all_account_memos['converted_memos'].apply(lambda x: 
+    #                                                                     'chunkm__' in x['MemoType'])].copy()
         
-        all_chunk_messages['memo_data_raw']= all_chunk_messages['converted_memos'].apply(lambda x: x['MemoData']).astype(str)
-        all_chunk_messages['message_id']=all_chunk_messages['converted_memos'].apply(lambda x: x['MemoType'])
-        all_chunk_messages['decompressed_strings']=all_chunk_messages['memo_data_raw'].apply(lambda x: self.decompress_string(x))
-        all_chunk_messages['chunk_num']=all_chunk_messages['decompressed_strings'].apply(lambda x: x.split('chunk_')[1].split('__')[0]).astype(int)
-        all_chunk_messages.sort_values(['message_id','chunk_num'], inplace=True)
-        grouped_memo_data = all_chunk_messages[['decompressed_strings','message_id']].groupby('message_id').sum().copy()
-        def remove_chunks(text):
-            # Use regular expression to remove all occurrences of chunk_1__, chunk_2__, etc.
-            cleaned_text = re.sub(r'chunk_\d+__', '', text)
-            return cleaned_text
-        grouped_memo_data['cleaned_message']=grouped_memo_data['decompressed_strings'].apply(lambda x: remove_chunks(x))
-        grouped_pft_value = all_chunk_messages[['message_id','directional_pft']].groupby('message_id').sum()['directional_pft']
+    #     all_chunk_messages['memo_data_raw']= all_chunk_messages['converted_memos'].apply(lambda x: x['MemoData']).astype(str)
+    #     all_chunk_messages['message_id']=all_chunk_messages['converted_memos'].apply(lambda x: x['MemoType'])
+    #     all_chunk_messages['decompressed_strings']=all_chunk_messages['memo_data_raw'].apply(lambda x: self.decompress_string(x))
+    #     all_chunk_messages['chunk_num']=all_chunk_messages['decompressed_strings'].apply(lambda x: x.split('chunk_')[1].split('__')[0]).astype(int)
+    #     all_chunk_messages.sort_values(['message_id','chunk_num'], inplace=True)
+    #     grouped_memo_data = all_chunk_messages[['decompressed_strings','message_id']].groupby('message_id').sum().copy()
+    #     def remove_chunks(text):
+    #         # Use regular expression to remove all occurrences of chunk_1__, chunk_2__, etc.
+    #         cleaned_text = re.sub(r'chunk_\d+__', '', text)
+    #         return cleaned_text
+    #     grouped_memo_data['cleaned_message']=grouped_memo_data['decompressed_strings'].apply(lambda x: remove_chunks(x))
+    #     grouped_pft_value = all_chunk_messages[['message_id','directional_pft']].groupby('message_id').sum()['directional_pft']
         
-        grouped_memo_data['PFT']=grouped_pft_value
-        last_slice = all_chunk_messages.groupby('message_id').last().copy()
+    #     grouped_memo_data['PFT']=grouped_pft_value
+    #     last_slice = all_chunk_messages.groupby('message_id').last().copy()
         
-        grouped_memo_data['datetime']=last_slice['datetime']
-        grouped_memo_data['hash']=last_slice['hash']
-        grouped_memo_data['message_type']= last_slice['message_type']
-        grouped_memo_data['destination']= last_slice['destination']
-        grouped_memo_data['account']= last_slice['account']
-        return grouped_memo_data
+    #     grouped_memo_data['datetime']=last_slice['datetime']
+    #     grouped_memo_data['hash']=last_slice['hash']
+    #     grouped_memo_data['message_type']= last_slice['message_type']
+    #     grouped_memo_data['destination']= last_slice['destination']
+    #     grouped_memo_data['account']= last_slice['account']
+    #     return grouped_memo_data
 
     # TODO: Consider replacing with send_memo (reference pftpyclient/task_manager/basic_tasks.py)
     def send_pft_compressed_message_based_on_wallet_seed(self, wallet_seed, user_name, destination,memo, compress, message_id):

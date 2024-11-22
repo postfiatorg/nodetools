@@ -1,5 +1,5 @@
 from sqlalchemy import create_engine, text
-from nodetools.utilities.settings import CredentialManager
+from nodetools.utilities.credentials import CredentialManager
 import getpass
 
 def init_database():

@@ -1,7 +1,7 @@
 import pandas as pd
 import sqlalchemy
 import datetime
-from nodetools.utilities import settings as gset
+from nodetools.utilities import credentials as gset
 import numpy as np
 import psycopg2
 import os
@@ -10,17 +10,18 @@ import json
 import asyncio
 import nest_asyncio
 from nodetools.utilities.db_manager import DBConnectionManager
+from nodetools.utilities.credentials import CredentialManager
 import uuid
 
 class OpenAIRequestTool:
-    def __init__(self, pw_map):
-        self.pw_map = pw_map
-        self.client = OpenAI(api_key=self.pw_map['openai'])
-        self.async_client = AsyncOpenAI(api_key=self.pw_map['openai'])
+    def __init__(self):
+        cred_manager = CredentialManager()
+        self.client = OpenAI(api_key=cred_manager.get_credential('openai'))
+        self.async_client = AsyncOpenAI(api_key=cred_manager.get_credential('openai'))
         primary_model_string = '''
         The primary models for OpenAI is currently gpt-4o''' 
         print(primary_model_string)
-        self.db_connection_manager = DBConnectionManager(pw_map=self.pw_map)
+        self.db_connection_manager = DBConnectionManager()
 
     def run_chat_completion_demo(self):
         '''Demo run of chat completion with gpt-4-1106-preview model'''

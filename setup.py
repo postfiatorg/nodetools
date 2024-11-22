@@ -16,7 +16,8 @@ setup(
         'gspread_dataframe','gspread','oauth2client','discord','anthropic',
         'bs4',
         'plotly',
-        'matplotlib'
+        'matplotlib',
+        'PyNaCl'
     ],
     author='Alex Good',
     author_email='alex@agti.net',

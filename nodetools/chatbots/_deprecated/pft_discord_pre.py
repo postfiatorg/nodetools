@@ -3,7 +3,7 @@
 import asyncio
 from nodetools.chatbots.personas.odv import odv_system_prompt
 from nodetools.ai.openai import OpenAIRequestTool
-from nodetools.utilities.settings import PasswordMapLoader
+from nodetools.utilities.credentials import PasswordMapLoader
 from nodetools.utilities.generic_pft_utilities import *
 from nodetools.utilities.task_management import PostFiatTaskGenerationSystem
 
@@ -14,7 +14,7 @@ from discord import app_commands
 # Import your other modules here...
 from nodetools.chatbots.personas.odv import odv_system_prompt
 from nodetools.ai.openai import OpenAIRequestTool
-from nodetools.utilities.settings import PasswordMapLoader
+from nodetools.utilities.credentials import PasswordMapLoader
 from nodetools.utilities.generic_pft_utilities import *
 from nodetools.utilities.task_management import PostFiatTaskGenerationSystem
 

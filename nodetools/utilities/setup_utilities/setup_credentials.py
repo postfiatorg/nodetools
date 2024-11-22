@@ -1,10 +1,7 @@
-from nodetools.utilities.settings import CredentialManager
+from nodetools.utilities.credentials import CredentialManager
 import getpass
 
-def setup_credentials():
-    # Initialize the credential manager
-    cm = CredentialManager()
-    
+def setup_credentials():    
     # Define the required credentials
     required_credentials = {
         'discordbot_secret': 'Your Discord Bot Token',
@@ -34,6 +31,12 @@ def setup_credentials():
     
     print("\nNow you'll need to enter each required credential.")
     print("These will be encrypted using your password.\n")
+
+    # Initialize the credential manager
+    cm : CredentialManager = CredentialManager(encryption_password)
+
+    # Collect credentials into a dictionary
+    credentials_dict = {}
     
     # Collect and encrypt each credential
     for cred_name, description in required_credentials.items():
@@ -48,12 +51,7 @@ def setup_credentials():
             credential_value = input(f"Enter value for {cred_name}: ").strip()
             if credential_value:
                 try:
-                    cm.enter_and_encrypt_credential__variable_based(
-                        credential_ref=cred_name,
-                        pw_data=credential_value,
-                        pw_encryptor=encryption_password
-                    )
-                    print(f"Successfully stored {cred_name}")
+                    credentials_dict[cred_name] = credential_value
                     break
                 except Exception as e:
                     print(f"Error storing credential: {str(e)}")
@@ -63,10 +61,15 @@ def setup_credentials():
             else:
                 print("Credential cannot be empty. Please try again.")
     
-    print("\nCredential setup complete!")
-    print(f"Credentials stored in: {cm.credential_file_path}")
-    print("\nIMPORTANT: Keep your encryption password safe. You'll need it to run the bot.")
-    print("When starting the bot, enter this same encryption password when prompted.")
+    # Store all credentials at once
+    try:
+        cm.enter_and_encrypt_credential(credentials_dict)
+        print("\nCredential setup complete!")
+        print(f"Credentials stored in: {cm.db_path}")
+        print("\nIMPORTANT: Keep your encryption password safe. You'll need it to run the bot.")
+        print("When starting the bot, enter this same encryption password when prompted.")
+    except Exception as e:
+        print(f"\nError storing credentials: {str(e)}")
 
 if __name__ == "__main__":
     setup_credentials()

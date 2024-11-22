@@ -3,20 +3,12 @@ from nodetools.ai.openai import OpenAIRequestTool
 from nodetools.prompts import task_generation
 from nodetools.prompts.initiation_rite import phase_4__system
 from nodetools.prompts.initiation_rite import phase_4__user
-from nodetools.ai.openai import OpenAIRequestTool
 from nodetools.prompts.task_generation import phase_1_b__user
 from nodetools.prompts.task_generation import phase_1_b__system
 from nodetools.prompts.task_generation import phase_1_b__user
 from nodetools.prompts.task_generation import phase_1_b__system
-import xrpl
-from xrpl.clients import JsonRpcClient
-from xrpl.models.requests import AccountInfo, AccountLines
-#password_map_loader = PasswordMapLoader()
 import numpy as np
 from nodetools.prompts.task_generation import o1_1_shot
-from xrpl.wallet import Wallet
-from xrpl.clients import JsonRpcClient
-from xrpl.core.keypairs import derive_classic_address
 from nodetools.utilities.generic_pft_utilities import *
 from nodetools.prompts.rewards_manager import verification_user_prompt
 from nodetools.prompts.rewards_manager import verification_system_prompt
@@ -29,29 +21,22 @@ import pytz
 import pandas as pd
 import matplotlib.pyplot as plt
 from matplotlib.dates import DateFormatter
-import pandas as pd
-import matplotlib.pyplot as plt
-from matplotlib.dates import DateFormatter
-import matplotlib.ticker as ticker
-
-import pandas as pd
-import matplotlib.pyplot as plt
-from matplotlib.dates import DateFormatter
 import matplotlib.ticker as ticker
 import nodetools.utilities.constants as constants
+from nodetools.utilities.credentials import CredentialManager
 
 class PostFiatTaskGenerationSystem:
-    def __init__(self,pw_map):
-        self.pw_map = pw_map
+    def __init__(self):
+        self.cred_manager = CredentialManager()
         self.default_model = constants.DEFAULT_OPEN_AI_MODEL
-        self.openai_request_tool= OpenAIRequestTool(pw_map=self.pw_map)
-        self.generic_pft_utilities = GenericPFTUtilities(pw_map=self.pw_map, node_name=constants.DEFAULT_NODE_NAME)
-        self.node_address = constants.DEFAULT_NODE_ADDRESS
-        self.node_seed = self.pw_map['postfiatfoundation__v1xrpsecret']
-        self.node_wallet = self.generic_pft_utilities.spawn_user_wallet_from_seed(seed=self.node_seed)
+        self.openai_request_tool= OpenAIRequestTool()
+        self.generic_pft_utilities = GenericPFTUtilities(node_name=constants.DEFAULT_NODE_NAME)
+        self.node_address = constants.DEFAULT_NODE_ADDRESS  # TODO: consider deriving this from the seed
+        self.node_wallet = self.generic_pft_utilities.spawn_user_wallet_from_seed(
+            self.cred_manager.get_credential('postfiatfoundation__v1xrpsecret')
+        )
         self.stop_threads = False
-        self.db_connection_manager = DBConnectionManager(pw_map=pw_map)
-        # self.open_ai_request_tool = OpenAIRequestTool(pw_map=self.pw_map)
+        self.db_connection_manager = DBConnectionManager()
 
     def output_initiation_rite_df(self, all_node_memo_transactions):
         """
@@ -162,6 +147,7 @@ class PostFiatTaskGenerationSystem:
         postfiat_request_cue['requires_work']=postfiat_request_cue['most_recent_status'].apply(lambda x: 'REQUEST_POST_FIAT' in x)
         return postfiat_request_cue
 
+    # TODO: Rename this to discord_server__initiation_rite and refactor
     def discover_server__initiation_rite(self, account_seed, initiation_rite, google_doc_link, username):
         """ EXAMPLE:
             account_seed = 'sEdSqchDCHj29NoRhcsZ8EQfbAkbBJ2'
@@ -170,7 +156,9 @@ class PostFiatTaskGenerationSystem:
             username = 'funkywallet'
         """ 
         error_string = '' 
-        foundation_wallet = self.generic_pft_utilities.spawn_user_wallet_from_seed(seed=self.node_seed)
+        foundation_wallet = self.generic_pft_utilities.spawn_user_wallet_from_seed(
+            self.cred_manager.get_credential('postfiatfoundation__v1xrpsecret')
+        )
         wallet = self.generic_pft_utilities.spawn_user_wallet_from_seed(seed=account_seed)
         account_address = wallet.classic_address
         all_holders = list(self.generic_pft_utilities.output_post_fiat_holder_df()['account'].unique())
@@ -611,7 +599,9 @@ class PostFiatTaskGenerationSystem:
                         memo_to_send = row['memo_to_send']
                     
                     # Send task
-                    node_wallet = self.generic_pft_utilities.spawn_user_wallet_from_seed(seed=self.node_seed)
+                    node_wallet = self.generic_pft_utilities.spawn_user_wallet_from_seed(
+                        seed=self.cred_manager.get_credential('postfiatfoundation__v1xrpsecret')
+                    )
                     self.generic_pft_utilities.send_PFT_with_info(
                         sending_wallet=node_wallet,
                         amount=1,
@@ -669,7 +659,9 @@ class PostFiatTaskGenerationSystem:
                 memo_to_send=slicex.loc['memo_to_send']
                 pft_user_account = slicex.loc['user_account']
                 destination_address = slicex.loc['user_account']
-                node_wallet = self.generic_pft_utilities.spawn_user_wallet_from_seed(seed=self.node_seed)
+                node_wallet = self.generic_pft_utilities.spawn_user_wallet_from_seed(
+                    seed=self.cred_manager.get_credential('postfiatfoundation__v1xrpsecret')
+                )
                 self.generic_pft_utilities.send_PFT_with_info(sending_wallet=node_wallet, amount=1, 
                                                             memo=memo_to_send, destination_address=destination_address)
 
@@ -837,7 +829,9 @@ class PostFiatTaskGenerationSystem:
                 reward_to_dispatch = int(np.abs(slicex.loc['reward_to_dispatch']))
                 reward_to_dispatch = int(np.min([reward_to_dispatch,1200]))
                 reward_to_dispatch = int(np.max([reward_to_dispatch,1]))
-                node_wallet = self.generic_pft_utilities.spawn_user_wallet_from_seed(seed=self.node_seed)
+                node_wallet = self.generic_pft_utilities.spawn_user_wallet_from_seed(
+                    seed=self.cred_manager.get_credential('postfiatfoundation__v1xrpsecret')
+                )
                 self.generic_pft_utilities.send_PFT_with_info(sending_wallet=node_wallet, amount=reward_to_dispatch, 
                                                             memo=memo_to_send, destination_address=destination_address)
 

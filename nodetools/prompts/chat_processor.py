@@ -1,17 +1,16 @@
-#'claude-3-5-sonnet-20241022'
 # THIS IS THE FOUNDATION HW r46SUhCzyGE4KwBnKQ6LmDmJcECCqdKy4q
 from nodetools.utilities.generic_pft_utilities import GenericPFTUtilities
-from nodetools.utilities.task_management import PostFiatTaskGenerationSystem
 from nodetools.ai.openai import OpenAIRequestTool
 from nodetools.chatbots.personas.odv import odv_system_prompt
 import time
 import nodetools.utilities.constants as constants
+from nodetools.utilities.credentials import CredentialManager
 
 class ChatProcessor:
-    def __init__(self,pw_map):
-        self.pw_map = pw_map
-        self.generic_pft_utilities = GenericPFTUtilities(pw_map=pw_map, node_name=constants.DEFAULT_NODE_NAME)
-        self.open_ai_request_tool= OpenAIRequestTool(pw_map=pw_map)
+    def __init__(self):
+        self.cred_manager = CredentialManager()
+        self.generic_pft_utilities = GenericPFTUtilities(node_name=constants.DEFAULT_NODE_NAME)
+        self.open_ai_request_tool= OpenAIRequestTool()
 
     def process_chat_cue(self):
         account_address=constants.TESTNET_REMEMBRANCER_ADDRESS if constants.USE_TESTNET else constants.REMEMBRANCER_ADDRESS
@@ -70,11 +69,14 @@ class ChatProcessor:
             preview_req= self.open_ai_request_tool.o1_preview_simulated_request(system_prompt=system_prompt, user_prompt=user_prompt)
             op_response = """ODV SYSTEM: """+preview_req.choices[0].message.content
             message_id = mwork+'_response'
-            self.generic_pft_utilities.send_pft_compressed_message_based_on_wallet_seed(wallet_seed=self.pw_map['postfiatremembrancer__v1xrpsecret'], user_name='odv',
+            self.generic_pft_utilities.send_pft_compressed_message_based_on_wallet_seed(
+                wallet_seed=self.cred_manager.get_credential('postfiatremembrancer__v1xrpsecret'), 
+                user_name='odv',
                 destination=destination_account,
                 memo=op_response,
                 compress=True,
-                message_id=message_id)
+                message_id=message_id
+            )
 
     def process_chat_cue_continuously(self):
         i=0

@@ -7,12 +7,13 @@ import nest_asyncio
 from anthropic import AsyncAnthropic
 import time
 from asyncio import Semaphore
+from nodetools.utilities.credentials import CredentialManager
 
 class AnthropicTool:
-    def __init__(self, pw_map, max_concurrent_requests=2, requests_per_minute=30):
-        self.pw_map = pw_map
-        self.client = anthropic.Anthropic(api_key=self.pw_map['anthropic'])
-        self.async_client = AsyncAnthropic(api_key=self.pw_map['anthropic'])
+    def __init__(self, max_concurrent_requests=2, requests_per_minute=30):
+        cred_manager = CredentialManager()
+        self.client = anthropic.Anthropic(api_key=cred_manager.get_credential('anthropic'))
+        self.async_client = AsyncAnthropic(api_key=cred_manager.get_credential('anthropic'))
         self.default_model = 'claude-3-5-sonnet-20241022'
         self.semaphore = Semaphore(max_concurrent_requests)
         self.rate_limit = requests_per_minute
@@ -53,7 +54,6 @@ class AnthropicTool:
         temperature=0,
         system="You are an expert task manager who is figuring out what to work on ",
         """
-        #client = anthropic.Anthropic(api_key=PW_MAP['claude_key'])
         messages=[
                 {
                     "role": "user",
