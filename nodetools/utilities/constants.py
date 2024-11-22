@@ -1,5 +1,6 @@
 
 USE_TESTNET = True
+USE_LOCAL_RIPPLED = False
 
 # MAINNET CONSTANTS
 DEFAULT_NODE_NAME = 'postfiatfoundation'

@@ -487,7 +487,17 @@ class MyClient(discord.Client):
 
                 address = discord.ui.TextInput(label='Recipient Address')
                 amount = discord.ui.TextInput(label='Amount (in XRP)')
-                message = discord.ui.TextInput(label='Message', style=discord.TextStyle.long, required=False)
+                message = discord.ui.TextInput(
+                    label='Message', 
+                    style=discord.TextStyle.long, 
+                    required=False,
+                    placeholder='Insert an optional message'
+                )
+                destination_tag = discord.ui.TextInput(
+                    label='Destination Tag',
+                    required=False,
+                    placeholder='Required for most exchanges'
+                )
 
                 async def on_submit(self, interaction: discord.Interaction):
                     await interaction.response.defer(ephemeral=True)
@@ -495,6 +505,7 @@ class MyClient(discord.Client):
                     destination_address = self.address.value
                     amount = self.amount.value
                     message = self.message.value
+                    destination_tag = self.destination_tag.value
 
                     # Create the memo
                     memo = generic_pft_utilities.construct_standardized_xrpl_memo(
@@ -504,12 +515,16 @@ class MyClient(discord.Client):
                     )
 
                     try:
+                        # Convert destination_tag to integer if it exists
+                        dt = int(destination_tag) if destination_tag else None
+
                         # Call the send_xrp_with_info__seed_based function
                         response = generic_pft_utilities.send_xrp_with_info__seed_based(
                             wallet_seed=self.seed,
                             amount=amount,
                             destination=destination_address,
-                            memo=memo
+                            memo=memo,
+                            destination_tag=dt
                         )
 
                         # Extract transaction information using the improved function
@@ -520,6 +535,8 @@ class MyClient(discord.Client):
                         embed.add_field(name="Details", value=transaction_info['clean_string'], inline=False)
                         
                         # Add additional fields if available
+                        if dt:
+                            embed.add_field(name="Destination Tag", value=str(dt), inline=False)
                         if 'hash' in transaction_info:
                             embed.add_field(name="Transaction Hash", value=transaction_info['hash'], inline=False)
                         if 'xrpl_explorer_url' in transaction_info:
@@ -1217,16 +1234,18 @@ Note: XRP wallets need 15 XRP to transact.
             print(f"Error: Channel with ID {CHANNEL_ID} not found.")
             return
 
-        try:
-            # Call the function to get new messages and update the database
-            messages_to_send = post_fiat_task_generation_system.output_messages_to_send_and_write_incremental_info_to_foundation_discord_db()
+        # try:
+        # Call the function to get new messages and update the database
+        messages_to_send = post_fiat_task_generation_system.output_messages_to_send_and_write_incremental_info_to_foundation_discord_db()
 
-            # Send each new message to the Discord channel
-            for message in messages_to_send:
-                await channel.send(message)
+        print(f"Sending {len(messages_to_send)} messages to the Discord channel")  # debugging
 
-        except Exception as e:
-            print(f"An error occurred while checking for new transactions: {str(e)}")
+        # Send each new message to the Discord channel
+        for message in messages_to_send:
+            await channel.send(message)
+
+        # except Exception as e:
+        #     print(f"An error occurred while checking for new transactions: {str(e)}")
 
     async def transaction_checker(self):
         await self.wait_until_ready()

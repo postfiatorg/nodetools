@@ -1,53 +1,30 @@
-import xrpl
 import binascii
 import datetime 
 import random
-from xrpl.models.transactions import Payment, Memo
-from xrpl.models.requests import AccountTx
 import time
 import string
-import asyncio
 import nest_asyncio
 import pandas as pd
 import numpy as np
-import binascii
 import re
 import json
 import threading
-import time
-import string
 nest_asyncio.apply()
 import requests
-import zlib
 import base64
 import brotli
-import requests
-import requests
-from bs4 import BeautifulSoup
-from xrpl.wallet import Wallet
-from xrpl.clients import JsonRpcClient
-from xrpl.core.keypairs import derive_classic_address
 import hashlib
-import json
-import time
 import os
-from nodetools.utilities.db_manager import DBConnectionManager
 import sqlalchemy
 import xrpl
-from xrpl.clients import JsonRpcClient
-from xrpl.models.requests import AccountInfo, AccountLines
-#password_map_loader = PasswordMapLoader()
-import os
-import plotly.graph_objects as go
-
+from xrpl.models.transactions import Memo
 from xrpl.wallet import Wallet
 from xrpl.clients import JsonRpcClient
-from xrpl.core.keypairs import derive_classic_address
+from xrpl.models.requests import AccountInfo, AccountLines, AccountTx
 from nodetools.ai.openai import OpenAIRequestTool
+from nodetools.utilities.db_manager import DBConnectionManager
 import nodetools.utilities.constants as constants
-from nodetools.utilities.credentials import CredentialManager
-
-USE_LOCAL_RIPPLED = False
+from decimal import Decimal
 
 # TODO: Add loguru as dependency and use it for all logging
 
@@ -55,7 +32,7 @@ class GenericPFTUtilities:
     def __init__(self, node_name=constants.DEFAULT_NODE_NAME):
         self.pft_issuer = constants.ISSUER_ADDRESS if not constants.USE_TESTNET else constants.TESTNET_ISSUER_ADDRESS
         self.public_rpc_url = constants.MAINNET_URL if not constants.USE_TESTNET else constants.TESTNET_URL
-        self.local_rippled_url = "http://127.0.0.1:5005" if USE_LOCAL_RIPPLED else self.public_rpc_url  # Alex's local rippled node
+        self.local_rippled_url = "http://127.0.0.1:5005" if constants.USE_LOCAL_RIPPLED else self.public_rpc_url  # Alex's local rippled node
         self.node_name = node_name
         ## NOTE THIS IS THE NODE ADDRESS FOR THE POST FIAT NODE
         self.node_address=constants.DEFAULT_NODE_ADDRESS if not constants.USE_TESTNET else constants.TESTNET_DEFAULT_NODE_ADDRESS
@@ -268,15 +245,16 @@ class GenericPFTUtilities:
 
         return response
 
-    def send_xrp_with_info__seed_based(self,wallet_seed, amount, destination, memo):
+    def send_xrp_with_info__seed_based(self,wallet_seed, amount, destination, memo, destination_tag=None):
         # TODO: Replace with send_xrp (reference pftpyclient/task_manager/basic_tasks.py)
         sending_wallet =sending_wallet = xrpl.wallet.Wallet.from_seed(wallet_seed)
         client = xrpl.clients.JsonRpcClient(self.local_rippled_url)
         payment = xrpl.models.transactions.Payment(
             account=sending_wallet.address,
-            amount=xrpl.utils.xrp_to_drops(int(amount)),
+            amount=xrpl.utils.xrp_to_drops(Decimal(amount)),
             destination=destination,
             memos=[memo],
+            destination_tag=destination_tag
         )
         try:    
             response = xrpl.transaction.submit_and_wait(payment, client, sending_wallet)    
@@ -963,10 +941,18 @@ class GenericPFTUtilities:
                         
                         # Filter out rows with existing hashes
                         new_rows = chunk[~chunk['hash'].isin(existing_hashes)]
+
+                        print(f"Inserting {len(new_rows)} new rows")  # debugging
                         
                         if not new_rows.empty:
                             rows_inserted = len(new_rows)
-                            new_rows.to_sql('postfiat_tx_cache', conn, if_exists='append', index=False)
+                            new_rows.to_sql(
+                                'postfiat_tx_cache', 
+                                conn, 
+                                if_exists='append', 
+                                index=False,
+                                method='multi'
+                            )
                             total_rows_inserted += rows_inserted
                             print(f"Inserted {rows_inserted} new rows.")
                     
