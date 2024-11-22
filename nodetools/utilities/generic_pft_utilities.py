@@ -25,22 +25,33 @@ from nodetools.ai.openai import OpenAIRequestTool
 from nodetools.utilities.db_manager import DBConnectionManager
 import nodetools.utilities.constants as constants
 from decimal import Decimal
+import traceback
 
 # TODO: Add loguru as dependency and use it for all logging
 
 class GenericPFTUtilities:
+    _instance = None
+    _initialized = False
+
+    def __new__(cls, *args, **kwargs):
+        if cls._instance is None:
+            cls._instance = super().__new__(cls)
+        return cls._instance
+
     def __init__(self, node_name=constants.DEFAULT_NODE_NAME):
-        self.pft_issuer = constants.ISSUER_ADDRESS if not constants.USE_TESTNET else constants.TESTNET_ISSUER_ADDRESS
-        self.public_rpc_url = constants.MAINNET_URL if not constants.USE_TESTNET else constants.TESTNET_URL
-        self.local_rippled_url = "http://127.0.0.1:5005" if constants.USE_LOCAL_RIPPLED else self.public_rpc_url  # Alex's local rippled node
-        self.node_name = node_name
-        ## NOTE THIS IS THE NODE ADDRESS FOR THE POST FIAT NODE
-        self.node_address=constants.DEFAULT_NODE_ADDRESS if not constants.USE_TESTNET else constants.TESTNET_DEFAULT_NODE_ADDRESS
-        self.db_connection_manager = DBConnectionManager()
-        #return binascii.hexlify(string.encode()).decode()
-        self.establish_post_fiat_tx_cache_as_hash_unique()
-        self.post_fiat_holder_df = self.output_post_fiat_holder_df()
-        self.open_ai_request_tool=OpenAIRequestTool()
+        if not self.__class__._initialized:
+            self.pft_issuer = constants.ISSUER_ADDRESS if not constants.USE_TESTNET else constants.TESTNET_ISSUER_ADDRESS
+            self.public_rpc_url = constants.MAINNET_URL if not constants.USE_TESTNET else constants.TESTNET_URL
+            self.local_rippled_url = "http://127.0.0.1:5005" if constants.USE_LOCAL_RIPPLED else self.public_rpc_url  # Alex's local rippled node
+            self.node_name = node_name
+            ## NOTE THIS IS THE NODE ADDRESS FOR THE POST FIAT NODE
+            self.node_address=constants.DEFAULT_NODE_ADDRESS if not constants.USE_TESTNET else constants.TESTNET_DEFAULT_NODE_ADDRESS
+            self.db_connection_manager = DBConnectionManager()
+            self.establish_post_fiat_tx_cache_as_hash_unique()
+            self.post_fiat_holder_df = self.output_post_fiat_holder_df()  # TODO: This isn't being used
+            self.open_ai_request_tool = OpenAIRequestTool()
+            self.__class__._initialized = True
+            print("---Initialized GenericPFTUtilities---")
 
     def convert_ripple_timestamp_to_datetime(self, ripple_timestamp = 768602652):
         ripple_epoch_offset = 946684800
@@ -65,8 +76,11 @@ class GenericPFTUtilities:
         the view of the issuer account so balances appear negative so the pft_holdings 
         are reverse signed.
         """
+        # Debugging
+        caller = traceback.extract_stack()[-2]  # Get the caller's info
+        print(f"output_post_fiat_holder_df called from {caller.filename}:{caller.lineno} in {caller.name}")
+
         client = xrpl.clients.JsonRpcClient(self.local_rippled_url)
-        print("Getting all accounts holding PFT tokens...")
         response = client.request(xrpl.models.requests.AccountLines(
             account=self.pft_issuer,
             ledger_index="validated",
@@ -263,11 +277,10 @@ class GenericPFTUtilities:
     
         return response
 
-    def spawn_user_wallet_from_seed(self, seed):
-        # TODO: Replace with spawn_user_wallet (reference pftpyclient/task_manager/basic_tasks.py)
-        """ outputs user wallet initialized from seed"""
+    def spawn_wallet_from_seed(self, seed):
+        """ outputs wallet initialized from seed"""
         wallet = xrpl.wallet.Wallet.from_seed(seed)
-        print(f'User wallet classic address is {wallet.address}')
+        print(f'Spawned wallet with address {wallet.address}')
         return wallet
     
     def test_url_reliability(self, user_wallet, destination_address):
@@ -438,26 +451,6 @@ class GenericPFTUtilities:
         
         print(f"Longest list of transactions: {len(longest_transactions)} transactions")
         return longest_transactions
-    
-    # TODO: Rename to get_pft_holder_df
-    def output_post_fiat_holder_df(self):
-        """ This function outputs a detail of all accounts holding PFT tokens
-        with a float of their balances as pft_holdings. note this is from
-        the view of the issuer account so balances appear negative so the pft_holdings 
-        are reverse signed.
-        """
-        client = xrpl.clients.JsonRpcClient(self.local_rippled_url)
-        print("Getting all accounts holding PFT tokens...")
-        response = client.request(xrpl.models.requests.AccountLines(
-            account=self.pft_issuer,
-            ledger_index="validated",
-            peer=None,
-            limit=None))
-        full_post_fiat_holder_df = pd.DataFrame(response.result)
-        for xfield in ['account','balance','currency','limit_peer']:
-            full_post_fiat_holder_df[xfield] = full_post_fiat_holder_df['lines'].apply(lambda x: x[xfield])
-        full_post_fiat_holder_df['pft_holdings']=full_post_fiat_holder_df['balance'].astype(float)*-1
-        return full_post_fiat_holder_df
         
     def get_memo_detail_df_for_account(self,account_address,pft_only=True):
         # TODO: Refactor, using get_memos_df as reference (pftpyclient/task_manager/basic_tasks.py)
@@ -516,7 +509,7 @@ class GenericPFTUtilities:
         Is based on a user spawned wallet and sends 1 PFT per chunk
         user_name = 'spm_typhus',full_text = big_string, destination_address='rKZDcpzRE5hxPUvTQ9S3y2aLBUUTECr1vN'"""     
         
-        wallet = self.spawn_user_wallet_from_seed(wallet_seed)
+        wallet = self.spawn_wallet_from_seed(wallet_seed)
         task_id = 'chunkm__'+self.generate_random_utf8_friendly_hash(6)
         
         all_chunks = self.split_text_into_chunks(full_text)
@@ -600,7 +593,7 @@ class GenericPFTUtilities:
         '''
         """
         #compress= True
-        wallet = self.spawn_user_wallet_from_seed(wallet_seed)
+        wallet = self.spawn_wallet_from_seed(wallet_seed)
         if message_id is None:
             message_id = self.generate_custom_id()
         if compress:
@@ -941,8 +934,6 @@ class GenericPFTUtilities:
                         
                         # Filter out rows with existing hashes
                         new_rows = chunk[~chunk['hash'].isin(existing_hashes)]
-
-                        print(f"Inserting {len(new_rows)} new rows")  # debugging
                         
                         if not new_rows.empty:
                             rows_inserted = len(new_rows)
@@ -983,6 +974,8 @@ class GenericPFTUtilities:
             self.write_full_transaction_history_for_account(account_address=xholder, public=public)
 
     def run_transaction_history_updates(self):
+        # TODO: This results in race conditions very often
+        # TODO: Consider refactoring
         """
         Runs transaction history updates in separate threads.
         This function creates two threads:
@@ -1555,7 +1548,7 @@ PFT WEEKLY AVG:   {weekly_pft_reward_avg}
         message = 'this is the second test of a discord message'
         amount = 2
         """
-        wallet = self.spawn_user_wallet_from_seed(seed)
+        wallet = self.spawn_wallet_from_seed(seed)
         memo = self.construct_standardized_xrpl_memo(memo_data=message, memo_type='DISCORD_SERVER', memo_format=user_name)
         action_response = self.send_PFT_with_info(sending_wallet=wallet,
             amount=amount,

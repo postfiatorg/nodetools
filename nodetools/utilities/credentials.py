@@ -38,8 +38,8 @@ class SecretType(Enum):
         return mapping[secret_type]
 
 class CredentialManager:
-    _instance = None
-    _initialized = False
+    _instance = None  # ensures we only have one instance
+    _initialized = False  # ensures we only initialize once
 
     def __new__(cls, password=None):
         if cls._instance is None:

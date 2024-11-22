@@ -1,10 +1,5 @@
 import pandas as pd
-import sqlalchemy
 import datetime
-from nodetools.utilities import credentials as gset
-import numpy as np
-import psycopg2
-import os
 from openai import OpenAI, AsyncOpenAI
 import json
 import asyncio
@@ -12,16 +7,26 @@ import nest_asyncio
 from nodetools.utilities.db_manager import DBConnectionManager
 from nodetools.utilities.credentials import CredentialManager
 import uuid
+import nodetools.utilities.constants as constants
 
 class OpenAIRequestTool:
+    _instance = None
+    _initialized = False
+
+    def __new__(cls, *args, **kwargs):
+        if cls._instance is None:
+            cls._instance = super().__new__(cls)
+        return cls._instance
+
     def __init__(self):
-        cred_manager = CredentialManager()
-        self.client = OpenAI(api_key=cred_manager.get_credential('openai'))
-        self.async_client = AsyncOpenAI(api_key=cred_manager.get_credential('openai'))
-        primary_model_string = '''
-        The primary models for OpenAI is currently gpt-4o''' 
-        print(primary_model_string)
-        self.db_connection_manager = DBConnectionManager()
+        if not self.__class__._initialized:
+            cred_manager = CredentialManager()
+            self.client = OpenAI(api_key=cred_manager.get_credential('openai'))
+            self.async_client = AsyncOpenAI(api_key=cred_manager.get_credential('openai'))
+            self.db_connection_manager = DBConnectionManager()
+            self.__class__._initialized = True
+            print(f"---Initialized OpenAIRequestTool---")
+            print(f"The primary model for OpenAI is currently {constants.DEFAULT_OPEN_AI_MODEL}")
 
     def run_chat_completion_demo(self):
         '''Demo run of chat completion with gpt-4-1106-preview model'''

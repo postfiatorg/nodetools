@@ -30,9 +30,9 @@ class PostFiatTaskGenerationSystem:
         self.cred_manager = CredentialManager()
         self.default_model = constants.DEFAULT_OPEN_AI_MODEL
         self.openai_request_tool= OpenAIRequestTool()
-        self.generic_pft_utilities = GenericPFTUtilities(node_name=constants.DEFAULT_NODE_NAME)
+        self.generic_pft_utilities = GenericPFTUtilities()
         self.node_address = constants.DEFAULT_NODE_ADDRESS  # TODO: consider deriving this from the seed
-        self.node_wallet = self.generic_pft_utilities.spawn_user_wallet_from_seed(
+        self.node_wallet = self.generic_pft_utilities.spawn_wallet_from_seed(
             self.cred_manager.get_credential('postfiatfoundation__v1xrpsecret')
         )
         self.stop_threads = False
@@ -156,10 +156,10 @@ class PostFiatTaskGenerationSystem:
             username = 'funkywallet'
         """ 
         error_string = '' 
-        foundation_wallet = self.generic_pft_utilities.spawn_user_wallet_from_seed(
+        foundation_wallet = self.generic_pft_utilities.spawn_wallet_from_seed(
             self.cred_manager.get_credential('postfiatfoundation__v1xrpsecret')
         )
-        wallet = self.generic_pft_utilities.spawn_user_wallet_from_seed(seed=account_seed)
+        wallet = self.generic_pft_utilities.spawn_wallet_from_seed(seed=account_seed)
         account_address = wallet.classic_address
         all_holders = list(self.generic_pft_utilities.output_post_fiat_holder_df()['account'].unique())
         # step 1 -- verify that the wallet has a trust line and if it does not establish it 
@@ -276,7 +276,7 @@ class PostFiatTaskGenerationSystem:
         xmemo_to_send = self.generic_pft_utilities.construct_standardized_xrpl_memo(memo_data=full_memo_string, 
                                                                     memo_type=memo_type,
                                                                     memo_format=memo_format)
-        sending_wallet = self.generic_pft_utilities.spawn_user_wallet_from_seed(seed)
+        sending_wallet = self.generic_pft_utilities.spawn_wallet_from_seed(seed)
         op_response = self.generic_pft_utilities.send_PFT_with_info(sending_wallet=sending_wallet,
             amount=1,
             memo=xmemo_to_send,
@@ -291,7 +291,7 @@ class PostFiatTaskGenerationSystem:
         task_id_to_accept = '2024-08-17_17:57__TO94'
         acceptance_string = "I will get this done as soon as I am able" 
         """
-        wallet= self.generic_pft_utilities.spawn_user_wallet_from_seed(seed=seed_to_work)
+        wallet= self.generic_pft_utilities.spawn_wallet_from_seed(seed=seed_to_work)
         wallet_address = wallet.classic_address
         all_wallet_transactions = self.generic_pft_utilities.get_memo_detail_df_for_account(wallet_address).copy()
         pf_df = self.generic_pft_utilities.convert_all_account_info_into_outstanding_task_df(account_memo_detail_df=all_wallet_transactions)
@@ -316,7 +316,7 @@ class PostFiatTaskGenerationSystem:
         task_id_to_accept = '2024-08-17_17:57__TO94'
         refusal_string = "I will get this done as soon as I am able" 
         """ 
-        wallet= self.generic_pft_utilities.spawn_user_wallet_from_seed(seed=seed_to_work)
+        wallet= self.generic_pft_utilities.spawn_wallet_from_seed(seed=seed_to_work)
         wallet_address = wallet.classic_address
         all_wallet_transactions = self.generic_pft_utilities.get_memo_detail_df_for_account(wallet_address).copy()
         pf_df = self.generic_pft_utilities.convert_all_account_info_into_outstanding_task_df(account_memo_detail_df=all_wallet_transactions)
@@ -341,7 +341,7 @@ class PostFiatTaskGenerationSystem:
         user_name = '.goodalexander'
         task_id_to_accept = '2024-07-01_15:11__SR11'
         """ 
-        wallet= self.generic_pft_utilities.spawn_user_wallet_from_seed(seed=seed_to_work)
+        wallet= self.generic_pft_utilities.spawn_wallet_from_seed(seed=seed_to_work)
         wallet_address = wallet.classic_address
         all_wallet_transactions = self.generic_pft_utilities.get_memo_detail_df_for_account(wallet_address).copy()
         pf_df = self.generic_pft_utilities.convert_all_account_info_into_outstanding_task_df(account_memo_detail_df=all_wallet_transactions)
@@ -370,7 +370,7 @@ class PostFiatTaskGenerationSystem:
         go on to the explorer and get the data. the data is also cached to postgres. an example is quite literally this task which
         is being submitted for verification then processed, so it is ipso facto proof """
         ''' 
-        wallet= self.generic_pft_utilities.spawn_user_wallet_from_seed(seed=seed_to_work)
+        wallet= self.generic_pft_utilities.spawn_wallet_from_seed(seed=seed_to_work)
         wallet_address = wallet.classic_address
         all_wallet_transactions = self.generic_pft_utilities.get_memo_detail_df_for_account(wallet_address).copy()
         #outstanding_verification.tail(1)['memo_data'].unique()
@@ -599,7 +599,7 @@ class PostFiatTaskGenerationSystem:
                         memo_to_send = row['memo_to_send']
                     
                     # Send task
-                    node_wallet = self.generic_pft_utilities.spawn_user_wallet_from_seed(
+                    node_wallet = self.generic_pft_utilities.spawn_wallet_from_seed(
                         seed=self.cred_manager.get_credential('postfiatfoundation__v1xrpsecret')
                     )
                     self.generic_pft_utilities.send_PFT_with_info(
@@ -659,7 +659,7 @@ class PostFiatTaskGenerationSystem:
                 memo_to_send=slicex.loc['memo_to_send']
                 pft_user_account = slicex.loc['user_account']
                 destination_address = slicex.loc['user_account']
-                node_wallet = self.generic_pft_utilities.spawn_user_wallet_from_seed(
+                node_wallet = self.generic_pft_utilities.spawn_wallet_from_seed(
                     seed=self.cred_manager.get_credential('postfiatfoundation__v1xrpsecret')
                 )
                 self.generic_pft_utilities.send_PFT_with_info(sending_wallet=node_wallet, amount=1, 
@@ -829,7 +829,7 @@ class PostFiatTaskGenerationSystem:
                 reward_to_dispatch = int(np.abs(slicex.loc['reward_to_dispatch']))
                 reward_to_dispatch = int(np.min([reward_to_dispatch,1200]))
                 reward_to_dispatch = int(np.max([reward_to_dispatch,1]))
-                node_wallet = self.generic_pft_utilities.spawn_user_wallet_from_seed(
+                node_wallet = self.generic_pft_utilities.spawn_wallet_from_seed(
                     seed=self.cred_manager.get_credential('postfiatfoundation__v1xrpsecret')
                 )
                 self.generic_pft_utilities.send_PFT_with_info(sending_wallet=node_wallet, amount=reward_to_dispatch, 

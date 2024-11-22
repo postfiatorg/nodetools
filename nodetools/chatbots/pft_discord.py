@@ -97,7 +97,7 @@ class MyClient(discord.Client):
             seed = self.user_seeds[user_id]
 
             # Fetch the tasks that are not yet accepted
-            wallet = generic_pft_utilities.spawn_user_wallet_from_seed(seed=seed)
+            wallet = generic_pft_utilities.spawn_wallet_from_seed(seed=seed)
             classic_address = wallet.classic_address
             all_node_memo_transactions = generic_pft_utilities.get_memo_detail_df_for_account(account_address=classic_address, pft_only=False).copy()
             pf_df = generic_pft_utilities.convert_all_account_info_into_outstanding_task_df(account_memo_detail_df=all_node_memo_transactions)
@@ -193,7 +193,7 @@ class MyClient(discord.Client):
             seed = self.user_seeds[user_id]
 
             # Fetch the tasks that are not yet accepted
-            wallet = generic_pft_utilities.spawn_user_wallet_from_seed(seed=seed)
+            wallet = generic_pft_utilities.spawn_wallet_from_seed(seed=seed)
             classic_address = wallet.classic_address
             all_node_memo_transactions = generic_pft_utilities.get_memo_detail_df_for_account(account_address=classic_address, pft_only=False).copy()
             pf_df = generic_pft_utilities.convert_all_account_info_into_outstanding_task_df(account_memo_detail_df=all_node_memo_transactions)
@@ -345,7 +345,7 @@ class MyClient(discord.Client):
                 return
 
             seed = self.user_seeds[user_id]
-            wallet = generic_pft_utilities.spawn_user_wallet_from_seed(seed)
+            wallet = generic_pft_utilities.spawn_wallet_from_seed(seed)
             wallet_address = wallet.classic_address
 
             # Defer the response since chart generation might take time
@@ -441,7 +441,7 @@ class MyClient(discord.Client):
                 return
 
             seed = self.user_seeds[user_id]
-            wallet = generic_pft_utilities.spawn_user_wallet_from_seed(seed)
+            wallet = generic_pft_utilities.spawn_wallet_from_seed(seed)
             wallet_address = wallet.classic_address
 
             # Defer the response to avoid timeout for longer operations
@@ -592,7 +592,7 @@ class MyClient(discord.Client):
             seed = self.user_seeds[user_id]
 
             # Step 2: Spawn the user's wallet and check the XRP balance
-            wallet = generic_pft_utilities.spawn_user_wallet_from_seed(seed)
+            wallet = generic_pft_utilities.spawn_wallet_from_seed(seed)
             wallet_address = wallet.classic_address
             xrp_balance = generic_pft_utilities.get_account_xrp_balance(account_address=wallet_address)
             if xrp_balance < 15:
@@ -708,7 +708,7 @@ class MyClient(discord.Client):
             seed = self.user_seeds[user_id]
 
             # Fetch the tasks that are accepted but not completed
-            wallet = generic_pft_utilities.spawn_user_wallet_from_seed(seed=seed)
+            wallet = generic_pft_utilities.spawn_wallet_from_seed(seed=seed)
             wallet_address = wallet.classic_address
             all_wallet_transactions = generic_pft_utilities.get_memo_detail_df_for_account(wallet_address).copy()
             pf_df = generic_pft_utilities.convert_all_account_info_into_outstanding_task_df(account_memo_detail_df=all_wallet_transactions)
@@ -915,7 +915,7 @@ Note: XRP wallets need 15 XRP to transact.
 
             try:
                 seed = self.user_seeds[user_id]
-                wallet = generic_pft_utilities.spawn_user_wallet_from_seed(seed)
+                wallet = generic_pft_utilities.spawn_wallet_from_seed(seed)
                 wallet_address = wallet.classic_address
 
                 # Get account info
@@ -981,7 +981,7 @@ Note: XRP wallets need 15 XRP to transact.
                 return
 
             seed = self.user_seeds[user_id]
-            wallet = generic_pft_utilities.spawn_user_wallet_from_seed(seed)
+            wallet = generic_pft_utilities.spawn_wallet_from_seed(seed)
             wallet_address = wallet.classic_address
 
             # Defer the response to avoid timeout for longer operations
@@ -1030,7 +1030,7 @@ Note: XRP wallets need 15 XRP to transact.
             seed = self.user_seeds[user_id]
 
             # Fetch the tasks that are in the verification queue
-            wallet = generic_pft_utilities.spawn_user_wallet_from_seed(seed=seed)
+            wallet = generic_pft_utilities.spawn_wallet_from_seed(seed=seed)
             wallet_address = wallet.classic_address
             all_wallet_transactions = generic_pft_utilities.get_memo_detail_df_for_account(wallet_address).copy()
             outstanding_verification = generic_pft_utilities.convert_all_account_info_into_outstanding_verification_df(account_memo_detail_df=all_wallet_transactions)
@@ -1274,7 +1274,7 @@ Note: XRP wallets need 15 XRP to transact.
                     if channel:
                         if target_user_id in self.user_seeds:
                             seed = self.user_seeds[target_user_id]
-                            user_wallet = self.generic_pft_utilities.spawn_user_wallet_from_seed(seed=seed)
+                            user_wallet = self.generic_pft_utilities.spawn_wallet_from_seed(seed=seed)
                             user_address = user_wallet.classic_address
                             tactical_string = self.post_fiat_task_generation_system.get_o1_coaching_string_for_account(user_address)
                             
@@ -1336,7 +1336,7 @@ Note: XRP wallets need 15 XRP to transact.
                 
                 try:
                     generic_pft_utilities = GenericPFTUtilities(node_name='postfiatfoundation')
-                    user_wallet = generic_pft_utilities.spawn_user_wallet_from_seed(seed=seed)
+                    user_wallet = generic_pft_utilities.spawn_wallet_from_seed(seed=seed)
                     full_user_context = generic_pft_utilities.get_full_user_context_string(user_wallet.classic_address)
                     
                     open_ai_request_tool = OpenAIRequestTool()
@@ -1379,7 +1379,7 @@ Note: XRP wallets need 15 XRP to transact.
                 
                 try:
                     # Get user's wallet address
-                    user_wallet = self.generic_pft_utilities.spawn_user_wallet_from_seed(seed=seed)
+                    user_wallet = self.generic_pft_utilities.spawn_wallet_from_seed(seed=seed)
                     wallet_address = user_wallet.classic_address
 
                     # Check PFT balance
@@ -1462,7 +1462,7 @@ My specific question/request is: {user_query}"""
                 seed = self.user_seeds[user_id]
                 
                 try:
-                    user_wallet = self.generic_pft_utilities.spawn_user_wallet_from_seed(seed=seed)
+                    user_wallet = self.generic_pft_utilities.spawn_wallet_from_seed(seed=seed)
                     user_address = user_wallet.classic_address
                     #full_user_context = self.generic_pft_utilities.get_full_user_context_string(user_wallet.classic_address)
                     tactical_string = self.post_fiat_task_generation_system.generate_coaching_string_for_account(user_address)
@@ -1481,7 +1481,7 @@ My specific question/request is: {user_query}"""
                 seed = self.user_seeds[user_id]
                 
                 try:
-                    user_wallet = self.generic_pft_utilities.spawn_user_wallet_from_seed(seed=seed)
+                    user_wallet = self.generic_pft_utilities.spawn_wallet_from_seed(seed=seed)
                     user_address = user_wallet.classic_address
                     #full_user_context = self.generic_pft_utilities.get_full_user_context_string(user_wallet.classic_address)
                     tactical_string = self.post_fiat_task_generation_system.get_o1_coaching_string_for_account(user_address)
@@ -1499,7 +1499,7 @@ My specific question/request is: {user_query}"""
                 seed = self.user_seeds[user_id]
                 
                 try:
-                    user_wallet = self.generic_pft_utilities.spawn_user_wallet_from_seed(seed=seed)
+                    user_wallet = self.generic_pft_utilities.spawn_wallet_from_seed(seed=seed)
                     user_address = user_wallet.classic_address
                     #full_user_context = self.generic_pft_utilities.get_full_user_context_string(user_wallet.classic_address)
                     tactical_string = self.post_fiat_task_generation_system.o1_redpill(user_address)
@@ -1517,7 +1517,7 @@ My specific question/request is: {user_query}"""
                 seed = self.user_seeds[user_id]
                 
                 try:
-                    user_wallet = self.generic_pft_utilities.spawn_user_wallet_from_seed(seed=seed)
+                    user_wallet = self.generic_pft_utilities.spawn_wallet_from_seed(seed=seed)
                     user_address = user_wallet.classic_address
                     #full_user_context = self.generic_pft_utilities.get_full_user_context_string(user_wallet.classic_address)
                     tactical_string = self.post_fiat_task_generation_system.generate_document_rewrite_instructions(user_address)
@@ -1573,7 +1573,7 @@ My specific question/request is: {user_query}"""
             # Retrieve and show the stored seed for the user
             if user_id in self.user_seeds:
                 seed = self.user_seeds[user_id]
-                wallet = generic_pft_utilities.spawn_user_wallet_from_seed(seed)
+                wallet = generic_pft_utilities.spawn_wallet_from_seed(seed)
                 wallet_address = wallet.address
                 account_info = generic_pft_utilities.generate_basic_balance_info_string_for_account_address(account_address=wallet_address)
                 await self.send_long_message(message, f"Based on your seed your linked {account_info}")
@@ -1588,7 +1588,7 @@ My specific question/request is: {user_query}"""
                 await message.reply("You must store a seed before initiating.", mention_author=True)
                 return
             seed = self.user_seeds[user_id]
-            wallet = generic_pft_utilities.spawn_user_wallet_from_seed(seed)
+            wallet = generic_pft_utilities.spawn_wallet_from_seed(seed)
             wallet_address = wallet.classic_address
             xrp_balance = generic_pft_utilities.get_account_xrp_balance(account_address=wallet_address)
             if xrp_balance < 12:
@@ -1605,7 +1605,7 @@ My specific question/request is: {user_query}"""
             if user_id not in self.user_seeds:
                 await message.reply("You must store a seed before getting outstanding tasks.", mention_author=True)
                 return
-            wallet = generic_pft_utilities.spawn_user_wallet_from_seed(seed)
+            wallet = generic_pft_utilities.spawn_wallet_from_seed(seed)
             wallet_address = wallet.classic_address
             output_message = generic_pft_utilities.create_full_outstanding_pft_string(account_address=wallet_address)
             #escaped_output = f"""```{output_message}```"""
@@ -1621,13 +1621,9 @@ def init_bot():
 
 def init_services():
     """Initialize and return core services"""
-    print("---Initializing services---")
     open_ai_request_tool = OpenAIRequestTool()
-    print("---OpenAIRequestTool initialized---")
     post_fiat_task_generation_system = PostFiatTaskGenerationSystem()
-    print("---PostFiatTaskGenerationSystem initialized---")
     generic_pft_utilities = GenericPFTUtilities(node_name='postfiatfoundation')
-    print("---GenericPFTUtilities initialized---")
     generic_pft_utilities.run_transaction_history_updates()
 
     return (
@@ -1640,6 +1636,14 @@ if __name__ == "__main__":
     # Initialize credential manager
     password = getpass.getpass("Enter your password: ")
     cred_manager = CredentialManager(password)
+
+    # Prompt node operator to confirm mainnet or testnet
+    use_mainnet = input("Run on mainnet? (y/n): ")
+    constants.USE_TESTNET = False if use_mainnet.lower() == 'y' else True
+
+    # Prompt node operator to confirm use of local rippled
+    use_local_rippled = input("Use local rippled? (y/n): ")
+    constants.USE_LOCAL_RIPPLED = True if use_local_rippled.lower() == 'y' else False
 
     # Initialize services
     open_ai_request_tool, post_fiat_task_generation_system, generic_pft_utilities = init_services()

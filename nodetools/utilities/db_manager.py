@@ -7,8 +7,19 @@ from nodetools.utilities.credentials import CredentialManager
 
 class DBConnectionManager:
     ''' supports 1 database for the collective and one for the user'''
+    _instance = None
+    _initialized = False
+
+    def __new__(cls, *args, **kwargs):
+        if cls._instance is None:
+            cls._instance = super().__new__(cls)
+        return cls._instance
+
     def __init__(self):
-        self.credential_manager = CredentialManager()
+        if not self.__class__._initialized:
+            self.credential_manager = CredentialManager()
+            self.__class__._initialized = True
+            print("---Initialized DBConnectionManager---")
 
     def spawn_sqlalchemy_db_connection_for_user(self, user_name):
         db_connstring = self.credential_manager.get_credential(f'{user_name}_postgresconnstring')

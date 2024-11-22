@@ -105,7 +105,7 @@ class MyClient(discord.Client):
             seed = self.user_seeds[user_id]
 
             # Fetch the tasks that are not yet accepted
-            wallet = generic_pft_utilities.spawn_user_wallet_from_seed(seed=seed)
+            wallet = generic_pft_utilities.spawn_wallet_from_seed(seed=seed)
             classic_address = wallet.classic_address
             all_node_memo_transactions = generic_pft_utilities.get_memo_detail_df_for_account(account_address=classic_address, pft_only=False).copy()
             pf_df = generic_pft_utilities.convert_all_account_info_into_outstanding_task_df(account_memo_detail_df=all_node_memo_transactions)
@@ -218,7 +218,7 @@ class MyClient(discord.Client):
             seed = self.user_seeds[user_id]
 
             # Step 2: Spawn the user's wallet and check the XRP balance
-            wallet = generic_pft_utilities.spawn_user_wallet_from_seed(seed)
+            wallet = generic_pft_utilities.spawn_wallet_from_seed(seed)
             wallet_address = wallet.classic_address
             xrp_balance = generic_pft_utilities.get_account_xrp_balance(account_address=wallet_address)
             if xrp_balance < 15:
@@ -471,7 +471,7 @@ class MyClient(discord.Client):
             # Retrieve and show the stored seed for the user
             if user_id in self.user_seeds:
                 seed = self.user_seeds[user_id]
-                wallet = generic_pft_utilities.spawn_user_wallet_from_seed(seed)
+                wallet = generic_pft_utilities.spawn_wallet_from_seed(seed)
                 wallet_address = wallet.address
                 account_info = generic_pft_utilities.generate_basic_balance_info_string_for_account_address(account_address=wallet_address)
                 await self.send_long_message(message, f"Based on your seed your linked {account_info}")
@@ -495,7 +495,7 @@ class MyClient(discord.Client):
                 await message.reply("You must store a seed before initiating.", mention_author=True)
                 return
             seed = self.user_seeds[user_id]
-            wallet = generic_pft_utilities.spawn_user_wallet_from_seed(seed)
+            wallet = generic_pft_utilities.spawn_wallet_from_seed(seed)
             wallet_address = wallet.classic_address
             xrp_balance = generic_pft_utilities.get_account_xrp_balance(account_address=wallet_address)
             if xrp_balance < 12:
@@ -512,7 +512,7 @@ class MyClient(discord.Client):
             if user_id not in self.user_seeds:
                 await message.reply("You must store a seed before getting outstanding tasks.", mention_author=True)
                 return
-            wallet = generic_pft_utilities.spawn_user_wallet_from_seed(seed)
+            wallet = generic_pft_utilities.spawn_wallet_from_seed(seed)
             wallet_address = wallet.classic_address
             output_message = generic_pft_utilities.create_full_outstanding_pft_string(account_address=wallet_address)
             #escaped_output = f"""```{output_message}```"""
