@@ -26,6 +26,8 @@ from nodetools.utilities.db_manager import DBConnectionManager
 import nodetools.utilities.constants as constants
 from decimal import Decimal
 import traceback
+from nodetools.utilities.exceptions import *
+from typing import Optional
 
 # TODO: Add loguru as dependency and use it for all logging
 
@@ -59,10 +61,17 @@ class GenericPFTUtilities:
         date_object = datetime.datetime.fromtimestamp(unix_timestamp)
         return date_object
 
-    def to_hex(self,string):
+    @staticmethod
+    def is_over_1kb(string):
+        # 1KB = 1024 bytes
+        return len(string.encode('utf-8')) > 1024
+    
+    @staticmethod
+    def to_hex(string):
         return binascii.hexlify(string.encode()).decode()
 
-    def hex_to_text(self, hex_string):
+    @staticmethod
+    def hex_to_text(hex_string):
         bytes_object = bytes.fromhex(hex_string)
         try:
             ascii_string = bytes_object.decode("utf-8")
@@ -153,6 +162,57 @@ class GenericPFTUtilities:
             pass
         return ret
     
+    def verify_transaction_response(self, response: dict) -> bool:
+        """
+        Verify that a transaction response indicates success.
+
+        Args:
+            response: Transaction response from submit_and_wait
+
+        Returns:
+            bool: True if the transaction was successful, False otherwise
+        """
+        try:
+            # Handle xrpl.models.response.Response objects
+            if hasattr(response, 'result'):
+                result = response.result
+            else:
+                result = response
+
+            # Check if transaction was validated and successful
+            return (
+                result.get('validated', False) and
+                result.get('meta', {}).get('TransactionResult', '') == 'tesSUCCESS'
+            )
+        except Exception as e:
+            print(f"Error verifying transaction response: {e}")
+            return False
+
+    def verify_transaction_hash(self, tx_hash: str) -> bool:
+        """
+        Verify that a transaction was successfully confirmed on-chain.
+
+        Args:
+            tx_hash: A transaction hash to verify
+
+        Returns:
+            bool: True if the transaction was successful, False otherwise
+        """
+        client = xrpl.clients.JsonRpcClient(self.local_rippled_url)
+        try:
+            tx_request = xrpl.models.requests.Tx(
+                transaction=tx_hash,
+                binary=False
+            )
+
+            tx_result = client.request(tx_request)
+
+            return self.verify_transaction_response(tx_result)
+        
+        except Exception as e:
+            print(f"Error verifying transaction hash {tx_hash}: {e}")
+            return False
+
     def convert_memo_dict__generic(self, memo_dict):
         # TODO: Replace with MemoBuilder once MemoBuilder is implemented in Pftpyclient
         """Constructs a memo object with user, task_id, and full_output from hex-encoded values."""
@@ -176,6 +236,23 @@ class GenericPFTUtilities:
             'MemoType': MemoType,
             'MemoData': MemoData
         }
+    
+    def construct_google_doc_context_memo(self, user, google_doc_link):                  
+        return self.construct_memo(user=user, memo_type="google_doc_context_link", memo_data=google_doc_link) 
+
+    def construct_genesis_memo(self, user, task_id, full_output):
+        return self.construct_memo(user=user, memo_type=task_id, memo_data=full_output)
+
+    def construct_memo(self, user, memo_type, memo_data):
+
+        if self.is_over_1kb(memo_data):
+            raise ValueError("Memo exceeds 1 KB, raising ValueError")
+
+        return Memo(
+            memo_data=self.to_hex(memo_data),
+            memo_type=self.to_hex(memo_type),
+            memo_format=self.to_hex(user)
+        )
 
     def classify_task_string(self,string):
         # TODO: Leverage Enums as defined in pftpyclient/wallet_ux/constants.py
@@ -456,6 +533,10 @@ class GenericPFTUtilities:
         # TODO: Refactor, using get_memos_df as reference (pftpyclient/task_manager/basic_tasks.py)
         full_transaction_history = self.get_all_cached_transactions_related_to_account(account_address=account_address)
         validated_tx=full_transaction_history
+
+        # Extract transaction result from meta
+        validated_tx['transaction_result'] = validated_tx['meta'].apply(lambda x: x.get('TransactionResult', ''))
+
         validated_tx['has_memos'] = validated_tx['tx_json'].apply(lambda x: 'Memos' in x.keys())
         live_memo_tx = validated_tx[validated_tx['has_memos'] == True].copy()
         live_memo_tx['main_memo_data']=live_memo_tx['tx_json'].apply(lambda x: x['Memos'][0]['Memo'])
@@ -1143,7 +1224,35 @@ class GenericPFTUtilities:
         output_string = "REWARD SUMMARY\n\n" + "\n".join(formatted_rewards)
         return output_string
 
-    def get_google_doc_text(self,share_link):
+    def get_latest_outgoing_context_doc_link(self, wallet: xrpl.wallet.Wallet) -> Optional[str]:
+        """Get the most recent Google Doc context link sent by this wallet.
+            
+        Args:
+            wallet: XRPL wallet object
+            
+        Returns:
+            str or None: Most recent Google Doc link or None if not found
+        """
+        try:
+            memo_df = self.get_memo_detail_df_for_account(
+                account_address=wallet.classic_address,
+                pft_only=False
+            )
+            context_docs = memo_df[
+                (memo_df['memo_type'].apply(lambda x: 'google_doc_context_link' in str(x))) &
+                (memo_df['account'] == wallet.classic_address) &
+                (memo_df['transaction_result'] == "tesSUCCESS")
+            ]
+            
+            if len(context_docs) > 0:
+                return context_docs.iloc[-1]['memo_data']
+            return None
+        except Exception as e:
+            print(f"Error getting latest context doc link: {e}")
+            return None   
+    
+    @staticmethod
+    def get_google_doc_text(share_link):
         # Extract the document ID from the share link
         doc_id = share_link.split('/')[5]
     
@@ -1161,24 +1270,138 @@ class GenericPFTUtilities:
             # Return an error message if the request was unsuccessful
             return f"Failed to retrieve the document. Status code: {response.status_code}"
 
-    # TODO: Replace with retrieve_xrp_address_from_google_doc (reference pftpyclient/task_manager/basic_tasks.py)
-    # TODO: Add separate call to get_xrp_balance where relevant
-    def check_if_there_is_funded_account_at_front_of_google_doc(self, google_url):
-        """
-        Checks if there is a balance bearing XRP account address at the front of the google document 
-        This is required for the user 
+    # # TODO: Replace with retrieve_xrp_address_from_google_doc
+    # # TODO: Add separate call to get_xrp_balance where relevant
+    # def check_if_there_is_funded_account_at_front_of_google_doc(self, google_url):
+    #     """
+    #     Checks if there is a balance bearing XRP account address at the front of the google document 
+    #     This is required for the user 
 
-        Returns the balance in XRP drops 
-        EXAMPLE
-        google_url = 'https://docs.google.com/document/d/1MwO8kHny7MtU0LgKsFTBqamfuUad0UXNet1wr59iRCA/edit'
+    #     Returns the balance in XRP drops 
+    #     EXAMPLE
+    #     google_url = 'https://docs.google.com/document/d/1MwO8kHny7MtU0LgKsFTBqamfuUad0UXNet1wr59iRCA/edit'
+    #     """
+    #     balance = 0
+    #     try:
+    #         wallet_at_front_of_doc =self.get_google_doc_text(google_url).split('\ufeff')[-1:][0][0:34]
+    #         balance = self.get_xrp_balance(wallet_at_front_of_doc)
+    #     except:
+    #         pass
+    #     return balance
+    
+    @staticmethod
+    def retrieve_xrp_address_from_google_doc(google_doc_text):
+        """ Retrieves the XRP address from the google doc """
+        # Split the text into lines
+        lines = google_doc_text.split('\n')      
+
+        # Regular expression for XRP address
+        xrp_address_pattern = r'r[1-9A-HJ-NP-Za-km-z]{25,34}'
+
+        wallet_at_front_of_doc = None
+        # look through the first 5 lines for an XRP address
+        for line in lines[:5]:
+            match = re.search(xrp_address_pattern, line)
+            if match:
+                wallet_at_front_of_doc = match.group()
+                break
+
+        return wallet_at_front_of_doc
+    
+    def check_if_google_doc_is_valid(self, wallet: xrpl.wallet.Wallet, google_doc_link):
+        """ Checks if the google doc is valid """
+
+        # Check 1: google doc is a valid url
+        if not google_doc_link.startswith('https://docs.google.com/document/d/'):
+            raise InvalidGoogleDocException(google_doc_link)
+        
+        google_doc_text = self.get_google_doc_text(google_doc_link)
+
+        # Check 2: google doc exists
+        if google_doc_text == "Failed to retrieve the document. Status code: 404":
+            raise GoogleDocNotFoundException(google_doc_link)
+
+        # Check 3: google doc is shared
+        if google_doc_text == "Failed to retrieve the document. Status code: 401":
+            raise GoogleDocIsNotSharedException(google_doc_link)
+        
+        # Check 4: google doc contains the correct XRP address at the top
+        wallet_at_front_of_doc = self.retrieve_xrp_address_from_google_doc(google_doc_text)
+        if wallet_at_front_of_doc != wallet.classic_address:
+            raise GoogleDocDoesNotContainXrpAddressException(wallet.classic_address)
+        
+        # Check 5: XRP address has a balance
+        if self.get_xrp_balance(wallet.classic_address) == 0:
+            raise GoogleDocIsNotFundedException(google_doc_link)
+    
+    def google_doc_sent(self, wallet: xrpl.wallet.Wallet):
+        """Check if wallet has sent a Google Doc context link.
+        
+        Args:
+            wallet: XRPL wallet object
+            
+        Returns:
+            bool: True if Google Doc has been sent
         """
-        balance = 0
+        print(f"Checking if google doc has been sent for {wallet.classic_address}")
+        return self.get_latest_outgoing_context_doc_link(wallet) is not None
+    
+    def handle_google_doc(self, wallet: xrpl.wallet.Wallet, google_doc_link: str, username: str):
+        """
+        Validate and process Google Doc submission.
+        
+        Args:
+            wallet: XRPL wallet object
+            google_doc_link: Link to the Google Doc
+            username: Discord username
+            
+        Returns:
+            dict: Status of Google Doc operation with keys:
+                - success (bool): Whether operation was successful
+                - message (str): Description of what happened
+                - tx_hash (str, optional): Transaction hash if doc was sent
+        """
+        print(f"Handling google doc for {username} ({wallet.classic_address})")
         try:
-            wallet_at_front_of_doc =self.get_google_doc_text(google_url).split('\ufeff')[-1:][0][0:34]
-            balance = self.get_account_xrp_balance(wallet_at_front_of_doc)
-        except:
-            pass
-        return balance
+            self.check_if_google_doc_is_valid(wallet, google_doc_link)
+        except Exception as e:
+            print(f"Error validating Google Doc: {e}")
+            raise
+
+        if not self.google_doc_sent(wallet):
+            print(f"Google doc not sent for {wallet.classic_address}, sending now...")
+            return self.send_google_doc(wallet, google_doc_link, username)
+        else:
+            print(f"Google doc already sent for {wallet.classic_address}.")
+
+    def send_google_doc(self, wallet: xrpl.wallet.Wallet, google_doc_link: str, username: str) -> dict:
+        """Send Google Doc context link to the node.
+        
+        Args:
+            wallet: XRPL wallet object
+            google_doc_link: Google Doc URL
+            username: Discord username
+            
+        Returns:
+            dict: Transaction status
+        """
+        try:
+            google_doc_memo = self.construct_google_doc_context_memo(
+                user=username,
+                google_doc_link=google_doc_link
+            )
+            print(f"Sending Google Doc link transaction from {wallet.classic_address} to node {self.node_address}: {google_doc_link}")
+            response = self.send_PFT_with_info(
+                sending_wallet=wallet,
+                amount=1,
+                memo=google_doc_memo,
+                destination_address=self.node_address
+            )
+            if not self.verify_transaction_response(response):
+                raise Exception(f"Failed to send Google Doc link: {response}")
+
+        except Exception as e:
+            raise Exception(f"Error sending Google Doc: {str(e)}")
 
     def format_recent_chunk_messages(self, message_df):
         """
@@ -1391,27 +1614,50 @@ PFT MONTHLY AVG:  {monthly_pft_reward_avg}
 PFT WEEKLY AVG:   {weekly_pft_reward_avg}
 """
         return account_info_string
+    
+    def get_xrp_balance(self, address: str) -> float:
+        """Get XRP balance for an account.
+        
+        Args:
+            account_address (str): XRPL account address
+            
+        Returns:
+            float: XRP balance
 
-    # TODO: Refactor, using get_xrp_balance as reference (pftpyclient/task_manager/basic_tasks.py)
-    def get_account_xrp_balance(self, account_address):
-        """ 
-        Example
-        account_address = 'r3UHe45BzAVB3ENd21X9LeQngr4ofRJo5n'
+        Raises:
+            XRPAccountNotFoundException: If the account is not found
+            Exception: If there is an error getting the XRP balance
         """
         client = JsonRpcClient(self.local_rippled_url)
-        
-        # Get XRP balance
         acct_info = AccountInfo(
-            account=account_address,
+            account=address,
             ledger_index="validated"
         )
-        response = client.request(acct_info)
-        xrp_balance=0
         try:
-            xrp_balance = int(response.result['account_data']['Balance'])/1_000_000
-        except:
-            pass
-        return xrp_balance
+            response = client.request(acct_info)
+            if response.is_successful():
+                return float(response.result['account_data']['Balance']) / 1_000_000
+            else:
+                if response.result.get('error') == 'actNotFound':
+                    print(f"XRP account not found: {address}. It may not be activated yet.")
+                    raise XRPAccountNotFoundException(address)
+        except Exception as e:
+            print(f"Error getting XRP balance: {e}")
+            raise Exception(f"Error getting XRP balance: {e}")
+
+    def verify_xrp_balance(self, address: str, minimum_xrp_balance: int) -> bool:
+        """
+        Verify that a wallet has sufficient XRP balance.
+        
+        Args:
+            wallet: XRPL wallet object
+            minimum_balance: Minimum required XRP balance
+            
+        Returns:
+            tuple: (bool, float) - Whether balance check passed and current balance
+        """
+        balance = self.get_xrp_balance(address)
+        return (balance >= minimum_xrp_balance, balance)
 
     # TODO: Refactor using get_verification_df as reference (pftpyclient/task_manager/basic_tasks.py)
     def convert_all_account_info_into_outstanding_verification_df(self,account_memo_detail_df):
@@ -1557,29 +1803,163 @@ PFT WEEKLY AVG:   {weekly_pft_reward_avg}
             url=None)
         printable_string = self.extract_transaction_info_from_response_object(action_response)['clean_string']
         return printable_string
-
-    def generate_trust_line_to_pft_token(self, wallet_seed):
-        """ Note this transaction consumes XRP to create a trust
-        line for the PFT Token so the holder DF should be checked 
-        before this is run
-        """ 
+    
+    def get_pft_holder_df(self) -> pd.DataFrame:
+        """Get dataframe of all PFT token holders.
         
-        #wallet_to_link =self.user_wallet
-        wallet_to_link = xrpl.wallet.Wallet.from_seed(wallet_seed)
+        Returns:
+            DataFrame: PFT holder information
+        """
         client = xrpl.clients.JsonRpcClient(self.local_rippled_url)
-        #currency_code = "PFT"
-        trust_set_tx = xrpl.models.transactions.TrustSet(
-                        account=wallet_to_link.classic_address,
-                    limit_amount=xrpl.models.amounts.issued_currency_amount.IssuedCurrencyAmount(
-                            currency="PFT",
-                            issuer=self.pft_issuer,
-                            value='100000000',  # Large limit, arbitrarily chosen
-                        )
-                    )
-        print("Creating trust line from chosen seed to issuer...")
+        response = client.request(xrpl.models.requests.AccountLines(
+            account=self.pft_issuer,
+            ledger_index="validated",
+        ))
+        if not response.is_successful():
+            raise Exception(f"Error fetching PFT holders: {response.result.get('error')}")
+
+        df = pd.DataFrame(response.result)
+        for field in ['account','balance','currency','limit_peer']:
+            df[field] = df['lines'].apply(lambda x: x[field])
+
+        df['pft_holdings']=df['balance'].astype(float)*-1
+
+        return df
         
-        response = xrpl.transaction.submit_and_wait(trust_set_tx, client, wallet_to_link)
+    def has_trust_line(self, wallet: xrpl.wallet.Wallet) -> bool:
+        """Check if wallet has PFT trustline.
+        
+        Args:
+            wallet: XRPL wallet object
+            
+        Returns:
+            bool: True if trustline exists
+        """
+        try:
+            pft_holders = self.get_pft_holder_df()
+            return wallet.classic_address in list(pft_holders['account'])
+        except Exception as e:
+            print(f"Error checking if user {wallet.classic_address} has a trust line: {e}")
+            return False
+        
+    def handle_trust_line(self, wallet: xrpl.wallet.Wallet, username: str):
+        """
+        Check and establish PFT trustline if needed.
+        
+        Args:
+            wallet: XRPL wallet object
+            username: Discord username
+
+        Raises:
+            Exception: If there is an error creating the trust line
+        """
+        print(f"Handling trust line for {username} ({wallet.classic_address})")
+        if not self.has_trust_line(wallet):
+            print(f"Trust line does not exist for {username} ({wallet.classic_address}), creating now...")
+            response = self.generate_trust_line_to_pft_token(wallet)
+            if not response.is_successful():
+                raise Exception(f"Error creating trust line: {response.result.get('error')}")
+        else:
+            print(f"Trust line already exists for {wallet.classic_address}")
+
+    def generate_trust_line_to_pft_token(self, wallet: xrpl.wallet.Wallet):
+        """
+        Generate a trust line to the PFT token.
+        
+        Args:
+            wallet: XRPL wallet object
+            
+        Returns:
+            Response: XRPL transaction response
+
+        Raises:
+            Exception: If there is an error creating the trust line
+        """
+        client = xrpl.clients.JsonRpcClient(self.local_rippled_url)
+        trust_set_tx = xrpl.models.transactions.TrustSet(
+            account=wallet.classic_address,
+            limit_amount=xrpl.models.amounts.issued_currency_amount.IssuedCurrencyAmount(
+                currency="PFT",
+                issuer=self.pft_issuer,
+                value="100000000",
+            )
+        )
+        print(f"Establishing trust line transaction from {wallet.classic_address} to issuer {self.pft_issuer}...")
+        try:
+            response = xrpl.transaction.submit_and_wait(trust_set_tx, client, wallet)
+        except xrpl.transaction.XRPLReliableSubmissionException as e:
+            response = f"Submit failed: {e}"
+            raise Exception(f"Trust line creation failed: {response}")
         return response
+    
+    def has_initiation_rite(self, wallet: xrpl.wallet.Wallet, allow_reinitiation: bool = False) -> bool:
+        """Check if wallet has a successful initiation rite.
+        
+        Args:
+            wallet: XRPL wallet object
+            allow_reinitiation: if True, always returns False to allow re-initiation (for testing)
+            
+        Returns:
+            bool: True if successful initiation exists
+
+        Raises:
+            Exception: If there is an error checking for the initiation rite
+        """
+        if allow_reinitiation and constants.USE_TESTNET:
+            print(f"Re-initiation allowed for {wallet.classic_address} (test mode)")
+            return False
+        
+        try: 
+            memo_detail = self.get_memo_detail_df_for_account(
+                account_address=wallet.classic_address, 
+                pft_only=False
+            )
+            successful_initiations = memo_detail[
+                (memo_detail['memo_type'] == "INITIATION_RITE") & 
+                (memo_detail['transaction_result'] == "tesSUCCESS")
+            ]
+            return len(successful_initiations) > 0
+        except Exception as e:
+            print(f"Error checking if user {wallet.classic_address} has a successful initiation rite: {e}")
+            return False
+    
+    def handle_initiation_rite(
+            self, 
+            wallet: xrpl.wallet.Wallet, 
+            initiation_rite: str, 
+            username: str,
+            allow_reinitiation: bool = False
+        ) -> dict:
+        """Send initiation rite if none exists.
+        
+        Args:
+            wallet: XRPL wallet object
+            initiation_rite: Commitment message
+            username: Discord username
+            allow_reinitiation: If True, allows re-initiation when in test mode
+
+        Raises:
+            Exception: If there is an error sending the initiation rite
+        """
+        print(f"Handling initiation rite for {username} ({wallet.classic_address})")
+
+        if self.has_initiation_rite(wallet, allow_reinitiation):
+            print(f"Initiation rite already exists for {username} ({wallet.classic_address})")
+        else:
+            initiation_memo = self.construct_standardized_xrpl_memo(
+                memo_data=initiation_rite, 
+                memo_type='INITIATION_RITE', 
+                memo_format=username
+            )
+            print(f"Sending initiation rite transaction from {wallet.classic_address} to node {self.node_address}")
+            response = self.send_PFT_with_info(
+                sending_wallet=wallet, 
+                amount=1, 
+                memo=initiation_memo, 
+                destination_address=self.node_address, 
+            )
+            if not self.verify_transaction_response(response):
+                raise Exception(f"Initiation rite failed to send: {response}")
 
     def get_recent_messages_for_account_address(self,wallet_address='r3UHe45BzAVB3ENd21X9LeQngr4ofRJo5n'): 
         incoming_message = ''

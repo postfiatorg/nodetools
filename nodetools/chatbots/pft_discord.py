@@ -28,6 +28,7 @@ class MyClient(discord.Client):
         self.post_fiat_task_generation_system = PostFiatTaskGenerationSystem()
 
     async def setup_hook(self):
+        """Sets up the slash commands for the bot and initiates background tasks."""
         guild_id = constants.MAINNET_DISCORD_GUILD_ID if not constants.USE_TESTNET else constants.TESTNET_DISCORD_GUILD_ID  # Your specific guild ID
         guild = Object(id=guild_id)
         self.tree.copy_global_to(guild=guild)
@@ -35,8 +36,11 @@ class MyClient(discord.Client):
         print(f"Slash commands synced to guild ID: {guild_id}")
 
         self.bg_task = self.loop.create_task(self.transaction_checker())
-        # self.bg_task_death_march = self.loop.create_task(self.death_march_reminder())
-        # Ensure the command is registered
+
+        # Initialize queue processing
+        self.post_fiat_task_generation_system.run_queue_processing()
+        print(f"PFT queue processing initialized.")
+
         @self.tree.command(name="pf_send", description="Open a transaction form")
         async def pf_send(interaction: Interaction):
             user_id = interaction.user.id
@@ -550,8 +554,6 @@ class MyClient(discord.Client):
             modal = XRPTransactionModal(seed=seed)
             await interaction.response.send_modal(modal)
 
-
-
         @self.tree.command(name="pf_store_seed", description="Store a seed")
         async def store_seed(interaction: discord.Interaction):
             # Define the modal with a reference to the client
@@ -582,82 +584,61 @@ class MyClient(discord.Client):
         async def pf_initiate(interaction: discord.Interaction):
             user_id = interaction.user.id
 
-            # Step 1: Check if the user has a stored seed
+            # Check if the user has a stored seed
             if user_id not in self.user_seeds:
                 await interaction.response.send_message(
                     "You must store a seed using /store_seed before initiating.", ephemeral=True
                 )
                 return
 
-            seed = self.user_seeds[user_id]
+            try:
+                # Spawn the user's wallet
+                seed = self.user_seeds[user_id]
 
-            # Step 2: Spawn the user's wallet and check the XRP balance
-            wallet = generic_pft_utilities.spawn_wallet_from_seed(seed)
-            wallet_address = wallet.classic_address
-            xrp_balance = generic_pft_utilities.get_account_xrp_balance(account_address=wallet_address)
-            if xrp_balance < 15:
-                await interaction.response.send_message(
-                    "You must fund your wallet with at least 15 XRP before initiating.", ephemeral=True
-                )
-                return
+                # Define the modal to collect Google Doc Link and Commitment
+                class InitiationModal(discord.ui.Modal, title='Initiation Commitment'):
+                    google_doc_link = discord.ui.TextInput(
+                        label='Google Doc Link', 
+                        style=discord.TextStyle.short,
+                        placeholder="Share the link to your Google Doc"
+                    )
+                    commitment_sentence = discord.ui.TextInput(
+                        label='Commit to a Long-Term Objective',
+                        style=discord.TextStyle.long,
+                        placeholder="A 1-sentence commitment to a long-term objective"
+                    )
 
-            # Step 3: Check if the initiation rite has already been performed
-            full_memo_detail = generic_pft_utilities.get_memo_detail_df_for_account(
-                account_address=wallet_address, pft_only=False
-            )
-            if len(full_memo_detail[full_memo_detail['memo_type'] == "INITIATION_RITE"]) > 0:
-                await interaction.response.send_message(
-                    "You have already performed an initiation rite with this wallet.", ephemeral=True
-                )
-                return
+                    async def on_submit(self, interaction: discord.Interaction):
+                        await interaction.response.defer(ephemeral=True)
+                        
+                        try:
+                            # Attempt the initiation rite
+                            post_fiat_task_generation_system.discord__initiation_rite(
+                                account_seed=seed, 
+                                initiation_rite=self.commitment_sentence.value, 
+                                google_doc_link=self.google_doc_link.value, 
+                                username=interaction.user.name,
+                                allow_reinitiation=constants.USE_TESTNET and constants.TESTNET_MODE  # Allow re-initiation in test mode
+                            )
+                            
+                            mode = "(TEST MODE)" if constants.USE_TESTNET else ""
+                            await interaction.followup.send(
+                                f"Initiation complete! {mode}\nCommitment: {self.commitment_sentence.value}\nGoogle Doc: {self.google_doc_link.value}",
+                                ephemeral=True
+                            )
 
-            # Step 4: Define the modal to collect Google Doc Link and Commitment
-            class InitiationModal(discord.ui.Modal, title='Initiation Commitment'):
-                google_doc_link = discord.ui.TextInput(label='Google Doc Link', style=discord.TextStyle.short)
-                commitment_sentence = discord.ui.TextInput(
-                    label='Commit to a Long-Term Objective',
-                    style=discord.TextStyle.long
-                )
+                        except Exception as e:
+                            await interaction.followup.send(
+                                f"An error occurred during initiation: {str(e)}", 
+                                ephemeral=True
+                            )
 
-                def __init__(self, wallet_address, seed, username):
-                    super().__init__()
-                    self.wallet_address = wallet_address
-                    self.seed = seed
-                    self.username = username
+                # Present the modal to the user
+                await interaction.response.send_modal(InitiationModal())
+                print(f"Initiation rite sent by {interaction.user.name}!")
 
-                async def on_submit(self, interaction: discord.Interaction):
-                    await interaction.response.defer(ephemeral=True)
-                    
-                    google_doc_link = self.google_doc_link.value
-                    commitment_sentence = self.commitment_sentence.value
-                    initiation_success = False
-                    
-                    try:
-                        output_string = post_fiat_task_generation_system.discover_server__initiation_rite(
-                            account_seed=self.seed, 
-                            initiation_rite=commitment_sentence, 
-                            google_doc_link=google_doc_link, 
-                            username=self.username
-                        )
-                        initiation_success = True
-                    except Exception as e:
-                        print(f"Error during initiation: {str(e)}")
-                    
-                    if initiation_success:
-                        await interaction.followup.send(
-                            f"Initiation complete!\nGoogle Doc Link: {google_doc_link}\nCommitment: {commitment_sentence}",
-                            ephemeral=True
-                        )
-                    else:
-                        await interaction.followup.send(
-                            "There was an issue with the initiation. Please try again.", 
-                            ephemeral=True
-                        )
-            # Error during initiation: string indices must be integers, not 'str'
-            # Step 5: Present the modal to the user
-            modal = InitiationModal(wallet_address=wallet_address, seed=seed, username=interaction.user.name)
-            await interaction.response.send_modal(modal)
-            print("Initiation command executed!")
+            except Exception as e:
+                await interaction.followup.send(f"An error occurred during initiation: {str(e)}", ephemeral=True)
 
         @self.tree.command(name="pf_request_task", description="Request a Post Fiat task")
         async def pf_task_slash(interaction: discord.Interaction, task_request: str):
@@ -691,8 +672,6 @@ class MyClient(discord.Client):
                 await interaction.followup.send(f"Task Requested with Details: {clean_string}", ephemeral=True)
             except Exception as e:
                 await interaction.followup.send(f"An error occurred while processing your request: {str(e)}", ephemeral=True)
-
-
 
         @self.tree.command(name="pf_initial_verification", description="Submit a task for verification")
         async def pf_submit_for_verification(interaction: discord.Interaction):
@@ -1234,9 +1213,9 @@ Note: XRP wallets need 15 XRP to transact.
             print(f"Error: Channel with ID {CHANNEL_ID} not found.")
             return
 
-        # try:
+        print('Checking for new messages')
         # Call the function to get new messages and update the database
-        messages_to_send = post_fiat_task_generation_system.output_messages_to_send_and_write_incremental_info_to_foundation_discord_db()
+        messages_to_send = post_fiat_task_generation_system.sync_and_format_new_transactions()
 
         print(f"Sending {len(messages_to_send)} messages to the Discord channel")  # debugging
 
@@ -1590,7 +1569,7 @@ My specific question/request is: {user_query}"""
             seed = self.user_seeds[user_id]
             wallet = generic_pft_utilities.spawn_wallet_from_seed(seed)
             wallet_address = wallet.classic_address
-            xrp_balance = generic_pft_utilities.get_account_xrp_balance(account_address=wallet_address)
+            xrp_balance = generic_pft_utilities.get_xrp_balance(address=wallet_address)
             if xrp_balance < 12:
                 await message.reply("You must fund your wallet with at least 15 XRP before initiating.", mention_author=True)
                 return

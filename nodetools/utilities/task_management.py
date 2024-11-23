@@ -24,60 +24,118 @@ from matplotlib.dates import DateFormatter
 import matplotlib.ticker as ticker
 import nodetools.utilities.constants as constants
 from nodetools.utilities.credentials import CredentialManager
+from nodetools.utilities.exceptions import *
 
 class PostFiatTaskGenerationSystem:
+    _instance = None
+    _initialized = False
+
+    def __new__(cls, *args, **kwargs):
+        if cls._instance is None:
+            cls._instance = super().__new__(cls)
+        return cls._instance
+
     def __init__(self):
-        self.cred_manager = CredentialManager()
-        self.default_model = constants.DEFAULT_OPEN_AI_MODEL
-        self.openai_request_tool= OpenAIRequestTool()
-        self.generic_pft_utilities = GenericPFTUtilities()
-        self.node_address = constants.DEFAULT_NODE_ADDRESS  # TODO: consider deriving this from the seed
-        self.node_wallet = self.generic_pft_utilities.spawn_wallet_from_seed(
-            self.cred_manager.get_credential('postfiatfoundation__v1xrpsecret')
-        )
-        self.stop_threads = False
-        self.db_connection_manager = DBConnectionManager()
+        if not self.__class__._initialized:
+            self.cred_manager = CredentialManager()
+            self.default_model = constants.DEFAULT_OPEN_AI_MODEL
+            self.openai_request_tool= OpenAIRequestTool()
+            self.generic_pft_utilities = GenericPFTUtilities()
+            self.node_address = constants.DEFAULT_NODE_ADDRESS if not constants.USE_TESTNET else constants.TESTNET_DEFAULT_NODE_ADDRESS
+            self.node_wallet = self.generic_pft_utilities.spawn_wallet_from_seed(
+                self.cred_manager.get_credential('postfiatfoundation__v1xrpsecret')
+            )
+            self.stop_threads = False
+            self.db_connection_manager = DBConnectionManager()
+            self.reward_processing_lock = threading.Lock()
+            self.__class__._initialized = True
+
+    @staticmethod
+    def is_valid_initiation_rite(rite_text: str) -> bool:
+        """Validate if the initiation rite meets basic requirements."""
+        if not rite_text or not isinstance(rite_text, str):
+            return False
+        
+        # Remove whitespace
+        cleaned_rite = str(rite_text).strip()
+
+        # Check minimum length
+        if len(cleaned_rite) < 10:
+            return False
+        
+        return True
 
     def output_initiation_rite_df(self, all_node_memo_transactions):
-        """
-        all_node_transactions = self.generic_pft_utilities.get_all_cached_transactions_related_to_account(self.node_address).copy()
-        all_node_memo_transactions = self.generic_pft_utilities.get_memo_detail_df_for_account(account_address=self.node_address, pft_only=False).copy()
-        """
-        initiation_rewards = all_node_memo_transactions[all_node_memo_transactions['memo_type']=='INITIATION_REWARD'][['user_account',
-                                                                                                  'memo_data','memo_format',
-                                                                                                  'directional_pft']].groupby('user_account').last()[['memo_data',
-                                                                                                                                                      'directional_pft',
-                                                                                                                                                      'memo_format']]
-        rites = all_node_memo_transactions[all_node_memo_transactions['memo_type']=="INITIATION_RITE"][['user_account',
-                                                                                                'memo_data']].groupby('user_account').last()
-        rites.columns=['initiation_rite']
-        initiation_rite_cue_df = pd.concat([rites, initiation_rewards],axis=1).reset_index()
-        initiation_rite_cue_df['requires_work']= np.where((initiation_rite_cue_df['initiation_rite'].apply(lambda x: len(str(x)))>10)
-                 & (initiation_rite_cue_df['memo_data'].apply(lambda x: 'INITIATION_REWARD' not in str(x))),1,0)
-        return initiation_rite_cue_df
+        """Filter and process initiation rites, only including successful transactions."""
 
-    def phase_1_construct_required_post_fiat_generation_cue(self, all_account_info):
-        """ This is where the dataframe of requested tasks come from 
-        Google Docs are appended to the dataframe as well. Operates
-        on most recent tasks only 
+        # Filter successful initiation rewards
+        initiation_rewards = all_node_memo_transactions[
+            (all_node_memo_transactions['memo_type'] == 'INITIATION_REWARD') &
+            (all_node_memo_transactions['transaction_result'] == 'tesSUCCESS')
+        ][['user_account', 'memo_data', 'memo_format', 'directional_pft', 'datetime']].groupby('user_account').last()
+
+        # Filter successful initiation rites
+        rites = all_node_memo_transactions[
+            (all_node_memo_transactions['memo_type'] == "INITIATION_RITE") &
+            (all_node_memo_transactions['transaction_result'] == 'tesSUCCESS')
+        ][['user_account', 'memo_data', 'datetime']].groupby('user_account').last()
+
+        rites.columns=['initiation_rite', 'rite_datetime']
+
+        # Combine rites and rewards
+        initiation_rite_queue_df = pd.concat([rites, initiation_rewards],axis=1).reset_index()
+
+        # Step 1: Check if rite is valid
+        initiation_rite_queue_df['is_valid_rite'] = initiation_rite_queue_df['initiation_rite'].apply(self.is_valid_initiation_rite)
+
+        # Step 2: Check if rite has been rewarded
+        initiation_rite_queue_df['has_reward'] = initiation_rite_queue_df['memo_data'].apply(lambda x: 'INITIATION_REWARD' in str(x))
+
+        # Step 3: In testnet, to allow for reinitiation rites, check if rite is newer than last reward
+        if constants.USE_TESTNET and constants.TESTNET_MODE:
+            initiation_rite_queue_df['is_newer_than_last_reward'] = (
+                initiation_rite_queue_df['rite_datetime'] > initiation_rite_queue_df['datetime']
+            )
+
+            initiation_rite_queue_df['requires_work'] = (
+                initiation_rite_queue_df['is_valid_rite'] &
+                (
+                    ~initiation_rite_queue_df['has_reward'] |  # Never rewarded
+                    initiation_rite_queue_df['is_newer_than_last_reward']  # OR rite is newer than last reward
+                )
+            )
+        else:
+            # In mainnet, only process rites that haven't been rewarded yet
+            initiation_rite_queue_df['requires_work'] = (
+                initiation_rite_queue_df['is_valid_rite'] & 
+                ~initiation_rite_queue_df['has_reward']
+            )
+
+        return initiation_rite_queue_df
+
+    # # TODO: This function is not used anywhere.
+    # def phase_1_construct_required_post_fiat_generation_cue(self, all_account_info):
+    #     """ This is where the dataframe of requested tasks come from 
+    #     Google Docs are appended to the dataframe as well. Operates
+    #     on most recent tasks only 
         
-        account_to_study = self.user_wallet.classic_address
-        #account_to_study
-        all_account_info =self.generic_pft_utilities.get_memo_detail_df_for_account(account_address=account_to_study,
-                    transaction_limit=5000)
-        """ 
+    #     account_to_study = self.user_wallet.classic_address
+    #     #account_to_study
+    #     all_account_info =self.generic_pft_utilities.get_memo_detail_df_for_account(account_address=account_to_study,
+    #                 transaction_limit=5000)
+    #     """ 
 
-        simplified_task_frame = self.generic_pft_utilities.convert_all_account_info_into_simplified_task_frame(all_account_info=
-                                                                all_account_info)
-        most_recent_tasks = simplified_task_frame.sort_values('datetime').copy().groupby('task_id').last()
-        required_post_fiat_generation_cue = most_recent_tasks[most_recent_tasks['full_output'].apply(lambda x: 
-                                                                'REQUEST_POST_FIAT ___' in x)]
-        required_post_fiat_generation_cue['google_doc']=None
-        if len(required_post_fiat_generation_cue)>0:
-            print('moo')
-            required_post_fiat_generation_cue['google_doc']= required_post_fiat_generation_cue.apply(lambda x: self.get_most_recent_google_doc_for_user(user_account=x['user_account'],
-                                                                                                    all_account_info=all_account_info),axis=1)
-        return required_post_fiat_generation_cue 
+    #     simplified_task_frame = self.generic_pft_utilities.convert_all_account_info_into_simplified_task_frame(all_account_info=
+    #                                                             all_account_info)
+    #     most_recent_tasks = simplified_task_frame.sort_values('datetime').copy().groupby('task_id').last()
+    #     required_post_fiat_generation_cue = most_recent_tasks[most_recent_tasks['full_output'].apply(lambda x: 
+    #                                                             'REQUEST_POST_FIAT ___' in x)]
+    #     required_post_fiat_generation_cue['google_doc']=None
+    #     if len(required_post_fiat_generation_cue)>0:
+    #         print('moo')
+    #         required_post_fiat_generation_cue['google_doc']= required_post_fiat_generation_cue.apply(lambda x: self.get_most_recent_google_doc_for_user(user_account=x['user_account'],
+    #                                                                                                 all_account_info=all_account_info),axis=1)
+    #     return required_post_fiat_generation_cue 
     
     def phase_1_a__initial_task_generation_api_args(self,full_user_context_replace,
                                                     user_request='I want something related to the Post Fiat Network'):
@@ -147,121 +205,201 @@ class PostFiatTaskGenerationSystem:
         postfiat_request_cue['requires_work']=postfiat_request_cue['most_recent_status'].apply(lambda x: 'REQUEST_POST_FIAT' in x)
         return postfiat_request_cue
 
-    # TODO: Rename this to discord_server__initiation_rite and refactor
-    def discover_server__initiation_rite(self, account_seed, initiation_rite, google_doc_link, username):
-        """ EXAMPLE:
-            account_seed = 'sEdSqchDCHj29NoRhcsZ8EQfbAkbBJ2'
-            initation_rite = "I commit to generating massive profits trading by 2026"
-            google_doc_link='https://docs.google.com/document/d/1M7EW9ocKDnbnSZ1Xa5FanfhRbteVJYV-iNOsvj5bGf4/edit'
-            username = 'funkywallet'
-        """ 
-        error_string = '' 
+    def discord__initiation_rite(
+            self, 
+            account_seed: str, 
+            initiation_rite: str, 
+            google_doc_link: str, 
+            username: str,
+            allow_reinitiation: bool = False
+        ) -> str:
+        """
+        Process an initiation rite for a new user. Will raise exceptions if there are any issues.
+        
+        Args:
+            account_seed (str): The user's wallet seed
+            initiation_rite (str): The commitment message
+            google_doc_link (str): Link to user's Google doc
+            username (str): Discord username
+        """
+        minimum_xrp_balance = 12
+        # Initialize wallets
+        wallet = self.generic_pft_utilities.spawn_wallet_from_seed(seed=account_seed)
         foundation_wallet = self.generic_pft_utilities.spawn_wallet_from_seed(
             self.cred_manager.get_credential('postfiatfoundation__v1xrpsecret')
         )
-        wallet = self.generic_pft_utilities.spawn_wallet_from_seed(seed=account_seed)
-        account_address = wallet.classic_address
-        all_holders = list(self.generic_pft_utilities.output_post_fiat_holder_df()['account'].unique())
-        # step 1 -- verify that the wallet has a trust line and if it does not establish it 
-        if account_address in all_holders:
-            print('already is PFT holder')
-        if account_address not in all_holders:
-            self.generic_pft_utilities.generate_trust_line_to_pft_token(wallet_seed=account_seed)
-            memo = self.generic_pft_utilities.construct_basic_postfiat_memo(user='postfiatfoundation',
-                                                      task_id='discord_wallet_funding',
-                                                      full_output='Initial PFT Grant Pre Initiation')
-            self.generic_pft_utilities.send_PFT_with_info(sending_wallet=foundation_wallet, amount=10, memo=memo, destination_address=wallet.classic_address)
-        error_string = ''
-        all_account_transactions = self.generic_pft_utilities.get_memo_detail_df_for_account(account_address=self.node_address, pft_only=False)
-        all_google_docs = all_account_transactions[all_account_transactions['memo_type'].apply(lambda x: 'google_doc_context_link' in x) 
-        & (all_account_transactions['user_account'] == account_address)][['memo_type','memo_data','memo_format','user_account']]
+
+        # Check XRP balance
+        balance_status = self.generic_pft_utilities.verify_xrp_balance(
+            wallet.classic_address,
+            minimum_xrp_balance
+        )
+        if not balance_status[0]:
+            raise InsufficientXrpBalanceException(wallet.classic_address)
         
-        google_doc = ''
-        if len(all_google_docs)>0:
-            google_doc_row = all_google_docs.tail(1)
-            google_doc = list(google_doc_row['memo_data'])[0]
-            print(f'Already has a google doc: {google_doc}')
+        # Handle Google Doc
+        self.generic_pft_utilities.handle_google_doc(wallet, google_doc_link, username)
         
-        if google_doc == '':
-            print('sending google doc')
-            balance = self.generic_pft_utilities.check_if_there_is_funded_account_at_front_of_google_doc(google_url=google_doc_link)
-            print(f'XRPL balance is {balance}')
-            if balance <=12:
-                error_string = error_string+'Insufficient XRP Balance'
-            if balance>12:
-                google_memo = self.generic_pft_utilities.construct_standardized_xrpl_memo(memo_data=google_doc_link, 
-                                                                                          memo_format=username, 
-                                                                                          memo_type='google_doc_context_link')
-                self.generic_pft_utilities.send_PFT_with_info(sending_wallet=wallet, 
-                                                              amount=1, 
-                                                              destination_address=self.node_address, 
-                                                              memo=google_memo)
+        # Handle PFT trustline
+        self.generic_pft_utilities.handle_trust_line(wallet, username)
         
-            #memo_to_send = self.generate_initiation_rite_context_memo(user=user, user_response=user_response)
-            balance = self.generic_pft_utilities.check_if_there_is_funded_account_at_front_of_google_doc(google_url=google_doc_link)
-            if balance>12:
-                initiation_memo_to_send = self.generic_pft_utilities.construct_standardized_xrpl_memo(memo_data= initiation_rite, memo_format = username, memo_type='INITIATION_RITE')
-            number_of_initiation_rites = len(all_account_transactions[(all_account_transactions['memo_type']=='INITIATION_RITE') & (all_account_transactions['user_account']==account_address)])
-            print("NUmber of initiation rites", number_of_initiation_rites)
-            if number_of_initiation_rites ==0:
-                xo = self.generic_pft_utilities.send_xrp_with_info__seed_based(wallet_seed=account_seed, amount=1, destination=self.node_address, memo=initiation_memo_to_send)
-                print("INITIATION RITE SENT")
-            #self.generate_trust_line_to_pft_token(wallet_seed=wallet_seed)
-            if number_of_initiation_rites >0:
-                error_string = error_string+"initiation rite already sent for this account"
-        if google_doc!='':
-            balance = self.generic_pft_utilities.check_if_there_is_funded_account_at_front_of_google_doc(google_url=google_doc_link)
-            if balance>12:
-                initiation_memo_to_send = self.generic_pft_utilities.construct_standardized_xrpl_memo(memo_data= initiation_rite, memo_format = username, memo_type='INITIATION_RITE')
-            number_of_initiation_rites = len(all_account_transactions[(all_account_transactions['memo_type']=='INITIATION_RITE') & (all_account_transactions['user_account']==account_address)])
-            print("NUmber of initiation rites", number_of_initiation_rites)
-            if number_of_initiation_rites ==0:
-                xo = self.generic_pft_utilities.send_xrp_with_info__seed_based(wallet_seed=account_seed, amount=1, destination=self.node_address, memo=initiation_memo_to_send)
-                print("INITIATION RITE SENT")
-                error_string = self.generic_pft_utilities.extract_transaction_info_from_response_object(xo)['clean_string']
-            #self.generate_trust_line_to_pft_token(wallet_seed=wallet_seed)
-            if number_of_initiation_rites >0:
-                error_string = error_string+"initiation rite already sent for this account"
-        return error_string
+        # Handle initiation rite
+        self.generic_pft_utilities.handle_initiation_rite(
+            wallet, initiation_rite, username, allow_reinitiation
+        )
+        
+        # Send initial PFT grant
+        memo = self.generic_pft_utilities.construct_standardized_xrpl_memo(
+            memo_data='Initial PFT Grant Post Initiation',
+            memo_type='discord_wallet_funding',
+            memo_format='postfiatfoundation'
+        )
+        grant_response = self.generic_pft_utilities.send_PFT_with_info(
+            sending_wallet=foundation_wallet,
+            amount=10,
+            memo=memo,
+            destination_address=wallet.classic_address
+        )
+        if not self.generic_pft_utilities.verify_transaction_response(grant_response):
+            raise Exception(f"Failed to send initial PFT grant: {grant_response}")
     
-    def node_cue_function__initiation_rewards(self):
-        all_account_transactions = self.generic_pft_utilities.get_memo_detail_df_for_account(account_address=self.node_address, pft_only=False)
-        rite_cue  = self.output_initiation_rite_df(all_node_memo_transactions=all_account_transactions)
-        rite_cue_to_work = rite_cue[rite_cue['requires_work']==1].copy()
-        if len(rite_cue_to_work)>0:
-            def create_initiation_rite_api_args(initiation_rite_text):
-                api_args = {
-                            "model": self.default_model,
-                            "messages": [
-                                {"role": "system", "content": phase_4__system},
-                                {"role": "user", "content": phase_4__user.replace('___USER_INITIATION_RITE___',initiation_rite_text)}
-                            ]
-                        }
-                return api_args
-            rite_cue_to_work['api_args']=rite_cue_to_work['initiation_rite'].apply(lambda x: create_initiation_rite_api_args(x))
-            def extract_reward_from_async_response(xstr):
-                ret = 10
-                try:
-                    ret = int(xstr.split('| Reward |')[-1:][0].replace('|','').strip())
-                except:
-                    pass
-                return ret
+    def process_pending_initiation_rewards(self):
+        """Process and send rewards for valid initiation rites that haven't been rewarded yet."""
+
+        def evaluate_initiation_rite(rite_text: str) -> dict:
+            """Evaluate the initiation rite using OpenAI and extract reward details."""
+            api_args = {
+                "model": self.default_model,
+                "messages": [
+                    {"role": "system", "content": phase_4__system},
+                    {"role": "user", "content": phase_4__user.replace('___USER_INITIATION_RITE___',rite_text)}
+                ]
+            }
+
+            response = self.openai_request_tool.create_writable_df_for_chat_completion(api_args=api_args)
+            content = response['choices__message__content'].iloc[0]
+
+            # Extract reward amount and justification
+            try:
+                reward = int(content.split('| Reward |')[-1:][0].replace('|','').strip())
+            except Exception as e:
+                raise Exception(f"Failed to extract reward: {e}")
             
-            def extract_justification_from_async_response(xstr):
-                justification = 'unparseable but some reward allocated'
-                try:
-                    justification = xstr.split(' Justification |')[-1:][0].split('|')[0].strip()
-                except:
-                    pass
-                return justification
-            async_response = self.openai_request_tool.create_writable_df_for_async_chat_completion(arg_async_map=rite_cue_to_work.set_index('user_account')['api_args'].to_dict())
-            async_response['reward']=async_response['choices__message__content'].apply(lambda x: extract_reward_from_async_response(x))
-            async_response['justification']= async_response['choices__message__content'].apply(lambda x: extract_justification_from_async_response(x))[0]
-            async_response['full_output_message'] = "INITIATION_REWARD ___ "+async_response['justification']
-            async_response['memo_to_send']= async_response['full_output_message'].apply(lambda x: self.generic_pft_utilities.construct_standardized_xrpl_memo(memo_data=x, 
-                                                                        memo_type="INITIATION_REWARD", memo_format="postfiatfoundation"))
-            async_response.apply(lambda x: self.generic_pft_utilities.send_PFT_with_info(sending_wallet= self.node_wallet,amount=x['reward'],
-                                                                                     memo=x['memo_to_send'], destination_address=x['internal_name']),axis=1)
+            try:
+                justification = content.split('| Justification |')[-1:][0].split('|')[0].strip()
+            except Exception as e:
+                raise Exception(f"Failed to extract justification: {e}")
+            
+            return {'reward': reward, 'justification': justification}
+        
+        def send_initiation_reward(user_address: str, reward_amount: int, justification: str):
+            """Send PFT reward with appropriate memo for an initiation rite."""
+            memo_data = f"INITIATION_REWARD ___ {justification}"
+            memo = self.generic_pft_utilities.construct_standardized_xrpl_memo(
+                memo_data=memo_data, 
+                memo_type="INITIATION_REWARD", 
+                memo_format="postfiatfoundation"
+            )
+
+            return self.generic_pft_utilities.send_PFT_with_info(
+                sending_wallet=self.node_wallet,
+                amount=reward_amount,
+                memo=memo,
+                destination_address=user_address
+            )
+        
+        if not self.reward_processing_lock.acquire(blocking=False):
+            return
+
+        try:
+            # Get all transactions
+            all_transactions = self.generic_pft_utilities.get_memo_detail_df_for_account(
+                account_address=self.node_address,
+                pft_only=False
+            )
+
+            # Get initiation rites that need processing
+            rite_queue = self.output_initiation_rite_df(all_node_memo_transactions=all_transactions)
+            pending_rites = rite_queue[rite_queue['requires_work']==1].copy()
+
+            if pending_rites.empty:
+                return
+            
+            print(f"\nProcessing {len(pending_rites)} pending rites")
+
+            # Track processed accounts in this batch
+            processed_in_batch = set()
+            
+            # Process each pending rite
+            for _, row in pending_rites.iterrows():
+                account = row['user_account']
+
+                if account in processed_in_batch:
+                    print(f"Skipping {account} as it has already been processed")
+                    continue
+
+                # Evaluate the rite
+                evaluation = evaluate_initiation_rite(row['initiation_rite'])
+                print(f"Evaluation complete - Reward amount: {evaluation['reward']}")
+
+                # Send the reward
+                response = send_initiation_reward(
+                    user_address=row['user_account'], 
+                    reward_amount=evaluation['reward'], 
+                    justification=evaluation['justification']
+                )
+
+                if self.generic_pft_utilities.verify_transaction_response(response):
+                    processed_in_batch.add(account)
+                    print(f"Successfully processed reward for {account}")
+
+                    # Verification Loop
+                    max_attempts = 12  # 1 minute total
+                    attempt = 0
+                    reward_confirmed = False
+
+                    while attempt < max_attempts and not reward_confirmed:
+                        attempt += 1
+                        print(f"Reward verification attempt {attempt} of {max_attempts}")
+
+                        # Wait for transaction to propagate
+                        time.sleep(5)
+
+                        # Force sync of database
+                        self.generic_pft_utilities.write_all_postfiat_holder_transaction_history(public=False)
+
+                        # Verify sync by checking latest transactions
+                        latest_txns = self.generic_pft_utilities.get_memo_detail_df_for_account(
+                            account_address=self.node_address,
+                            pft_only=False
+                        )
+
+                        # Look for our specific reward
+                        reward_txns = latest_txns[
+                            (latest_txns['memo_type'] == 'INITIATION_REWARD') &
+                            (latest_txns['user_account'] == account)
+                        ]
+
+                        if not reward_txns.empty:
+                            # Verify it's newer than the rite
+                            newest_reward = reward_txns['datetime'].max()
+                            if newest_reward > row['rite_datetime']:
+                                print(f"Verified reward sync for {account} after {attempt} attempts")
+                                reward_confirmed = True
+                                processed_in_batch.add(account)
+                                break
+
+                    if not reward_confirmed:
+                        print(f"WARNING: Could not verify reward sync for {account} after {max_attempts} attempts")
+
+                else:
+                    print(f"Failed to send reward to {account}")
+
+        except Exception as e:
+            print(f"Error processing pending initiation rites: {e}")
+
+        finally:
+            self.reward_processing_lock.release()
 
     def discord__send_postfiat_request(self, user_request, user_name, seed):
         """
@@ -427,7 +565,7 @@ class PostFiatTaskGenerationSystem:
         task_string_to_send = 'PROPOSED PF ___ '+' .. '.join(extracted_values)
         return task_string_to_send
 
-    def process_outstanding_task_cue(self):
+    def process_outstanding_task_queue(self):
         """
         Process task requests and send resulting workflows with improved error handling and format consistency.
         """
@@ -446,7 +584,6 @@ class PostFiatTaskGenerationSystem:
             pft_generation_to_work = postfiat_cue[postfiat_cue['requires_work'] == True].copy()
             
             if len(pft_generation_to_work) == 0:
-                print("No tasks requiring processing")
                 return
                 
             # Map user contexts
@@ -835,42 +972,42 @@ class PostFiatTaskGenerationSystem:
                 self.generic_pft_utilities.send_PFT_with_info(sending_wallet=node_wallet, amount=reward_to_dispatch, 
                                                             memo=memo_to_send, destination_address=destination_address)
 
-    def server_loop(self):
-        total_time_to_run=1_000_000_000_000_000_000
-        i=0
-        while i<total_time_to_run:
-            self.generic_pft_utilities.write_all_postfiat_holder_transaction_history(public=False)
-            time.sleep(1)
-            try:
-                self.process_outstanding_task_cue()
-                self.generic_pft_utilities.write_all_postfiat_holder_transaction_history(public=False)
-                    # Process initiation rewards
-            except:
-                pass
-            try:
-                self.node_cue_function__initiation_rewards()
-            except:
-                pass
-            try:        
-                self.generic_pft_utilities.write_all_postfiat_holder_transaction_history(public=False)
-                    # Process final rewards
-                self.process_full_final_reward_cue()
-            except:
-                pass
+    # def server_loop(self):
+    #     total_time_to_run=1_000_000_000_000_000_000
+    #     i=0
+    #     while i<total_time_to_run:
+    #         self.generic_pft_utilities.write_all_postfiat_holder_transaction_history(public=False)
+    #         time.sleep(1)
+    #         try:
+    #             self.process_outstanding_task_queue()
+    #             self.generic_pft_utilities.write_all_postfiat_holder_transaction_history(public=False)
+    #                 # Process initiation rewards
+    #         except:
+    #             pass
+    #         try:
+    #             self.process_pending_initiation_rewards()
+    #         except:
+    #             pass
+    #         try:        
+    #             self.generic_pft_utilities.write_all_postfiat_holder_transaction_history(public=False)
+    #                 # Process final rewards
+    #             self.process_full_final_reward_cue()
+    #         except:
+    #             pass
 
-            try:                
-                self.generic_pft_utilities.write_all_postfiat_holder_transaction_history(public=False)
-                    # Process verifications
-                self.process_verification_cue()
-                self.generic_pft_utilities.write_all_postfiat_holder_transaction_history(public=False)
-            except:
-                pass
-            i=i+1
-            time.sleep(1)
+    #         try:                
+    #             self.generic_pft_utilities.write_all_postfiat_holder_transaction_history(public=False)
+    #                 # Process verifications
+    #             self.process_verification_cue()
+    #             self.generic_pft_utilities.write_all_postfiat_holder_transaction_history(public=False)
+    #         except:
+    #             pass
+    #         i=i+1
+    #         time.sleep(1)
     
-    def run_cue_processing(self):
+    def run_queue_processing(self):
         """
-        Runs cue processing tasks sequentially in a single thread.
+        Runs queue processing tasks sequentially in a single thread.
         Each task runs to completion before starting again.
         """
         self.stop_threads = False
@@ -879,22 +1016,30 @@ class PostFiatTaskGenerationSystem:
             while not self.stop_threads:
                 # Process outstanding tasks
                 try:
-                    self.process_outstanding_task_cue()
-                except:
-                    pass
+                    self.process_outstanding_task_queue()
+                except Exception as e:
+                    print(f"Error processing outstanding tasks: {e}")
+
                 # Process initiation rewards
-                self.node_cue_function__initiation_rewards()
+                try:
+                    self.process_pending_initiation_rewards()
+                except Exception as e:
+                    print(f"Error processing initiation rewards: {e}")
 
                 # Process final rewards
-                self.process_full_final_reward_cue()
+                try:
+                    self.process_full_final_reward_cue()
+                except Exception as e:
+                    print(f"Error processing final rewards: {e}")
 
                 # Process verifications
-                self.process_verification_cue()
+                try:
+                    self.process_verification_cue()
+                except Exception as e:
+                    print(f"Error processing verifications: {e}")
 
-                # Short delay before checking if we should continue
                 time.sleep(1)  # 1 second delay
 
-        # Create and start a single thread
         self.processing_thread = threading.Thread(target=process_all_tasks)
         self.processing_thread.daemon = True
         self.processing_thread.start()
@@ -939,46 +1084,80 @@ class PostFiatTaskGenerationSystem:
         dbconnx = self.db_connection_manager.spawn_sqlalchemy_db_connection_for_user(user_name=self.generic_pft_utilities.node_name)
         full_history.to_sql('foundation_discord', dbconnx, if_exists='replace')
 
-    def output_messages_to_send_and_write_incremental_info_to_foundation_discord_db(self):
-        dbconnx = self.db_connection_manager.spawn_sqlalchemy_db_connection_for_user(user_name=self.generic_pft_utilities.node_name)
-        existing_hashes = list(pd.read_sql('select hash from foundation_discord', dbconnx)['hash'])
-        dbconnx.dispose()
-        simplified_message_df =self.generic_pft_utilities.get_memo_detail_df_for_account(account_address
-                                                                =self.generic_pft_utilities.node_address).sort_values('datetime')
-        simplified_message_df['url']=simplified_message_df['hash'].apply(lambda x: f'https://livenet.xrpl.org/transactions/{x}/detailed')
+    def sync_and_format_new_transactions(self):
+        """
+        Syncs new XRPL transactions with the foundation discord database and formats them for Discord.
         
-        def format_message(row):
-            """
-            Format a message string from the given row of simplified_message_df.
-            
-            Args:
-            row (pd.Series): A row from simplified_message_df containing the required fields.
-            
-            Returns:
-            str: Formatted message string.
-            """
-            return (f"Date: {row['datetime']}\n"
-                    f"Account: {row['account']}\n"
-                    f"Memo Format: {row['memo_format']}\n"
-                    f"Memo Type: {row['memo_type']}\n"
-                    f"Memo Data: {row['memo_data']}\n"
-                    f"Directional PFT: {row['directional_pft']}\n"
-                    f"URL: {row['url']}")
+        Returns:
+            list: Formatted messages for new transactions ready to be sent to Discord.
+        """
+        try:
+            # Get existing transaction hashes from database
+            dbconnx = self.db_connection_manager.spawn_sqlalchemy_db_connection_for_user(
+                user_name=self.generic_pft_utilities.node_name
+            )
+            try:
+                existing_hashes = set(pd.read_sql('select hash from foundation_discord', dbconnx)['hash'])
+            finally:
+                dbconnx.dispose()
+
+            # Get all transactions for the node's address
+            all_transactions_df = self.generic_pft_utilities.get_memo_detail_df_for_account(
+                account_address=self.generic_pft_utilities.node_address
+            ).sort_values('datetime')
+
+            # Add XRPL explorer URLs
+            url_mask = 'https://livenet.xrpl.org/transactions/{hash}/detailed' if not constants.USE_TESTNET else 'https://testnet.xrpl.org/transactions/{hash}/detailed'
+            all_transactions_df['url'] = all_transactions_df['hash'].apply(lambda x: url_mask.format(hash=x))
         
-        # Apply the function to create a new 'formatted_message' column
-        simplified_message_df['formatted_message'] = simplified_message_df.apply(format_message, axis=1)
-        simplified_message_df.set_index('hash',inplace=True)
-        incremental_df = simplified_message_df[simplified_message_df.index.isin(existing_hashes) == False]
-        messages_to_send = list(incremental_df['formatted_message'])
-        writer_df = incremental_df.reset_index()
+            def format_message(row):
+                return (f"Date: {row['datetime']}\n"
+                        f"Account: {row['account']}\n"
+                        f"Memo Format: {row['memo_format']}\n"
+                        f"Memo Type: {row['memo_type']}\n"
+                        f"Memo Data: {row['memo_data']}\n"
+                        f"Directional PFT: {row['directional_pft']}\n"
+                        f"URL: {row['url']}")
 
-        if len(writer_df)>0:
-            dbconnx = self.db_connection_manager.spawn_sqlalchemy_db_connection_for_user(user_name=self.generic_pft_utilities.node_name)
-            writer_df[['hash','memo_data','memo_type','memo_format','datetime','url','directional_pft','account']].to_sql('foundation_discord', 
-                                                                                                                        dbconnx, if_exists='append')
-            dbconnx.dispose()
-        return messages_to_send
+            # Format messages and identify new transactions
+            all_transactions_df['formatted_message'] = all_transactions_df.apply(format_message, axis=1)
+            all_transactions_df.set_index('hash',inplace=True)
 
+            # Filter for new transactions
+            new_transactions_df = all_transactions_df[~all_transactions_df.index.isin(existing_hashes)]
+
+            # Prepare messages for Discord
+            messages_to_send = list(new_transactions_df['formatted_message'])
+
+            # Write new transactions to database if any exist
+            if not new_transactions_df.empty:
+                writer_df = new_transactions_df.reset_index()
+                columns_to_save = [
+                    'hash', 'memo_data', 'memo_type', 'memo_format',
+                    'datetime', 'url', 'directional_pft', 'account'
+                ]
+                
+                dbconnx = self.db_connection_manager.spawn_sqlalchemy_db_connection_for_user(
+                    user_name=self.generic_pft_utilities.node_name
+                )
+                try:
+                    writer_df[columns_to_save].to_sql(
+                        'foundation_discord',
+                        dbconnx,
+                        if_exists='append',
+                        index=False
+                    )
+                    print(f"Synced {len(writer_df)} new transactions to table foundation_discord")
+                finally:
+                    dbconnx.dispose()
+                
+                print(f"Synced {len(writer_df)} new transactions to database")
+            
+            return messages_to_send
+        
+        except Exception as e:
+            print(f"Error syncing transactions: {str(e)}")
+            return []
 
     def generate_coaching_string_for_account(self, account_to_work = 'r3UHe45BzAVB3ENd21X9LeQngr4ofRJo5n'):
         

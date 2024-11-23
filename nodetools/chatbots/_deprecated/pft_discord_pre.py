@@ -220,7 +220,7 @@ class MyClient(discord.Client):
             # Step 2: Spawn the user's wallet and check the XRP balance
             wallet = generic_pft_utilities.spawn_wallet_from_seed(seed)
             wallet_address = wallet.classic_address
-            xrp_balance = generic_pft_utilities.get_account_xrp_balance(account_address=wallet_address)
+            xrp_balance = generic_pft_utilities.get_xrp_balance(address=wallet_address)
             if xrp_balance < 15:
                 await interaction.response.send_message(
                     "You must fund your wallet with at least 15 XRP before initiating.", ephemeral=True
@@ -497,7 +497,7 @@ class MyClient(discord.Client):
             seed = self.user_seeds[user_id]
             wallet = generic_pft_utilities.spawn_wallet_from_seed(seed)
             wallet_address = wallet.classic_address
-            xrp_balance = generic_pft_utilities.get_account_xrp_balance(account_address=wallet_address)
+            xrp_balance = generic_pft_utilities.get_xrp_balance(address=wallet_address)
             if xrp_balance < 12:
                 await message.reply("You must fund your wallet with at least 15 XRP before initiating.", mention_author=True)
                 return
