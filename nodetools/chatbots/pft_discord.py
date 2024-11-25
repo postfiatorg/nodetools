@@ -45,7 +45,7 @@ class MyClient(discord.Client):
 
         # Initialize queue processing
         self.post_fiat_task_generation_system.run_queue_processing()
-        print(f"PFT queue processing initialized.")
+        print(f"Task management queue processing initialized.")
 
         @self.tree.command(name="pf_send", description="Open a transaction form")
         async def pf_send(interaction: Interaction):
@@ -110,7 +110,7 @@ class MyClient(discord.Client):
             wallet = generic_pft_utilities.spawn_wallet_from_seed(seed=seed)
             classic_address = wallet.classic_address
             all_node_memo_transactions = generic_pft_utilities.get_memo_detail_df_for_account(account_address=classic_address, pft_only=False).copy()
-            pf_df = generic_pft_utilities.convert_all_account_info_into_outstanding_task_df(account_memo_detail_df=all_node_memo_transactions)
+            pf_df = generic_pft_utilities.get_proposal_acceptance_pairs(account_memo_detail_df=all_node_memo_transactions)
             non_accepted_tasks = pf_df[pf_df['acceptance'] == ''].copy()
             map_of_non_accepted_tasks = non_accepted_tasks['proposal']
 
@@ -206,7 +206,7 @@ class MyClient(discord.Client):
             wallet = generic_pft_utilities.spawn_wallet_from_seed(seed=seed)
             classic_address = wallet.classic_address
             all_node_memo_transactions = generic_pft_utilities.get_memo_detail_df_for_account(account_address=classic_address, pft_only=False).copy()
-            pf_df = generic_pft_utilities.convert_all_account_info_into_outstanding_task_df(account_memo_detail_df=all_node_memo_transactions)
+            pf_df = generic_pft_utilities.get_proposal_acceptance_pairs(account_memo_detail_df=all_node_memo_transactions)
             non_accepted_tasks = pf_df# MADE THIS CHANGE TO REFUSE ANY [pf_df['acceptance'] == ''].copy()
             map_of_non_accepted_tasks = non_accepted_tasks['proposal']
 
@@ -696,7 +696,7 @@ class MyClient(discord.Client):
             wallet = generic_pft_utilities.spawn_wallet_from_seed(seed=seed)
             wallet_address = wallet.classic_address
             all_wallet_transactions = generic_pft_utilities.get_memo_detail_df_for_account(wallet_address).copy()
-            pf_df = generic_pft_utilities.convert_all_account_info_into_outstanding_task_df(account_memo_detail_df=all_wallet_transactions)
+            pf_df = generic_pft_utilities.get_proposal_acceptance_pairs(account_memo_detail_df=all_wallet_transactions)
             accepted_tasks = pf_df[pf_df['acceptance'] != ''].copy()
             
             # If there are no accepted tasks, notify the user
@@ -974,7 +974,7 @@ Note: XRP wallets need 15 XRP to transact.
 
             try:
                 all_wallet_transactions = generic_pft_utilities.get_memo_detail_df_for_account(wallet_address).copy().sort_values('datetime')
-                reward_summary_map = generic_pft_utilities.process_account_memo_details_into_reward_summary_map(all_account_info=all_wallet_transactions)
+                reward_summary_map = generic_pft_utilities.get_reward_data(all_account_info=all_wallet_transactions)
                 recent_rewards = generic_pft_utilities.format_reward_summary(reward_summary_map['reward_summaries'].tail(10))
 
                 # Split the message into chunks if it's too long
@@ -1290,8 +1290,6 @@ Note: XRP wallets need 15 XRP to transact.
         user_id = message.author.id
         if user_id not in self.conversations:
             self.conversations[user_id] = []
-        
-
 
         self.conversations[user_id].append({
             "role": "user",
@@ -1641,7 +1639,6 @@ if __name__ == "__main__":
         constants.HAS_LOCAL_NODE = use_local == "y"
     else:
         print(f"\nNo local node configuration available for {network_config.name}")
-        print("Using public endpoints only...")
         constants.HAS_LOCAL_NODE = False
     
     print(f"\nInitializing services for {network_config.name}...")

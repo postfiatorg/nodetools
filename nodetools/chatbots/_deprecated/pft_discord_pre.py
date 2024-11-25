@@ -108,7 +108,7 @@ class MyClient(discord.Client):
             wallet = generic_pft_utilities.spawn_wallet_from_seed(seed=seed)
             classic_address = wallet.classic_address
             all_node_memo_transactions = generic_pft_utilities.get_memo_detail_df_for_account(account_address=classic_address, pft_only=False).copy()
-            pf_df = generic_pft_utilities.convert_all_account_info_into_outstanding_task_df(account_memo_detail_df=all_node_memo_transactions)
+            pf_df = generic_pft_utilities.get_proposal_acceptance_pairs(account_memo_detail_df=all_node_memo_transactions)
             non_accepted_tasks = pf_df[pf_df['acceptance'] == ''].copy()
             map_of_non_accepted_tasks = non_accepted_tasks['proposal']
 

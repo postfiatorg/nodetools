@@ -98,9 +98,9 @@ class GenericPFTUtilities:
         the view of the issuer account so balances appear negative so the pft_holdings 
         are reverse signed.
         """
-        # Debugging
-        caller = traceback.extract_stack()[-2]  # Get the caller's info
-        print(f"output_post_fiat_holder_df called from {caller.filename}:{caller.lineno} in {caller.name}")
+        # # Debugging
+        # caller = traceback.extract_stack()[-2]  # Get the caller's info
+        # print(f"output_post_fiat_holder_df called from {caller.filename}:{caller.lineno} in {caller.name}")
 
         client = xrpl.clients.JsonRpcClient(self.primary_endpoint)
         response = client.request(xrpl.models.requests.AccountLines(
@@ -882,33 +882,43 @@ class GenericPFTUtilities:
         core_task_df['task_type']=core_task_df['MemoData'].apply(lambda x: self.classify_task_string(x))
         return core_task_df
     
-    # TODO: Replace with sync_tasks (reference pftpyclient/task_manager/basic_tasks.py)
-    def convert_all_account_info_into_outstanding_task_df(self, account_memo_detail_df):
-        """ This reduces all account info into a simplified dataframe of proposed 
-        and accepted tasks """ 
-        all_account_info = account_memo_detail_df
-        all_account_info= all_account_info.sort_values('datetime')
-        account_memo_detail_df= account_memo_detail_df.sort_values('datetime')
-        task_frame = self.convert_all_account_info_into_simplified_task_frame(account_memo_detail_df=account_memo_detail_df)
-        task_frame['task_id']=task_frame['MemoType']
-        task_frame['full_output']=task_frame['MemoData']
-        task_frame['user_account']=task_frame['MemoFormat']
+    def get_proposal_acceptance_pairs(self, account_memo_detail_df):
+        """Convert account info into a DataFrame of proposed and accepted tasks.
+        
+        Args:
+            account_memo_detail_df: DataFrame containing account memo details
+            
+        Returns:
+            DataFrame with two columns:
+                - proposal: The proposed task text (with 'PROPOSED PF ___' prefix removed)
+                - acceptance: The acceptance text (with 'ACCEPTANCE REASON ___' prefix removed)
+        """
+        task_frame = self.convert_all_account_info_into_simplified_task_frame(
+            account_memo_detail_df=account_memo_detail_df.sort_values('datetime')
+        )
+        # Rename columns MemoType, MemoData, MemoFormat to task_id, full_output, user_account
+        task_frame.rename(columns={'MemoType': 'task_id', 'MemoData': 'full_output', 'MemoFormat': 'user_account'}, inplace=True)
+
+        # Get the most recent task type for each task_id
         task_type_map = task_frame.groupby('task_id').last()[['task_type']].copy()
-        task_id_to_proposal = task_frame[task_frame['task_type']
-        =='PROPOSAL'].groupby('task_id').first()['full_output']
-        task_id_to_acceptance = task_frame[task_frame['task_type']
-        =='ACCEPTANCE'].groupby('task_id').first()['full_output']
-        acceptance_frame = pd.concat([task_id_to_proposal,task_id_to_acceptance],axis=1)
-        acceptance_frame.columns=['proposal','acceptance_raw']
-        acceptance_frame['acceptance']=acceptance_frame['acceptance_raw'].apply(lambda x: str(x).replace('ACCEPTANCE REASON ___ ',
-                                                                                                         '').replace('nan',''))
-        acceptance_frame['proposal']=acceptance_frame['proposal'].apply(lambda x: str(x).replace('PROPOSED PF ___ ',
-                                                                                                         '').replace('nan',''))
-        raw_proposals_and_acceptances = acceptance_frame[['proposal','acceptance']].copy()
-        proposed_or_accepted_only = list(task_type_map[(task_type_map['task_type']=='ACCEPTANCE')|
-        (task_type_map['task_type']=='PROPOSAL')].index)
-        op= raw_proposals_and_acceptances[raw_proposals_and_acceptances.index.get_level_values(0).isin(proposed_or_accepted_only)]
-        return op
+
+        # Get proposals and acceptances
+        proposals = task_frame[task_frame['task_type']=='PROPOSAL'].groupby('task_id').first()['full_output']
+        acceptances = task_frame[task_frame['task_type']=='ACCEPTANCE'].groupby('task_id').first()['full_output']
+
+        # Combine proposals and acceptances
+        outstanding_tasks = pd.concat([proposals, acceptances], axis=1)
+        outstanding_tasks.columns = ['proposal', 'acceptance']
+
+        # Clean up the text content
+        outstanding_tasks['acceptance'] = outstanding_tasks['acceptance'].apply(
+            lambda x: str(x).replace('ACCEPTANCE REASON ___ ', '').replace('nan', '')
+        )
+        outstanding_tasks['proposal']=outstanding_tasks['proposal'].apply(
+            lambda x: str(x).replace('PROPOSED PF ___ ', '').replace('nan','')
+        )
+
+        return outstanding_tasks[['proposal', 'acceptance']]
 
     def establish_post_fiat_tx_cache_as_hash_unique(self):
         dbconnx = self.db_connection_manager.spawn_sqlalchemy_db_connection_for_user(user_name=self.node_name)
@@ -1003,7 +1013,7 @@ class GenericPFTUtilities:
             full_transaction_history['tx_json'] = full_transaction_history['tx_json'].apply(json.dumps)
             return full_transaction_history
 
-    def write_full_transaction_history_for_account(self, account_address):
+    def sync_pft_transaction_history_for_account(self, account_address):
         # Fetch transaction history and prepare DataFrame
         tx_hist = self.generate_postgres_writable_df_for_address(account_address=account_address)
         dbconnx = self.db_connection_manager.spawn_sqlalchemy_db_connection_for_user(user_name=self.node_name)
@@ -1057,6 +1067,13 @@ class GenericPFTUtilities:
         else:
             print("No transaction history to write.")
 
+    def sync_pft_transaction_history(self):
+        """ Syncs transaction history for all post fiat holders """
+        accounts_df = self.output_post_fiat_holder_df()
+        all_accounts = list(accounts_df['account'].unique())
+        for account in all_accounts:
+            self.sync_pft_transaction_history_for_account(account_address=account)
+
     def run_transaction_history_updates(self):
         """
         Runs transaction history updates using a single coordinated thread
@@ -1074,13 +1091,7 @@ class GenericPFTUtilities:
                         now = time.time()
                         if now - self._last_update >= TRANSACTION_HISTORY_UPDATE_INTERVAL:
                             print("Syncing PFT account holder transaction history...")
-                            accounts_df = self.output_post_fiat_holder_df()
-                            all_accounts = list(accounts_df['account'].unique())
-
-                            for account in all_accounts:
-                                self.write_full_transaction_history_for_account(
-                                    account_address=account
-                                )
+                            self.sync_pft_transaction_history()
                             self._last_update = now
 
                 except Exception as e:
@@ -1193,31 +1204,86 @@ class GenericPFTUtilities:
     """+formatted_task_string
         return output_string
 
-    def process_account_memo_details_into_reward_summary_map(self, all_account_info):
-        """ Takes the all_account_info and makes it into a map that contains both timeseries output as well as 
-        a task completion history log """ 
-        reward_responses = all_account_info[all_account_info['directional_pft']>0].copy()
-        specific_rewards = reward_responses[reward_responses.memo_data.apply(lambda x: "REWARD RESPONSE" in x)]
-        reward_sum = specific_rewards [['directional_pft', 'simple_date']].groupby('simple_date').sum()
-        today = pd.Timestamp.today().normalize()
-        date_range = pd.date_range(start=reward_sum.index.min(), end=today, freq='D')
-        # Reindex the reward_sum DataFrame with the new date range
-        extended_reward_sum = reward_sum.reindex(date_range, fill_value=0)
-        # Resample and fill missing values
-        final_result = extended_reward_sum.resample('D').last().fillna(0)
-        final_result['weekly_total']= final_result.rolling(7).sum()
-        pft_generation_ts = final_result.resample('W').last()[['weekly_total']]
-        pft_generation_ts.index.name = 'date'
-        specific_reward_slice = specific_rewards[['memo_data','directional_pft',
-                                'datetime','memo_type']].sort_values('datetime').copy()
-        task_request = all_account_info[all_account_info['memo_data'].apply(lambda x:'REQUEST_POST_FIAT' 
-                                                             in x)].groupby('memo_type').first()['memo_data']
+    def _calculate_weekly_reward_totals(self, specific_rewards):
+        """Calculate weekly reward totals with proper date handling.
         
-        task_proposal = all_account_info[all_account_info['memo_data'].apply(lambda x:('PROPOSED' in x)|('..' in x))].groupby('memo_type').first()['memo_data']
-        specific_reward_slice['request']=specific_reward_slice['memo_type'].map(task_request)
-        specific_reward_slice['proposal']=specific_reward_slice['memo_type'].map(task_proposal)
-        specific_reward_slice['request']=specific_reward_slice['request'].fillna('No Request String')
-        return {'reward_ts':pft_generation_ts, 'reward_summaries': specific_reward_slice}
+        Returns DataFrame with weekly_total column indexed by date"""
+        # Calculate daily totals
+        daily_totals = specific_rewards[['directional_pft', 'simple_date']].groupby('simple_date').sum()
+
+        # Extend date range to today
+        today = pd.Timestamp.today().normalize()
+        date_range = pd.date_range(
+            start=daily_totals.index.min(),
+            end=today,
+            freq='D'
+        )
+
+        # Fill missing dates and calculate weekly totals
+        extended_daily_totals = daily_totals.reindex(date_range, fill_value=0)
+        extended_daily_totals = extended_daily_totals.resample('D').last().fillna(0)
+        extended_daily_totals['weekly_total'] = extended_daily_totals.rolling(7).sum()
+
+        # Return weekly totals
+        weekly_totals = extended_daily_totals.resample('W').last()[['weekly_total']]
+        weekly_totals.index.name = 'date'
+        return weekly_totals
+    
+    def _pair_rewards_with_tasks(self, specific_rewards, all_account_info):
+        """Pair rewards with their original requests and proposals.
+        
+        Returns DataFrame with columns: memo_data, directional_pft, datetime, memo_type, request, proposal
+        """
+        # Get reward details
+        reward_details = specific_rewards[
+            ['memo_data', 'directional_pft', 'datetime', 'memo_type']
+        ].sort_values('datetime')
+
+        # Get original requests and proposals
+        task_requests = all_account_info[
+            all_account_info['memo_data'].apply(lambda x: 'REQUEST_POST_FIAT' in x)
+        ].groupby('memo_type').first()['memo_data']
+
+        task_proposals = all_account_info[
+            all_account_info['memo_data'].apply(lambda x: ('PROPOSED' in x) | ('..' in x))
+        ].groupby('memo_type').first()['memo_data']
+
+        # Map requests and proposals to rewards
+        reward_details['request'] = reward_details['memo_type'].map(task_requests).fillna('No Request String')
+        reward_details['proposal'] = reward_details['memo_type'].map(task_proposals)
+
+        return reward_details
+
+    def get_reward_data(self, all_account_info):
+        """Get reward time series and task completion history.
+        
+        Args:
+            all_account_info: DataFrame containing account memo details
+            
+        Returns:
+            dict with keys:
+                - reward_ts: DataFrame of weekly reward totals
+                - reward_summaries: DataFrame containing rewards paired with original requests/proposals
+        """
+        # Get basic reward data
+        reward_responses = all_account_info[all_account_info['directional_pft'] > 0]
+        specific_rewards = reward_responses[
+            reward_responses.memo_data.apply(lambda x: "REWARD RESPONSE" in x)
+        ]
+
+        # Get weekly totals
+        weekly_totals = self._calculate_weekly_reward_totals(specific_rewards)
+
+        # Get reward summaries with context
+        reward_summaries = self._pair_rewards_with_tasks(
+            specific_rewards=specific_rewards,
+            all_account_info=all_account_info
+        )
+
+        return {
+            'reward_ts': weekly_totals,
+            'reward_summaries': reward_summaries
+        }
 
     def format_reward_summary(self, reward_summary_df):
         """
@@ -1267,6 +1333,14 @@ class GenericPFTUtilities:
     
     @staticmethod
     def get_google_doc_text(share_link):
+        """Get the plain text content of a Google Doc.
+        
+        Args:
+            share_link: Google Doc share link
+            
+        Returns:
+            str: Plain text content of the Google Doc
+        """
         # Extract the document ID from the share link
         doc_id = share_link.split('/')[5]
     
@@ -1435,19 +1509,33 @@ class GenericPFTUtilities:
         
         return "\n".join(formatted_messages)
 
-    # TODO: Leverage self.tasks
-    def generate_refusal_frame(self, all_account_info):
-        """ Takes all account info and transmutes into all historical task refusals and reasons 
+    def get_proposal_refusal_pairs(self, all_account_info):
+        """Get pairs of proposals and their refusals.
         
-        account_address='r3UHe45BzAVB3ENd21X9LeQngr4ofRJo5n'
-        all_account_info =self.get_memo_detail_df_for_account(account_address=account_address)
+        Args:
+            all_account_info: DataFrame containing account memo details
+            
+        Returns:
+            DataFrame with columns:
+                - refusal: The refusal text
+                - proposal: The corresponding proposal text
+            Indexed by memo_type
         """
-        refusal_frame_constructor = all_account_info[all_account_info['memo_data'].apply(lambda x: "REFUSAL" in x)][['memo_data',
-                                                                                    'memo_type']].groupby('memo_type').first().copy()
-        initial_proposal= all_account_info[all_account_info['memo_data'].apply(lambda x: (' .. ' in x)|('PROPOSAL' in x))].groupby('memo_type').first()[['memo_data']]
-        initial_proposal.columns=['proposal']
-        refusal_frame_constructor['proposal']=initial_proposal
-        return refusal_frame_constructor
+        # Get refusals
+        refusals = all_account_info[
+            all_account_info['memo_data'].apply(lambda x: "REFUSAL" in x)
+        ][['memo_data', 'memo_type']].groupby('memo_type').first().copy()
+        
+        # Get corresponding proposals
+        proposals = all_account_info[
+            all_account_info['memo_data'].apply(lambda x: (' .. ' in x)|('PROPOSAL' in x))
+        ].groupby('memo_type').first()[['memo_data']]
+
+        # Combine refusals and proposals
+        refusals['proposal'] = proposals['memo_data']
+        refusals.columns = ['refusal', 'proposal']
+
+        return refusals
 
     def format_refusal_frame(self, refusal_frame_constructor):
         """
@@ -1465,72 +1553,128 @@ class GenericPFTUtilities:
         
         return formatted_string
 
-    def output_user_compressed_memo_history(self, account_address,num_messages):
-        """ this pulls down all compressed memos sent from a user 
-            account address: r3UHe45BzAVB3ENd21X9LeQngr4ofRJo5n
-            num_messages: 20
-        """ 
-        user_memo_compression_string = self.get_all_account_compressed_messages(account_address=account_address)[['cleaned_message',
-                                                                                                    'datetime']].tail(num_messages).sort_values('datetime').set_index('datetime')['cleaned_message'].to_json()
-        return user_memo_compression_string
-
-    def get_full_user_context_string(self,account_address):
-        """ the following function gets all the core elements of a users post fiat interactions including
-        their outstanding tasks their completed tasks, their context document as well as their post fiat chunk message dialogue
-
-        EXAMPLE
-        account_address='r3UHe45BzAVB3ENd21X9LeQngr4ofRJo5n'
-        """ 
-        print('N Version')
-        current_date = datetime.datetime.now().strftime('%Y-%m-%d')
-        all_account_info =self.get_memo_detail_df_for_account(account_address=account_address).sort_values('datetime')
-        core_element_outstanding_task_df =''
+    def get_recent_user_memos(self, account_address, num_messages):
+        """Get the most recent messages from a user's memo history.
+        
+        Args:
+            account_address: The XRPL account address to fetch messages for
+            num_messages: Number of most recent messages to return (default: 20)
+            
+        Returns:
+            str: JSON string containing datetime-indexed messages
+            
+        Example:
+            >>> get_recent_user_messages("r3UHe45BzAVB3ENd21X9LeQngr4ofRJo5n", 10)
+            '{"2024-01-01T12:00:00": "message1", "2024-01-02T14:30:00": "message2", ...}'
+        """
         try:
-            outstanding_task_df = self.convert_all_account_info_into_outstanding_task_df(account_memo_detail_df=all_account_info)
-            all_account_info['simple_date']= all_account_info['datetime'].apply(lambda x: pd.to_datetime(x.date()))
-            core_element_outstanding_task_df = self.format_outstanding_tasks(outstanding_task_df=outstanding_task_df)
+            # Get all messages and select relevant columns
+            messages_df = self.get_all_account_compressed_messages(
+                account_address=account_address
+            )[['cleaned_message', 'datetime']]
+
+            if messages_df.empty:
+                return json.dumps({})
+            
+            # Get most recent messages, sort by time, and convert to JSON
+            recent_messages = (messages_df
+                .tail(num_messages)
+                .sort_values('datetime')
+                .set_index('datetime')['cleaned_message']
+                .to_json()
+            )
+
+            return recent_messages
+
+        except Exception as e:
+            print(f"Failed to get recent user memos for account {account_address}: {e}")
+            return json.dumps({})
+
+    def get_full_user_context_string(self, account_address):
+        """Get all core elements of a user's post fiat interactions.
+        Returns a context string even if some elements fail to generate.
+        Logs specific failures for debugging while allowing the function to continue.
+        """
+        MAX_ACCEPTANCES_IN_CONTEXT = constants.MAX_ACCEPTANCES_IN_CONTEXT
+        MAX_REFUSALS_IN_CONTEXT = constants.MAX_REFUSALS_IN_CONTEXT
+        MAX_REWARDS_IN_CONTEXT = constants.MAX_REWARDS_IN_CONTEXT
+        MAX_CHUNK_MESSAGES_IN_CONTEXT = constants.MAX_CHUNK_MESSAGES_IN_CONTEXT
+
+        # Get base account info dataframe
+        all_account_info = self.get_memo_detail_df_for_account(account_address=account_address).sort_values('datetime')
+        all_account_info['simple_date']= all_account_info['datetime'].apply(lambda x: pd.to_datetime(x.date()))
+
+        # Retrieve outstanding task frame
+        core_element_outstanding_tasks = ''
+        try:
+            proposal_acceptance_pairs_df = self.get_proposal_acceptance_pairs(account_memo_detail_df=all_account_info).tail(MAX_ACCEPTANCES_IN_CONTEXT)
+            if proposal_acceptance_pairs_df.empty:
+                print(f'No proposals or acceptances found for {account_address}')
+                core_element_outstanding_tasks = "No proposals or acceptances found."
+            else:
+                core_element_outstanding_tasks = self.format_outstanding_tasks(outstanding_task_df=proposal_acceptance_pairs_df)
         except:
-            print('FAILED OUTSTANDING TASK GEN')
+            print(f'Exception in get_full_user_context_string for {account_address}: FAILED OUTSTANDING TASK GEN')
             pass
         
+        # Retrieve refusal frame
         core_element__refusal_frame = ''
         try:
-            refusal_frame_constructor = self.generate_refusal_frame(all_account_info=all_account_info).tail(6)
-            core_element__refusal_frame = self.format_refusal_frame(refusal_frame_constructor=refusal_frame_constructor)
+            proposal_refusal_pairs_df = self.get_proposal_refusal_pairs(all_account_info=all_account_info).tail(MAX_REFUSALS_IN_CONTEXT)
+            if proposal_refusal_pairs_df.empty:
+                print(f'No proposals or refusals found for {account_address}')
+                core_element__refusal_frame = "No proposals or refusals found."
+            else:
+                core_element__refusal_frame = self.format_refusal_frame(refusal_frame_constructor=proposal_refusal_pairs_df)
         except:
-            print('FAILED REFUSAL FRAME GEN')
+            print(f'Exception in get_full_user_context_string for {account_address}: FAILED REFUSAL FRAME GEN')
             pass
 
+        # Retrieve rewards and weekly generation
         core_element__last_10_rewards=''
         core_element_post_fiat_weekly_gen=''
         try:
-            reward_map = self.process_account_memo_details_into_reward_summary_map(all_account_info=all_account_info)
-            specific_rewards = reward_map['reward_summaries']
-            core_element__last_10_rewards = self.format_reward_summary(specific_rewards.tail(10))
-            core_element_post_fiat_weekly_gen= reward_map['reward_ts']['weekly_total'].to_string()
+            reward_map = self.get_reward_data(all_account_info=all_account_info).tail(MAX_REWARDS_IN_CONTEXT)
+
+            # Handle rewards
+            if reward_map.empty:
+                print(f'No rewards found for {account_address}')
+                core_element__last_10_rewards = "No rewards found."
+            else:
+                specific_rewards = reward_map['reward_summaries']
+                core_element__last_10_rewards = self.format_reward_summary(specific_rewards)
+                core_element_post_fiat_weekly_gen = reward_map['reward_ts']['weekly_total'].to_string()
         except:
-            print('FAILED REWARD GEN')
+            print(f'Exception in get_full_user_context_string for {account_address}: FAILED REWARDS AND WEEKLY GENERATION GEN')
             pass
         
+        # Retrieve google doc text
         core_element__google_doc_text = ''
         try:
             google_url = list(all_account_info[all_account_info['memo_type'].apply(lambda x: 'google_doc' in x)]['memo_data'])[0]
             core_element__google_doc_text= self.get_google_doc_text(google_url)
         except:
-            print('FAILED GOOGLE DOC GEN')
+            print(f'Exception in get_full_user_context_string for {account_address}: FAILED GOOGLE DOC GEN')
             pass
         
+        # Retrieve chunk messages
         core_element__chunk_messages = ''
         try:
-            core_element__chunk_messages = self.output_user_compressed_memo_history(account_address=account_address, 
-                                                                                    num_messages=20)
+            core_element__chunk_messages = self.get_recent_user_memos(
+                account_address=account_address, 
+                num_messages=MAX_CHUNK_MESSAGES_IN_CONTEXT
+            )
         except:
+            print(f'Exception in get_full_user_context_string for {account_address}: FAILED CHUNK MESSAGES GEN')
             pass
+
+        # Format final context string
+        current_date = datetime.datetime.now().strftime('%Y-%m-%d')
         final_context_string = f"""The current date is {current_date}
         
         USERS CORE OUTSTANDING TASKS ARE AS FOLLOWS:
         <OUTSTANDING TASKS START HERE>
-        {core_element_outstanding_task_df}
+        {core_element_outstanding_tasks}
         <OUTSTANDING TASKS END HERE>
 
         THESE ARE TASKS USER HAS RECENTLY REFUSED ALONG WITH REASONS
@@ -1580,7 +1724,7 @@ THIS MESSAGE WILL AUTO DELETE IN 60 SECONDS
         monthly_pft_reward_avg=0
         weekly_pft_reward_avg=0
         try:
-            reward_ts = self.process_account_memo_details_into_reward_summary_map(all_account_info=all_account_info)
+            reward_ts = self.get_reward_data(all_account_info=all_account_info)
             monthly_pft_reward_avg = list(reward_ts['reward_ts'].tail(4).mean())[0]
             weekly_pft_reward_avg = list(reward_ts['reward_ts'].tail(1).mean())[0]
         except:
@@ -1707,7 +1851,7 @@ PFT WEEKLY AVG:   {weekly_pft_reward_avg}
         """ 
         all_memos = self.get_memo_detail_df_for_account(account_address=account_address,
                                             pft_only=True).sort_values('datetime')
-        outstanding_task_df = self.convert_all_account_info_into_outstanding_task_df(account_memo_detail_df=all_memos)
+        outstanding_task_df = self.get_proposal_acceptance_pairs(account_memo_detail_df=all_memos)
         task_string = self.format_outstanding_tasks(outstanding_task_df)
         verification_df = self.convert_all_account_info_into_outstanding_verification_df(account_memo_detail_df=all_memos)
         verification_string = self.format_outstanding_verification_df(verification_requirements=verification_df)

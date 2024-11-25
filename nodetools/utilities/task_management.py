@@ -147,25 +147,6 @@ class PostFiatTaskGenerationSystem:
     #                                                                                                 all_account_info=all_account_info),axis=1)
     #     return required_post_fiat_generation_cue 
     
-    def phase_1_a__initial_task_generation_api_args(self,full_user_context_replace,
-                                                    user_request='I want something related to the Post Fiat Network'):
-        """ EXAMPLE ACCOUNT ADDRESS
-        r3UHe45BzAVB3ENd21X9LeQngr4ofRJo5n
-        full_user_context_replace = self.generic_pft_utilities.get_full_user_context_string(account_address=account_address)
-        """ 
-        #full_user_context_replace = self.generic_pft_utilities.get_full_user_context_string(account_address=account_address)
-        context_augment  = f'''<THE USER SPECIFIC TASK REQUEST STARTS HERE>
-        {user_request}
-        <THE USER SPECIFIC TASK REQUEST ENDS HERE>'''
-        full_augmented_context=full_user_context_replace+context_augment
-        api_args = {
-            "model": self.default_model,
-            "messages": [
-                {"role": "system", "content": task_generation.phase_1_a__system},
-                {"role": "user", "content": task_generation.phase_1_a__user.replace('___FULL_USER_CONTEXT_REPLACE___',full_augmented_context)}
-            ]}
-        return api_args
-
     def create_multiple_copies_of_df(self, df, n_copies):
         """
         Create multiple copies of a dataframe and add a unique index column.
@@ -178,42 +159,7 @@ class PostFiatTaskGenerationSystem:
         copies = [df.copy() for _ in range(n_copies)]
         result = pd.concat(copies, ignore_index=True)
         result['unique_index'] = range(len(result))
-        return result
-
-    def phase_1_a__n_post_fiat_task_generator(self, full_user_context_replace, user_request, n_copies):
-        """
-        EXAMPLE
-        account_address = 'r3UHe45BzAVB3ENd21X9LeQngr4ofRJo5n'
-        user_request='I want something related to the Post Fiat Network'
-        n_copies = 3
-        """
-        n_copies = n_copies 
-        user_api_arg = self.phase_1_a__initial_task_generation_api_args(full_user_context_replace=full_user_context_replace,
-                                                                       user_request=user_request)
-        copy_frame = pd.DataFrame([[user_api_arg]])
-        copy_frame.columns=['api_args']
-        full_copy_df = self.create_multiple_copies_of_df(df=copy_frame, n_copies= n_copies)
-        async_dict_to_work = full_copy_df.set_index('unique_index')['api_args'].to_dict()
-        output = self.openai_request_tool.create_writable_df_for_async_chat_completion(arg_async_map=async_dict_to_work)
-        result_map = output[['internal_name','choices__message__content']].groupby('internal_name').first()['choices__message__content']
-        full_copy_df['output']=full_copy_df['unique_index'].map(result_map)
-        full_copy_df['task_string']=full_copy_df['output'].apply(lambda x: x.split('Final Output |')[-1:][0].split('|')[0].strip())
-        full_copy_df['value']=full_copy_df['output'].apply(lambda x: x.split('| Value of Task |')[-1:][0].replace('|','').strip())
-        full_copy_df['classification']='OUTPUT '+(full_copy_df['unique_index']+1).astype(str)
-        full_copy_df['simplified_string']= full_copy_df['task_string']+' .. '+full_copy_df['value']
-        output_string = '\n'.join(list(full_copy_df['simplified_string']))
-        return {'full_api_output': full_copy_df, 'n_task_output': output_string}
-        
-    def convert_all_node_memo_transactions_to_required_pft_generation(self, all_node_memo_transactions):
-        """
-        all_node_memo_transactions = self.generic_pft_utilities.get_memo_detail_df_for_account(account_address=self.node_address, pft_only=False).copy()
-        """
-        most_recent_memo = all_node_memo_transactions.sort_values('datetime').groupby('memo_type').last()['memo_data']
-        postfiat_request_cue = all_node_memo_transactions[all_node_memo_transactions['memo_data'].apply(lambda x: 
-                                                                                 'REQUEST_POST_FIAT' in x)].sort_values('datetime')
-        postfiat_request_cue['most_recent_status']=postfiat_request_cue['memo_type'].map(most_recent_memo)
-        postfiat_request_cue['requires_work']=postfiat_request_cue['most_recent_status'].apply(lambda x: 'REQUEST_POST_FIAT' in x)
-        return postfiat_request_cue
+        return result    
 
     def discord__initiation_rite(
             self, 
@@ -335,7 +281,7 @@ class PostFiatTaskGenerationSystem:
             if pending_rites.empty:
                 return
             
-            print(f"\nProcessing {len(pending_rites)} pending rites")
+            print(f"\nprocess_pending_initiation_rewards: Processing {len(pending_rites)} pending rites")
 
             # Track processed accounts in this batch
             processed_in_batch = set()
@@ -345,12 +291,12 @@ class PostFiatTaskGenerationSystem:
                 account = row['user_account']
 
                 if account in processed_in_batch:
-                    print(f"Skipping {account} as it has already been processed")
+                    print(f"process_pending_initiation_rewards: Skipping {account} as it has already been processed")
                     continue
 
                 # Evaluate the rite
                 evaluation = evaluate_initiation_rite(row['initiation_rite'])
-                print(f"Evaluation complete - Reward amount: {evaluation['reward']}")
+                print(f"process_pending_initiation_rewards: Evaluation complete - Reward amount: {evaluation['reward']}")
 
                 # Send the reward
                 response = send_initiation_reward(
@@ -361,22 +307,22 @@ class PostFiatTaskGenerationSystem:
 
                 if self.generic_pft_utilities.verify_transaction_response(response):
                     processed_in_batch.add(account)
-                    print(f"Successfully processed reward for {account}")
+                    print(f"process_pending_initiation_rewards: Successfully processed reward for {account}")
 
                     # Verification Loop
-                    max_attempts = 12  # 1 minute total
+                    max_attempts = constants.TRANSACTION_VERIFICATION_ATTEMPTS
                     attempt = 0
                     reward_confirmed = False
 
                     while attempt < max_attempts and not reward_confirmed:
                         attempt += 1
-                        print(f"Reward verification attempt {attempt} of {max_attempts}")
+                        print(f"process_pending_initiation_rewards: Reward verification attempt {attempt} of {max_attempts}")
 
                         # Wait for transaction to propagate
-                        time.sleep(5)
+                        time.sleep(constants.TRANSACTION_VERIFICATION_WAIT_TIME)
 
                         # Force sync of database
-                        self.generic_pft_utilities.write_all_postfiat_holder_transaction_history(public=False)
+                        self.generic_pft_utilities.sync_pft_transaction_history(public=False)
 
                         # Verify sync by checking latest transactions
                         latest_txns = self.generic_pft_utilities.get_memo_detail_df_for_account(
@@ -394,19 +340,19 @@ class PostFiatTaskGenerationSystem:
                             # Verify it's newer than the rite
                             newest_reward = reward_txns['datetime'].max()
                             if newest_reward > row['rite_datetime']:
-                                print(f"Verified reward sync for {account} after {attempt} attempts")
+                                print(f"process_pending_initiation_rewards: Verified reward sync for {account} after {attempt} attempts")
                                 reward_confirmed = True
                                 processed_in_batch.add(account)
                                 break
 
                     if not reward_confirmed:
-                        print(f"WARNING: Could not verify reward sync for {account} after {max_attempts} attempts")
+                        print(f"process_pending_initiation_rewards: WARNING: Could not verify reward sync for {account} after {max_attempts} attempts")
 
                 else:
-                    print(f"Failed to send reward to {account}")
+                    print(f"process_pending_initiation_rewards: Failed to send reward to {account}")
 
         except Exception as e:
-            print(f"Error processing pending initiation rites: {e}")
+            print(f"process_pending_initiation_rewards: Error processing pending initiation rites: {e}")
 
         finally:
             self.reward_processing_lock.release()
@@ -442,7 +388,7 @@ class PostFiatTaskGenerationSystem:
         wallet= self.generic_pft_utilities.spawn_wallet_from_seed(seed=seed_to_work)
         wallet_address = wallet.classic_address
         all_wallet_transactions = self.generic_pft_utilities.get_memo_detail_df_for_account(wallet_address).copy()
-        pf_df = self.generic_pft_utilities.convert_all_account_info_into_outstanding_task_df(account_memo_detail_df=all_wallet_transactions)
+        pf_df = self.generic_pft_utilities.get_proposal_acceptance_pairs(account_memo_detail_df=all_wallet_transactions)
         valid_task_ids_to_accept= list(pf_df[pf_df['acceptance']==''].index)
         if task_id_to_accept in valid_task_ids_to_accept:
             print('valid task ID proceeding to accept')
@@ -467,7 +413,7 @@ class PostFiatTaskGenerationSystem:
         wallet= self.generic_pft_utilities.spawn_wallet_from_seed(seed=seed_to_work)
         wallet_address = wallet.classic_address
         all_wallet_transactions = self.generic_pft_utilities.get_memo_detail_df_for_account(wallet_address).copy()
-        pf_df = self.generic_pft_utilities.convert_all_account_info_into_outstanding_task_df(account_memo_detail_df=all_wallet_transactions)
+        pf_df = self.generic_pft_utilities.get_proposal_acceptance_pairs(account_memo_detail_df=all_wallet_transactions)
         valid_task_ids_to_refuse = list(pf_df.index)
 
         if task_id_to_accept in valid_task_ids_to_refuse:
@@ -492,7 +438,7 @@ class PostFiatTaskGenerationSystem:
         wallet= self.generic_pft_utilities.spawn_wallet_from_seed(seed=seed_to_work)
         wallet_address = wallet.classic_address
         all_wallet_transactions = self.generic_pft_utilities.get_memo_detail_df_for_account(wallet_address).copy()
-        pf_df = self.generic_pft_utilities.convert_all_account_info_into_outstanding_task_df(account_memo_detail_df=all_wallet_transactions)
+        pf_df = self.generic_pft_utilities.get_proposal_acceptance_pairs(account_memo_detail_df=all_wallet_transactions)
 
         valid_task_ids_to_submit_for_completion = list(pf_df[pf_df['acceptance']!=''].index)
         if task_id_to_accept in valid_task_ids_to_submit_for_completion:
@@ -575,138 +521,446 @@ class PostFiatTaskGenerationSystem:
         task_string_to_send = 'PROPOSED PF ___ '+' .. '.join(extracted_values)
         return task_string_to_send
 
-    def process_outstanding_task_queue(self):
+    def filter_unprocessed_pf_requests(self, all_node_memo_transactions):
         """
-        Process task requests and send resulting workflows with improved error handling and format consistency.
+        Filter unprocessed post fiat requests, ensuring each request is processed only once.
+        
+        Args:
+            all_node_memo_transactions (pd.DataFrame): DataFrame containing all memo transactions
+            
+        Returns:
+            pd.DataFrame: DataFrame containing only unprocessed requests that require work
+        """
+        # Get the most recent memo and check for existing proposals
+        memo_groups = all_node_memo_transactions.groupby('memo_type')
+        most_recent_memo = memo_groups.last()['memo_data']
+        has_proposal = memo_groups['memo_data'].apply(
+            lambda memos: any('PROPOSED PF ___' in memo for memo in memos)
+        )
+
+        # Filter and mark tasks requiring work
+        postfiat_request_queue = all_node_memo_transactions[
+            all_node_memo_transactions['memo_data'].apply(lambda x: 'REQUEST_POST_FIAT' in x)
+        ].sort_values('datetime')
+
+        # Map each request's memo_type to its most recent memo_data, to know the current status of each request
+        postfiat_request_queue['most_recent_status'] = postfiat_request_queue['memo_type'].map(most_recent_memo)
+
+        # Return only requests that require proposals
+        return postfiat_request_queue[
+            # Condition 1: Check if the most recent status is still a request
+            postfiat_request_queue['most_recent_status'].apply(lambda x: 'REQUEST_POST_FIAT' in x) &
+            # Condition 2: Check that this memo_type has no proposals 
+            ~postfiat_request_queue['memo_type'].map(has_proposal)
+        ]
+
+    def phase_1_a__initial_task_generation_api_args(
+            self,
+            user_context: str,
+            user_request: str = 'I want something related to the Post Fiat Network'
+        ):
+        """Prepare API arguments for task generation by combining user context and request.
+        
+        This method:
+        1. Combines user's context with their specific request
+        2. Creates API arguments using predefined system and user prompts
+        3. Returns formatted arguments ready for OpenAI API call
+        
+        Args:
+            user_context (str): User's full context including history and preferences,
+                typically from get_full_user_context_string()
+            user_request (str, optional): The specific task request from the user.
+                Defaults to generic Post Fiat Network request.
+                
+        Returns:
+            dict: OpenAI API arguments containing:
+                - model: The model to use (from self.default_model)
+                - messages: List of system and user messages with:
+                    - System prompt from phase_1_a__system
+                    - User prompt from phase_1_a__user with context inserted
+        
+        Example:
+            >>> args = phase_1_a__initial_task_generation_api_args(
+            ...     user_context="User history and preferences...",
+            ...     user_request="REQUEST_POST_FIAT ___ Create a data analysis task"
+            ... )
+            >>> args
+            {
+                "model": "gpt-4",
+                "messages": [
+                    {"role": "system", "content": "System prompt..."},
+                    {"role": "user", "content": "User prompt with context..."}
+                ]
+            }
+        """
+        # Augment user context with specific request
+        context_augment  = f'''<THE USER SPECIFIC TASK REQUEST STARTS HERE>
+        {user_request}
+        <THE USER SPECIFIC TASK REQUEST ENDS HERE>'''
+
+        # Combine context with specific request
+        full_augmented_context = user_context + context_augment
+
+        # Create API arguments
+        api_args = {
+            "model": self.default_model,
+            "messages": [
+                {"role": "system", "content": task_generation.phase_1_a__system},
+                {
+                    "role": "user", 
+                    "content": task_generation.phase_1_a__user.replace(
+                        '___FULL_USER_CONTEXT_REPLACE___',
+                        full_augmented_context
+                    )
+                }
+            ]}
+        return api_args
+    
+    def phase_1_a__n_post_fiat_task_generator(
+            self, 
+            user_context: str,
+            user_request: str = 'I want something related to the Post Fiat Network',
+            n_copies: int = 1
+        ):
+        """Generate multiple variations of a post-fiat task based on user context and request.
+        
+        This method:
+        1. Creates API arguments for task generation
+        2. Makes parallel API calls to generate n variations
+        3. Processes responses into a standardized format
+        4. Returns both raw data and formatted task strings
+        
+        Args:
+            user_context (str): User's full context including history and preferences
+            user_request (str): The specific request to generate tasks for (includes 'REQUEST_POST_FIAT ___' prefix)
+            n_copies (int): Number of task variations to generate
+            
+        Returns:
+            dict: Contains two keys:
+                - full_api_output (pd.DataFrame): Complete data including:
+                    - api_args: Original API arguments
+                    - output: Raw API response
+                    - task_string: Extracted task description
+                    - value: Extracted task value
+                    - classification: Output number (e.g., 'OUTPUT 1')
+                    - simplified_string: Combined task and value ('task .. value')
+                - n_task_output (str): All tasks formatted as newline-separated strings
+        
+        Example:
+            >>> result = phase_1_a__n_post_fiat_task_generator(
+            ...     user_context="User prefers technical tasks...",
+            ...     user_request="REQUEST_POST_FIAT ___ Create a data analysis task",
+            ...     n_copies=3
+            ... )
+            >>> print(result['n_task_output'])
+            "Analyze Bitcoin price data .. 50\nCreate ML model .. 75\nVisualize trends .. 60"
+        """
+        # Generate API arguments for task creation
+        user_api_arg = self.phase_1_a__initial_task_generation_api_args(
+            user_context=user_context,
+            user_request=user_request
+        )
+
+        # Prepare DataFrame for parallel processing
+        copy_frame = pd.DataFrame([[user_api_arg]])
+        copy_frame.columns=['api_args']
+        full_copy_df = self.create_multiple_copies_of_df(df=copy_frame, n_copies= n_copies)
+
+        # Make parallel API calls
+        async_dict_to_work = full_copy_df.set_index('unique_index')['api_args'].to_dict()
+        output = self.openai_request_tool.create_writable_df_for_async_chat_completion(
+            arg_async_map=async_dict_to_work
+        )
+
+        # Extract results from API responses
+        result_map = output[
+            ['internal_name','choices__message__content']
+        ].groupby('internal_name').first()['choices__message__content']
+        full_copy_df['output']=full_copy_df['unique_index'].map(result_map)
+
+        # Parse task components from responses
+        full_copy_df['task_string']=full_copy_df['output'].apply(
+            lambda x: x.split('Final Output |')[-1:][0].split('|')[0].strip()
+        )
+        full_copy_df['value']=full_copy_df['output'].apply(
+            lambda x: x.split('| Value of Task |')[-1:][0].replace('|','').strip()
+        )
+
+        # Format output
+        full_copy_df['classification'] = 'OUTPUT ' + (full_copy_df['unique_index'] + 1).astype(str)
+        full_copy_df['simplified_string'] = full_copy_df['task_string'] + ' .. ' + full_copy_df['value']
+        output_string = '\n'.join(list(full_copy_df['simplified_string']))
+
+        return {'full_api_output': full_copy_df, 'n_task_output': output_string}
+        
+    def _generate_task_safely(self, account, user_context, user_request, n_copies):
+        """Generate task proposals with error handling.
+    
+        Args:
+            account: User's account address (for error logging)
+            user_context: User's full context
+            user_request: The specific request text
+            n_copies: Number of task variations to generate
+            
+        Returns:
+            dict: Task generation results or pd.NA if generation fails
         """
         try:
+            result = self.phase_1_a__n_post_fiat_task_generator(
+                user_context=user_context,
+                user_request=user_request,
+                n_copies=n_copies
+            )
+            
+            # Validate result format
+            if not isinstance(result, dict) or 'n_task_output' not in result:
+                print(f"Invalid task generation output format for {account}")
+                return pd.NA
+                
+            return result
+            
+        except Exception as e:
+            print(f"Task generation failed for {account}: {e}")
+            return pd.NA 
+        
+    def phase_1_b__task_selection_api_args(
+            self,
+            task_string: str,
+            user_context: str
+        ):
+        """Prepare API arguments for selecting the best task from generated proposals.
+        
+        This method:
+        1. Creates API arguments for task selection phase
+        2. Uses zero temperature for consistent selection
+        3. Combines task options and user context into the prompt
+        
+        Args:
+            task_string: String containing all generated task proposals, 
+                typically formatted as "task1 .. value1\ntask2 .. value2"
+            user_context: User's full context including history and preferences,
+                used to inform task selection
+                
+        Returns:
+            dict: OpenAI API arguments containing:
+                - model: The model to use (from self.default_model)
+                - temperature: Set to 0 for consistent selection
+                - messages: List of system and user messages with:
+                    - System prompt from phase_1_b__system
+                    - User prompt from phase_1_b__user with tasks and context inserted
+            or pd.NA if argument creation fails
+            
+        Example:
+            >>> args = phase_1_b__task_selection_api_args(
+            ...     task_string="Task A .. 50\\nTask B .. 75",
+            ...     user_context="User prefers technical tasks..."
+            ... )
+            >>> args
+            {
+                "model": "gpt-4",
+                "temperature": 0,
+                "messages": [
+                    {"role": "system", "content": "System prompt..."},
+                    {"role": "user", "content": "User prompt with tasks and context..."}
+                ]
+            }
+        """
+        try:
+            return {
+                "model": self.default_model,
+                "temperature": 0,
+                "messages": [
+                    {"role": "system", "content": phase_1_b__system},
+                    {"role": "user", "content": phase_1_b__user.replace(
+                        '___SELECTION_OPTION_REPLACEMENT___', task_string
+                    ).replace(
+                        '___FULL_USER_CONTEXT_REPLACE___', user_context
+                    )}
+                ]
+            }
+        except Exception as e:
+            print(f"process_outstanding_task_queue: phase_1_b__task_selection_api_args: API args conversion failed: {e}")
+            return pd.NA
+        
+    def _parse_output_selection(self, content: str) -> int:
+       """Parse the selected output number from API response.
+       
+       Returns:
+           int: Selected output number (defaults to 1 if parsing fails)
+       """
+       try:
+           return int(content.split('BEST OUTPUT |')[-1].replace('|', '').strip())
+       except Exception as e:
+           print(f"Output selection parsing failed: {e}")
+           return 1
+
+    def _extract_task_details(self, choice_string: str, df_to_extract: pd.DataFrame) -> dict:
+        """Extract final task details for the selected choice.
+        
+        Returns:
+            dict: Contains 'task' and 'reward' or defaults if extraction fails
+        """
+        try:
+            if not isinstance(df_to_extract, pd.DataFrame) or df_to_extract.empty:
+                raise ValueError("Invalid dataframe")
+                
+            selection_df = df_to_extract[df_to_extract['classification'] == choice_string]
+            if len(selection_df) == 0:
+                raise ValueError("No matching task found")
+                
+            return {
+                'task': selection_df['simplified_string'].iloc[0],
+                'reward': float(selection_df['value'].iloc[0])
+            }
+        except Exception as e:
+            print(f"Task extraction failed: {e}")
+            return {
+                'task': 'Update and review your context document and ensure it is populated',
+                'reward': 50
+            }
+
+    def process_outstanding_task_queue(self):
+        """Process task requests and send resulting workflows with error handling and format consistency."""
+        TASKS_TO_GENERATE = constants.TASKS_TO_GENERATE
+
+        try:
             # Get transaction data
-            all_node_transactions = self.generic_pft_utilities.get_all_cached_transactions_related_to_account(self.node_address).copy()
             all_node_memo_transactions = self.generic_pft_utilities.get_memo_detail_df_for_account(
                 account_address=self.node_address, 
                 pft_only=False
-            ).copy()
+            )
             
             # Get tasks that need processing
-            postfiat_cue = self.convert_all_node_memo_transactions_to_required_pft_generation(
+            unprocessed_pf_requests = self.filter_unprocessed_pf_requests(
                 all_node_memo_transactions=all_node_memo_transactions
-            ).copy()
-            pft_generation_to_work = postfiat_cue[postfiat_cue['requires_work'] == True].copy()
-            
-            if len(pft_generation_to_work) == 0:
+            )
+            if unprocessed_pf_requests.empty:
                 return
+                        
+            # Add request_id to track requests through the pipeline
+            unprocessed_pf_requests['request_id'] = unprocessed_pf_requests.groupby('user_account').cumcount()
                 
             # Map user contexts
             context_mapper = {
                 account: self.generic_pft_utilities.get_full_user_context_string(account_address=account)
-                for account in pft_generation_to_work['account'].unique()
+                for account in unprocessed_pf_requests['user_account'].unique()
             }
-            pft_generation_to_work['full_user_context'] = pft_generation_to_work['account'].map(context_mapper)
-
-            # Generate initial tasks
-            def safe_task_generation(row):
-                try:
-                    result = self.phase_1_a__n_post_fiat_task_generator(
-                        full_user_context_replace=row['most_recent_status'],
-                        user_request=row['full_user_context'],
-                        n_copies=3
-                    )
-                    # Validate result format
-                    if not isinstance(result, dict) or 'n_task_output' not in result:
-                        raise ValueError("Invalid task generation output format")
-                    return result
-                except Exception as e:
-                    print(f"Task generation failed: {e}")
-                    return {'n_task_output': '', 'full_api_output': pd.DataFrame()}
+            unprocessed_pf_requests['full_user_context'] = unprocessed_pf_requests['user_account'].map(context_mapper)
             
-            pft_generation_to_work['first_n_tasks_to_select'] = pft_generation_to_work.apply(safe_task_generation, axis=1)
-            pft_generation_to_work['task_string'] = pft_generation_to_work['first_n_tasks_to_select'].apply(
-                lambda x: x.get('n_task_output', '')
-            )
-
-            # Convert tasks to API args
-            def safe_api_args_conversion(row):
-                try:
-                    return {
-                        "model": self.default_model,
-                        "temperature": 0,
-                        "messages": [
-                            {"role": "system", "content": phase_1_b__system},
-                            {"role": "user", "content": phase_1_b__user.replace(
-                                '___SELECTION_OPTION_REPLACEMENT___', row['task_string']
-                            ).replace(
-                                '___FULL_USER_CONTEXT_REPLACE___', row['full_user_context']
-                            )}
-                        ]
-                    }
-                except Exception as e:
-                    print(f"API args conversion failed: {e}")
-                    return None
-
-            pft_generation_to_work['final_api_arg'] = pft_generation_to_work.apply(safe_api_args_conversion, axis=1)
-            
-            # Remove rows with failed API arg conversion
-            pft_generation_to_work = pft_generation_to_work[pft_generation_to_work['final_api_arg'].notna()]
-            
-            if len(pft_generation_to_work) == 0:
-                print("No valid tasks after API conversion")
-                return
-
-            # Get task selections
-            selection_mapper = pft_generation_to_work.set_index('hash')['final_api_arg'].to_dict()
-            async_df = self.openai_request_tool.create_writable_df_for_async_chat_completion(arg_async_map=selection_mapper)
-            
-            def safe_output_selection(content):
-                try:
-                    return int(content.split('BEST OUTPUT |')[-1].replace('|', '').strip())
-                except Exception as e:
-                    print(f"Output selection parsing failed: {e}")
-                    return 1  # Default to first output if parsing fails
-                    
-            async_df['output_selection'] = async_df['choices__message__content'].apply(safe_output_selection)
-            selected_choice = async_df.groupby('internal_name').first()['output_selection']
-            
-            # Process selections
-            pft_generation_to_work['best_choice'] = pft_generation_to_work['hash'].map(selected_choice)
-            pft_generation_to_work['df_to_extract'] = pft_generation_to_work['first_n_tasks_to_select'].apply(
-                lambda x: x.get('full_api_output', pd.DataFrame())
-            )
-            pft_generation_to_work['best_choice_string'] = pft_generation_to_work['best_choice'].apply(
-                lambda x: f'OUTPUT {x}'
-            )
-
-            # Extract final task details
-            def get_output_map_for_output_value(choice_string, df_to_extract):
-                try:
-                    if not isinstance(df_to_extract, pd.DataFrame) or df_to_extract.empty:
-                        raise ValueError("Invalid dataframe")
-                        
-                    selection_df = df_to_extract[df_to_extract['classification'] == choice_string]
-                    if len(selection_df) == 0:
-                        raise ValueError("No matching task found")
-                        
-                    return {
-                        'task': selection_df['simplified_string'].iloc[0],
-                        'reward': float(selection_df['value'].iloc[0])
-                    }
-                except Exception as e:
-                    print(f"Task extraction failed: {e}")
-                    return {
-                        'task': 'Update and review your context document and ensure it is populated',
-                        'reward': 50
-                    }
-
-            pft_generation_to_work['task_map'] = pft_generation_to_work.apply(
-                lambda x: get_output_map_for_output_value(x['best_choice_string'], x['df_to_extract']), 
+            print(f"process_outstanding_task_queue: Generating {len(unprocessed_pf_requests)} task proposals")
+            # Generate task proposals
+            unprocessed_pf_requests['task_proposals'] = unprocessed_pf_requests.apply(
+                lambda row: self._generate_task_safely(
+                    account=row['user_account'], 
+                    user_context=row['full_user_context'], 
+                    user_request=row['most_recent_status'], 
+                    n_copies=TASKS_TO_GENERATE
+                ), 
                 axis=1
             )
 
+            # logging
+            print("process_outstanding_task_queue: Removing rows with failed task generation")
+            base_proposal_count = len(unprocessed_pf_requests)
+
+            # Remove rows with failed task generation
+            unprocessed_pf_requests = unprocessed_pf_requests[
+                unprocessed_pf_requests['task_proposals'].notna()
+            ]
+
+            # logging
+            valid_proposal_count = len(unprocessed_pf_requests)
+            print(f"process_outstanding_task_queue: {valid_proposal_count} out of {base_proposal_count} task proposals are valid")
+
+            if unprocessed_pf_requests.empty:
+                print("process_outstanding_task_queue: No valid task proposals generated. Returning...")
+                return
+            
+            print("process_outstanding_task_queue: Extracting task strings from proposals")
+            # Extract task strings from proposals
+            unprocessed_pf_requests['task_string'] = unprocessed_pf_requests['task_proposals'].apply(
+                lambda x: x.get('n_task_output', '') if isinstance(x, dict) else ''
+            )
+
+            # Prepare API args for selection
+            unprocessed_pf_requests['final_api_arg'] = unprocessed_pf_requests.apply(
+                lambda row: self.phase_1_b__task_selection_api_args(
+                    task_string=row['task_string'],
+                    user_context=row['full_user_context']
+                ),
+                axis=1
+            )
+            
+            # Remove rows with failed API arg conversion
+            unprocessed_pf_requests = unprocessed_pf_requests[unprocessed_pf_requests['final_api_arg'].notna()]
+
+            # LOGGING
+            api_arg_count = len(unprocessed_pf_requests['final_api_arg'])
+            print(f"process_outstanding_task_queue: {api_arg_count} out of {valid_proposal_count} task proposals have valid API args")
+            
+            if unprocessed_pf_requests.empty:
+                print("process_outstanding_task_queue: No valid tasks after API conversion. Returning...")
+                return
+
+            # Get task selections
+            print("process_outstanding_task_queue: Getting task selections")
+            selection_mapper = unprocessed_pf_requests.set_index('hash')['final_api_arg'].to_dict()
+            async_df = self.openai_request_tool.create_writable_df_for_async_chat_completion(arg_async_map=selection_mapper)
+            async_df['output_selection'] = async_df['choices__message__content'].apply(self._parse_output_selection)
+
+            # Map selections back using hash
+            print("process_outstanding_task_queue: Mapping selections back using hash")
+            selected_choice = async_df.groupby('internal_name').first()['output_selection']
+            unprocessed_pf_requests['best_choice'] = unprocessed_pf_requests['hash'].map(selected_choice)
+
+            # Validate - best selection exists
+            if unprocessed_pf_requests['best_choice'].isna().any():
+                print("process_outstanding_task_queue: Task selection failed - no best choice found")
+                return
+
+            # Validate - we have one selection per request
+            print("process_outstanding_task_queue: Validating - one selection per request")
+            tasks_per_request = unprocessed_pf_requests.groupby(['user_account', 'request_id']).size()
+            if (tasks_per_request > 1).any():
+                print("process_outstanding_task_queue: WARNING: Multiple tasks generated for single request")
+                # Keep only the first task for each request
+                unprocessed_pf_requests = unprocessed_pf_requests.groupby(['user_account', 'request_id']).first().reset_index()
+
+            # Continue processing with guaranteed single task per request
+            print("process_outstanding_task_queue: Continuing with guaranteed single task per request")
+            unprocessed_pf_requests['df_to_extract'] = unprocessed_pf_requests['task_proposals'].apply(
+                lambda x: x.get('full_api_output', pd.DataFrame())
+            )
+            unprocessed_pf_requests['best_choice_string'] = unprocessed_pf_requests['best_choice'].apply(
+                lambda x: f'OUTPUT {x}'
+            )
+
+            # Extract and validate task details
+            print("process_outstanding_task_queue: Extracting and validating task details")
+            unprocessed_pf_requests['task_map'] = unprocessed_pf_requests.apply(
+                lambda x: self._extract_task_details(x['best_choice_string'], x['df_to_extract']), 
+                axis=1
+            )
+
+            # Log any requests that fell back to default task
+            print("process_outstanding_task_queue: Logging any requests that fell back to default task")
+            fallback_requests = unprocessed_pf_requests[
+                unprocessed_pf_requests['task_map'].apply(
+                    lambda x: x['task'] == "Update and review your context document and ensure it is populated"
+                )
+            ]
+            if not fallback_requests.empty:
+                fallback_msg = "process_outstanding_task_queue: Fallback to default task for the following requests:"
+                fallback_msg += f"\n {fallback_requests[['user_account', 'request_id']].values}"
+                print(fallback_msg)
+
             # Prepare final task strings
-            pft_generation_to_work['task_string_to_send'] = 'PROPOSED PF ___ ' + pft_generation_to_work['task_map'].apply(
+            print("process_outstanding_task_queue: Preparing final task strings")
+            unprocessed_pf_requests['task_string_to_send'] = 'PROPOSED PF ___ ' + unprocessed_pf_requests['task_map'].apply(
                 lambda x: x['task']
             )
 
-            # Create memos
+            # Create memos with request tracking
             def create_memo(row):
                 try:
                     return self.generic_pft_utilities.construct_standardized_xrpl_memo(
@@ -715,19 +969,32 @@ class PostFiatTaskGenerationSystem:
                         memo_type=row['memo_type']
                     )
                 except Exception as e:
-                    print(f"Memo creation failed: {e}")
+                    print(f"process_outstanding_task_queue: create_memo: Memo creation failed: {e}")
                     return None
 
-            pft_generation_to_work['memo_to_send'] = pft_generation_to_work.apply(create_memo, axis=1)
-            
-            # Process each task
-            for _, row in pft_generation_to_work.iterrows():
+            print("process_outstanding_task_queue: Creating memos")
+            unprocessed_pf_requests['memo_to_send'] = unprocessed_pf_requests.apply(create_memo, axis=1)
+
+            # Spawn node wallet
+            node_wallet = self.generic_pft_utilities.spawn_wallet_from_seed(
+                seed=self.cred_manager.get_credential(f'{self.network_config.node_name}__v1xrpsecret')
+            )
+
+            # Send each task
+            tasks_to_verify = set()  # Set of (user_account, memo_type, datetime) tuples
+            print("process_outstanding_task_queue: Sending each task with request validation")
+            for _, row in unprocessed_pf_requests.iterrows():
+                request_key = (row['user_account'], row['request_id'])
+                if request_key in {(t[0], t[1]) for t in tasks_to_verify}:
+                    print(f"process_outstanding_task_queue: Skipping duplicate request for account {row['user_account']} and request_id {row['request_id']}")
+                    continue
+
                 try:
                     if row['memo_to_send'] is None:
                         continue
                         
                     if 'Update and review your context document' in row['task_string_to_send']:
-                        print(f"Attempting fallback task generation for {row['user_account']}")
+                        print(f"process_outstanding_task_queue: Attempting fallback task generation for {row['user_account']}")
                         try:
                             task_string_to_send = self.generate_o1_task_one_shot_version(
                                 model_version='o1',
@@ -740,29 +1007,82 @@ class PostFiatTaskGenerationSystem:
                                 memo_type=row['memo_type']
                             )
                         except Exception as e:
-                            print(f"Fallback task generation failed: {e}")
+                            print(f"process_outstanding_task_queue: Fallback task generation failed: {e}")
                             continue
                     else:
                         memo_to_send = row['memo_to_send']
                     
                     # Send task
-                    node_wallet = self.generic_pft_utilities.spawn_wallet_from_seed(
-                        seed=self.cred_manager.get_credential(f'{self.network_config.node_name}__v1xrpsecret')
-                    )
-                    self.generic_pft_utilities.send_PFT_with_info(
+                    response = self.generic_pft_utilities.send_PFT_with_info(
                         sending_wallet=node_wallet,
                         amount=1,
                         memo=memo_to_send,
                         destination_address=row['user_account']
                     )
-                    print(f"Successfully sent task to {row['user_account']}")
-                    
+
+                    if self.generic_pft_utilities.verify_transaction_response(response):
+                        tasks_to_verify.add((
+                            row['user_account'], 
+                            row['memo_type'],
+                            row['datetime']
+                        ))
+                    else:
+                        print(f"process_outstanding_task_queue: ERROR: Failed to verify whether task was sent to {row['user_account']}")
+
                 except Exception as e:
-                    print(f"Failed to process task for {row['user_account']}: {e}")
+                    print(f"process_outstanding_task_queue: Failed to process task for {row['user_account']}, request {row['request_id']}: {e}")
                     continue
+
+            # Verify all sent tasks
+            if tasks_to_verify:
+                print(f"process_outstanding_task_queue: Verifying that {len(tasks_to_verify)} sent tasks were confirmed on-chain")
+                max_attempts = constants.TRANSACTION_VERIFICATION_ATTEMPTS
+                attempt = 0
+
+                while attempt < max_attempts and tasks_to_verify:
+                    attempt += 1
+                    print(f"process_outstanding_task_queue: Verification attempt {attempt} of {max_attempts}")
+
+                    time.sleep(constants.TRANSACTION_VERIFICATION_WAIT_TIME)
+
+                    # Force sync of database
+                    self.generic_pft_utilities.sync_pft_transaction_history()
+
+                    # Verify sync by checking latest transactions
+                    latest_txns = self.generic_pft_utilities.get_memo_detail_df_for_account(
+                        account_address=self.node_address, 
+                        pft_only=False
+                    )
+
+                    latest_txns.to_csv('latest_txns.csv')
+
+                    # Check all pending tasks
+                    verified_tasks = set()
+                    for user_account, memo_type, request_time in tasks_to_verify:
+                        print(f"process_outstanding_task_queue: Checking for task {memo_type} for {user_account} at {request_time}")
+                        task_txns = latest_txns[
+                            (latest_txns['memo_data'].str.contains('PROPOSED PF', na=False)) &
+                            (latest_txns['user_account'] == user_account) &
+                            (latest_txns['memo_type'] == memo_type) &
+                            (latest_txns['datetime'] > request_time)
+                        ]
+
+                        if not task_txns.empty:
+                            newest_task = task_txns['datetime'].max()
+                            if newest_task > request_time:
+                                print(f"process_outstanding_task_queue: Verified task for {row['user_account']} after {attempt} attempts")
+                                verified_tasks.add((user_account, memo_type, request_time))
+
+                    # Remove verified tasks
+                    tasks_to_verify -= verified_tasks
+
+                if tasks_to_verify:
+                    print(f"process_outstanding_task_queue: WARNING: Could not verify sync for the following tasks:")
+                    for user_account, memo_type, _ in tasks_to_verify:
+                        print(f" - {user_account}, task {memo_type}")
                     
         except Exception as e:
-            print(f"Task queue processing failed: {e}")
+            print(f"process_outstanding_task_queue: Task queue processing failed: {e}")
 
     def process_verification_cue(self):
         all_node_memo_transactions = self.generic_pft_utilities.get_memo_detail_df_for_account(account_address=self.node_address, 

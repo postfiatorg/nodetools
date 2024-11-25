@@ -80,5 +80,21 @@ def get_network_config(network: Network = Network.XRPL_TESTNET if USE_TESTNET el
 # DEFAULT OPEN AI MODEL
 DEFAULT_OPEN_AI_MODEL = 'chatgpt-4o-latest'
 DEFAULT_ANTHROPIC_MODEL = 'claude-3-5-sonnet-20241022'
-MAX_HISTORY = 15 
+ 
+MAX_HISTORY = 15  # TODO: rename this to something more descriptive
+
+# Task generation parameters
+TASKS_TO_GENERATE = 3
+
+# Context generation limits
+MAX_ACCEPTANCES_IN_CONTEXT = 6
+MAX_REFUSALS_IN_CONTEXT = 6
+MAX_REWARDS_IN_CONTEXT = 10
+MAX_CHUNK_MESSAGES_IN_CONTEXT = 20
+
+# Update intervals
 TRANSACTION_HISTORY_UPDATE_INTERVAL = 30  # in seconds
+
+# Transaction verification parameters
+TRANSACTION_VERIFICATION_ATTEMPTS = 12
+TRANSACTION_VERIFICATION_WAIT_TIME = 5  # in seconds
