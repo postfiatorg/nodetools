@@ -37,18 +37,28 @@ class PostFiatTaskGenerationSystem:
 
     def __init__(self):
         if not self.__class__._initialized:
+            # Get network configuration
+            self.network_config = constants.get_network_config()
+
+            # Initialize components
             self.cred_manager = CredentialManager()
-            self.default_model = constants.DEFAULT_OPEN_AI_MODEL
             self.openai_request_tool= OpenAIRequestTool()
             self.generic_pft_utilities = GenericPFTUtilities()
-            self.node_address = constants.DEFAULT_NODE_ADDRESS if not constants.USE_TESTNET else constants.TESTNET_DEFAULT_NODE_ADDRESS
-            self.node_wallet = self.generic_pft_utilities.spawn_wallet_from_seed(
-                self.cred_manager.get_credential('postfiatfoundation__v1xrpsecret')
-            )
-            self.stop_threads = False
             self.db_connection_manager = DBConnectionManager()
+
+            # Use network-specific node address
+            self.node_address = self.network_config.node_address
+
+            # Initialize node wallet
+            self.node_wallet = self.generic_pft_utilities.spawn_wallet_from_seed(
+                self.cred_manager.get_credential(f'{self.network_config.node_name}__v1xrpsecret')
+            )
+
+            # Initialize other components
+            self.stop_threads = False
             self.reward_processing_lock = threading.Lock()
             self.__class__._initialized = True
+            self.default_model = constants.DEFAULT_OPEN_AI_MODEL
 
     @staticmethod
     def is_valid_initiation_rite(rite_text: str) -> bool:
@@ -226,7 +236,7 @@ class PostFiatTaskGenerationSystem:
         # Initialize wallets
         wallet = self.generic_pft_utilities.spawn_wallet_from_seed(seed=account_seed)
         foundation_wallet = self.generic_pft_utilities.spawn_wallet_from_seed(
-            self.cred_manager.get_credential('postfiatfoundation__v1xrpsecret')
+            self.cred_manager.get_credential(f'{self.network_config.node_name}__v1xrpsecret')
         )
 
         # Check XRP balance
@@ -252,7 +262,7 @@ class PostFiatTaskGenerationSystem:
         memo = self.generic_pft_utilities.construct_standardized_xrpl_memo(
             memo_data='Initial PFT Grant Post Initiation',
             memo_type='discord_wallet_funding',
-            memo_format='postfiatfoundation'
+            memo_format=self.network_config.node_name
         )
         grant_response = self.generic_pft_utilities.send_PFT_with_info(
             sending_wallet=foundation_wallet,
@@ -298,7 +308,7 @@ class PostFiatTaskGenerationSystem:
             memo = self.generic_pft_utilities.construct_standardized_xrpl_memo(
                 memo_data=memo_data, 
                 memo_type="INITIATION_REWARD", 
-                memo_format="postfiatfoundation"
+                memo_format=self.network_config.node_name
             )
 
             return self.generic_pft_utilities.send_PFT_with_info(
@@ -737,7 +747,7 @@ class PostFiatTaskGenerationSystem:
                     
                     # Send task
                     node_wallet = self.generic_pft_utilities.spawn_wallet_from_seed(
-                        seed=self.cred_manager.get_credential('postfiatfoundation__v1xrpsecret')
+                        seed=self.cred_manager.get_credential(f'{self.network_config.node_name}__v1xrpsecret')
                     )
                     self.generic_pft_utilities.send_PFT_with_info(
                         sending_wallet=node_wallet,
@@ -797,7 +807,7 @@ class PostFiatTaskGenerationSystem:
                 pft_user_account = slicex.loc['user_account']
                 destination_address = slicex.loc['user_account']
                 node_wallet = self.generic_pft_utilities.spawn_wallet_from_seed(
-                    seed=self.cred_manager.get_credential('postfiatfoundation__v1xrpsecret')
+                    seed=self.cred_manager.get_credential(f'{self.network_config.node_name}__v1xrpsecret')
                 )
                 self.generic_pft_utilities.send_PFT_with_info(sending_wallet=node_wallet, amount=1, 
                                                             memo=memo_to_send, destination_address=destination_address)
@@ -967,7 +977,7 @@ class PostFiatTaskGenerationSystem:
                 reward_to_dispatch = int(np.min([reward_to_dispatch,1200]))
                 reward_to_dispatch = int(np.max([reward_to_dispatch,1]))
                 node_wallet = self.generic_pft_utilities.spawn_wallet_from_seed(
-                    seed=self.cred_manager.get_credential('postfiatfoundation__v1xrpsecret')
+                    seed=self.cred_manager.get_credential(f'{self.network_config.node_name}__v1xrpsecret')
                 )
                 self.generic_pft_utilities.send_PFT_with_info(sending_wallet=node_wallet, amount=reward_to_dispatch, 
                                                             memo=memo_to_send, destination_address=destination_address)
@@ -1056,7 +1066,8 @@ class PostFiatTaskGenerationSystem:
         """ Write the full transaction set """ 
         simplified_message_df =self.generic_pft_utilities.get_memo_detail_df_for_account(account_address
                                                                 =self.generic_pft_utilities.node_address).sort_values('datetime')
-        simplified_message_df['url']=simplified_message_df['hash'].apply(lambda x: f'https://livenet.xrpl.org/transactions/{x}/detailed')
+        url_mask = self.network_config.explorer_tx_url_mask
+        simplified_message_df['url']=simplified_message_df['hash'].apply(lambda x: url_mask.format(hash=x))
 
         def format_message(row):
             """
@@ -1107,7 +1118,7 @@ class PostFiatTaskGenerationSystem:
             ).sort_values('datetime')
 
             # Add XRPL explorer URLs
-            url_mask = 'https://livenet.xrpl.org/transactions/{hash}/detailed' if not constants.USE_TESTNET else 'https://testnet.xrpl.org/transactions/{hash}/detailed'
+            url_mask = self.network_config.explorer_tx_url_mask
             all_transactions_df['url'] = all_transactions_df['hash'].apply(lambda x: url_mask.format(hash=x))
         
             def format_message(row):
@@ -1150,8 +1161,6 @@ class PostFiatTaskGenerationSystem:
                     print(f"Synced {len(writer_df)} new transactions to table foundation_discord")
                 finally:
                     dbconnx.dispose()
-                
-                print(f"Synced {len(writer_df)} new transactions to database")
             
             return messages_to_send
         

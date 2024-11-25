@@ -18,18 +18,24 @@ import getpass
 class MyClient(discord.Client):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
+        # Get network configuration and set network-specific attributes
+        self.network_config = constants.get_network_config()
+        self.remembrancer = self.network_config.remembrancer_address
+
+        # Initialize components
+        self.open_ai_request_tool = OpenAIRequestTool()
+        self.generic_pft_utilities = GenericPFTUtilities(node_name=self.network_config.node_name)
+        self.post_fiat_task_generation_system = PostFiatTaskGenerationSystem()
+
+        # Set network-specific attributes
         self.default_openai_model = constants.DEFAULT_OPEN_AI_MODEL
-        self.remembrancer = constants.TESTNET_REMEMBRANCER_ADDRESS if constants.USE_TESTNET else constants.REMEMBRANCER_ADDRESS
         self.conversations = {}
         self.user_seeds = {}
         self.tree = app_commands.CommandTree(self)
-        self.open_ai_request_tool = OpenAIRequestTool()
-        self.generic_pft_utilities = GenericPFTUtilities(node_name='postfiatfoundation')
-        self.post_fiat_task_generation_system = PostFiatTaskGenerationSystem()
 
     async def setup_hook(self):
         """Sets up the slash commands for the bot and initiates background tasks."""
-        guild_id = constants.MAINNET_DISCORD_GUILD_ID if not constants.USE_TESTNET else constants.TESTNET_DISCORD_GUILD_ID  # Your specific guild ID
+        guild_id = self.network_config.discord_guild_id
         guild = Object(id=guild_id)
         self.tree.copy_global_to(guild=guild)
         await self.tree.sync(guild=guild)
@@ -1206,18 +1212,20 @@ Note: XRP wallets need 15 XRP to transact.
         return sent_messages
 
     async def check_and_notify_new_transactions(self):
-        CHANNEL_ID = constants.MAINNET_DISCORD_POSTFIATACTIVITY_CHANNEL_ID if not constants.USE_TESTNET else constants.TESTNET_DISCORD_POSTFIATACTIVITY_CHANNEL_ID
+        CHANNEL_ID = self.network_config.discord_activity_channel_id
         channel = self.get_channel(CHANNEL_ID)
         
         if not channel:
             print(f"Error: Channel with ID {CHANNEL_ID} not found.")
             return
 
-        print('Checking for new messages')
         # Call the function to get new messages and update the database
         messages_to_send = post_fiat_task_generation_system.sync_and_format_new_transactions()
 
-        print(f"Sending {len(messages_to_send)} messages to the Discord channel")  # debugging
+        # DEBUGGING
+        len_messages_to_send = len(messages_to_send)
+        if len_messages_to_send > 0:
+            print(f"Sending {len_messages_to_send} messages to the Discord channel") 
 
         # Send each new message to the Discord channel
         for message in messages_to_send:
@@ -1314,7 +1322,7 @@ Note: XRP wallets need 15 XRP to transact.
                 seed = self.user_seeds[user_id]
                 
                 try:
-                    generic_pft_utilities = GenericPFTUtilities(node_name='postfiatfoundation')
+                    generic_pft_utilities = GenericPFTUtilities(node_name=constants.NODE_NAME)
                     user_wallet = generic_pft_utilities.spawn_wallet_from_seed(seed=seed)
                     full_user_context = generic_pft_utilities.get_full_user_context_string(user_wallet.classic_address)
                     
@@ -1602,7 +1610,7 @@ def init_services():
     """Initialize and return core services"""
     open_ai_request_tool = OpenAIRequestTool()
     post_fiat_task_generation_system = PostFiatTaskGenerationSystem()
-    generic_pft_utilities = GenericPFTUtilities(node_name='postfiatfoundation')
+    generic_pft_utilities = GenericPFTUtilities(node_name=constants.get_network_config().node_name)
     generic_pft_utilities.run_transaction_history_updates()
 
     return (
@@ -1615,14 +1623,29 @@ if __name__ == "__main__":
     # Initialize credential manager
     password = getpass.getpass("Enter your password: ")
     cred_manager = CredentialManager(password)
+    
+    # Network selection with more context
+    print(f"Network Configuration: ")
+    for idx, network in enumerate(constants.Network):
+        print(f"{idx+1}. {network.value.name}")
+    network_choice = input("Select network (1/2) [default=2]: ").strip() or "2"
+    selected_network = constants.Network.XRPL_MAINNET if network_choice == "1" else constants.Network.XRPL_TESTNET
+    constants.USE_TESTNET = selected_network == constants.Network.XRPL_TESTNET
 
-    # Prompt node operator to confirm mainnet or testnet
-    use_mainnet = input("Run on mainnet? (y/n): ")
-    constants.USE_TESTNET = False if use_mainnet.lower() == 'y' else True
-
-    # Prompt node operator to confirm use of local rippled
-    use_local_rippled = input("Use local rippled? (y/n): ")
-    constants.USE_LOCAL_RIPPLED = True if use_local_rippled.lower() == 'y' else False
+    # Local node configuration with network-specific context
+    network_config = constants.get_network_config(network=selected_network)
+    if network_config.local_rpc_url:
+        print(f"\nLocal node configuration:")
+        print(f"Local {network_config.name} node URL: {network_config.local_rpc_url}")
+        use_local = input("Do you have a local node configured? (y/n) [default=n]: ").strip() or "n"
+        constants.HAS_LOCAL_NODE = use_local == "y"
+    else:
+        print(f"\nNo local node configuration available for {network_config.name}")
+        print("Using public endpoints only...")
+        constants.HAS_LOCAL_NODE = False
+    
+    print(f"\nInitializing services for {network_config.name}...")
+    print(f"Using {'local' if constants.HAS_LOCAL_NODE else 'public'} endpoints...")
 
     # Initialize services
     open_ai_request_tool, post_fiat_task_generation_system, generic_pft_utilities = init_services()

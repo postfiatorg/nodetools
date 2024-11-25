@@ -8,12 +8,13 @@ from nodetools.utilities.credentials import CredentialManager
 
 class ChatProcessor:
     def __init__(self):
+        self.network_config = constants.get_network_config()
         self.cred_manager = CredentialManager()
-        self.generic_pft_utilities = GenericPFTUtilities(node_name=constants.DEFAULT_NODE_NAME)
+        self.generic_pft_utilities = GenericPFTUtilities(node_name=self.network_config.node_name)
         self.open_ai_request_tool= OpenAIRequestTool()
 
     def process_chat_cue(self):
-        account_address=constants.TESTNET_REMEMBRANCER_ADDRESS if constants.USE_TESTNET else constants.REMEMBRANCER_ADDRESS
+        account_address=self.network_config.remembrancer_address
         full_holder_df = self.generic_pft_utilities.output_post_fiat_holder_df()
         full_holder_df['balance']=full_holder_df['balance'].astype(float)
         all_top_wallet_holders = full_holder_df.sort_values('balance',ascending=True)

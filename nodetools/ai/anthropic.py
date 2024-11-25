@@ -8,16 +8,27 @@ from anthropic import AsyncAnthropic
 import time
 from asyncio import Semaphore
 from nodetools.utilities.credentials import CredentialManager
+import nodetools.utilities.constants as constants
 
 class AnthropicTool:
+    _instance = None
+    _initialized = False
+
+    def __new__(cls, *args, **kwargs):
+        if cls._instance is None:
+            cls._instance = super().__new__(cls)
+        return cls._instance
+
     def __init__(self, max_concurrent_requests=2, requests_per_minute=30):
-        cred_manager = CredentialManager()
-        self.client = anthropic.Anthropic(api_key=cred_manager.get_credential('anthropic'))
-        self.async_client = AsyncAnthropic(api_key=cred_manager.get_credential('anthropic'))
-        self.default_model = 'claude-3-5-sonnet-20241022'
-        self.semaphore = Semaphore(max_concurrent_requests)
-        self.rate_limit = requests_per_minute
-        self.request_times = []
+        if not self.__class__._initialized:
+            cred_manager = CredentialManager()
+            self.client = anthropic.Anthropic(api_key=cred_manager.get_credential('anthropic'))
+            self.async_client = AsyncAnthropic(api_key=cred_manager.get_credential('anthropic'))
+            self.default_model = constants.DEFAULT_ANTHROPIC_MODEL
+            self.semaphore = Semaphore(max_concurrent_requests)
+            self.rate_limit = requests_per_minute
+            self.request_times = []
+            self.__class__._initialized = True
 
     def sample_output(self):
         """

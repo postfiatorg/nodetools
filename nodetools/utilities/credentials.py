@@ -10,10 +10,13 @@ from xrpl.core import addresscodec
 from xrpl.core.keypairs.ed25519 import ED25519
 from nodetools.security.hash_tools import derive_shared_secret
 from enum import Enum
+import nodetools.utilities.constants as constants
 
 CREDENTIALS_DB = "credentials.sqlite"
 BACKUP_SUFFIX = ".sqlite_backup"
 KEY_EXPIRY = -1  # No expiration by default
+
+NETWORK_CONFIG = constants.get_network_config()
 
 def get_credentials_directory():
     """Returns the path to the credentials directory, creating it if it doesn't exist"""
@@ -32,8 +35,8 @@ class SecretType(Enum):
     def get_secret_key(cls, secret_type):
         """Maps secret type to credential key"""
         mapping = {
-            cls.REMEMBRANCER: 'postfiatremembrancer__v1xrpsecret',
-            cls.NODE: 'postfiatfoundation__v1xrpsecret'
+            cls.REMEMBRANCER: f'{NETWORK_CONFIG.remembrancer_address}__v1xrpsecret',
+            cls.NODE: f'{NETWORK_CONFIG.node_name}__v1xrpsecret'
         }
         return mapping[secret_type]
 

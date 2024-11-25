@@ -40,14 +40,27 @@ class GenericPFTUtilities:
             cls._instance = super().__new__(cls)
         return cls._instance
 
-    def __init__(self, node_name=constants.DEFAULT_NODE_NAME):
+    def __init__(self, node_name:str=None):
         if not self.__class__._initialized:
-            self.pft_issuer = constants.ISSUER_ADDRESS if not constants.USE_TESTNET else constants.TESTNET_ISSUER_ADDRESS
-            self.public_rpc_url = constants.MAINNET_URL if not constants.USE_TESTNET else constants.TESTNET_URL
-            self.local_rippled_url = "http://127.0.0.1:5005" if constants.USE_LOCAL_RIPPLED else self.public_rpc_url  # Alex's local rippled node
-            self.node_name = node_name
-            ## NOTE THIS IS THE NODE ADDRESS FOR THE POST FIAT NODE
-            self.node_address=constants.DEFAULT_NODE_ADDRESS if not constants.USE_TESTNET else constants.TESTNET_DEFAULT_NODE_ADDRESS
+            # Get network configuration
+            self.network_config = constants.get_network_config()
+
+            # Use network-specific node name or override
+            self.node_name = node_name or self.network_config.node_name
+
+            # Determine endpoint with fallback logic
+            self.primary_endpoint = (
+                self.network_config.local_node_url 
+                if constants.HAS_LOCAL_NODE and self.network_config.local_node_url is not None
+                else self.network_config.public_rpc_url
+            )
+            print(f"Using primary endpoint: {self.primary_endpoint}")
+
+            # Set other network-specific attributes
+            self.pft_issuer = self.network_config.issuer_address
+            self.node_address = self.network_config.node_address
+
+            # Initialize other components
             self.db_connection_manager = DBConnectionManager()
             self.establish_post_fiat_tx_cache_as_hash_unique()
             self.post_fiat_holder_df = self.output_post_fiat_holder_df()  # TODO: This isn't being used
@@ -89,7 +102,7 @@ class GenericPFTUtilities:
         caller = traceback.extract_stack()[-2]  # Get the caller's info
         print(f"output_post_fiat_holder_df called from {caller.filename}:{caller.lineno} in {caller.name}")
 
-        client = xrpl.clients.JsonRpcClient(self.local_rippled_url)
+        client = xrpl.clients.JsonRpcClient(self.primary_endpoint)
         response = client.request(xrpl.models.requests.AccountLines(
             account=self.pft_issuer,
             ledger_index="validated",
@@ -198,7 +211,7 @@ class GenericPFTUtilities:
         Returns:
             bool: True if the transaction was successful, False otherwise
         """
-        client = xrpl.clients.JsonRpcClient(self.local_rippled_url)
+        client = xrpl.clients.JsonRpcClient(self.primary_endpoint)
         try:
             tx_request = xrpl.models.requests.Tx(
                 transaction=tx_hash,
@@ -318,7 +331,7 @@ class GenericPFTUtilities:
         memo should be 1kb or less in size and needs to be in hex format
         """
         if url is None:
-            url = self.local_rippled_url
+            url = self.primary_endpoint
 
         client = xrpl.clients.JsonRpcClient(url)
         amount_to_send = xrpl.models.amounts.IssuedCurrencyAmount(
@@ -339,7 +352,7 @@ class GenericPFTUtilities:
     def send_xrp_with_info__seed_based(self,wallet_seed, amount, destination, memo, destination_tag=None):
         # TODO: Replace with send_xrp (reference pftpyclient/task_manager/basic_tasks.py)
         sending_wallet =sending_wallet = xrpl.wallet.Wallet.from_seed(wallet_seed)
-        client = xrpl.clients.JsonRpcClient(self.local_rippled_url)
+        client = xrpl.clients.JsonRpcClient(self.primary_endpoint)
         payment = xrpl.models.transactions.Payment(
             account=sending_wallet.address,
             amount=xrpl.utils.xrp_to_drops(Decimal(amount)),
@@ -404,7 +417,7 @@ class GenericPFTUtilities:
                                  ledger_index_min=-1,
                                  ledger_index_max=-1, limit=10,public=True):
         if public == False:
-            client = xrpl.clients.JsonRpcClient(self.local_rippled_url)  #hitting local rippled server
+            client = xrpl.clients.JsonRpcClient(self.primary_endpoint)  #hitting local rippled server
         if public == True:
             client = xrpl.clients.JsonRpcClient(self.public_rpc_url) 
         all_transactions = []  # List to store all transactions
@@ -454,12 +467,8 @@ class GenericPFTUtilities:
                                 ledger_index_min=-1,
                                 ledger_index_max=-1,
                                 max_attempts=3,
-                                retry_delay=.2, public=False):
-        if public == False:
-            client = xrpl.clients.JsonRpcClient(self.local_rippled_url)  #hitting local rippled server
-        if public == True:
-            client = xrpl.clients.JsonRpcClient(self.public_rpc_url) 
-
+                                retry_delay=.2):
+        client = xrpl.clients.JsonRpcClient(self.primary_endpoint)
         all_transactions = []  # List to store all transactions
 
         # Fetch transactions using marker pagination
@@ -949,7 +958,7 @@ class GenericPFTUtilities:
         dbconnx.dispose()
     def generate_postgres_writable_df_for_address(self,account_address = 'r3UHe45BzAVB3ENd21X9LeQngr4ofRJo5n',public=True):
         # Fetch transaction history and prepare DataFrame
-        tx_hist = self.get_account_transactions__exhaustive(account_address=account_address, public=public)
+        tx_hist = self.get_account_transactions__exhaustive(account_address=account_address)
         if len(tx_hist)==0:
             #print('no tx pulled')
             #print()
@@ -994,9 +1003,9 @@ class GenericPFTUtilities:
             full_transaction_history['tx_json'] = full_transaction_history['tx_json'].apply(json.dumps)
             return full_transaction_history
 
-    def write_full_transaction_history_for_account(self, account_address, public):
+    def write_full_transaction_history_for_account(self, account_address):
         # Fetch transaction history and prepare DataFrame
-        tx_hist = self.generate_postgres_writable_df_for_address(account_address=account_address, public=public)
+        tx_hist = self.generate_postgres_writable_df_for_address(account_address=account_address)
         dbconnx = self.db_connection_manager.spawn_sqlalchemy_db_connection_for_user(user_name=self.node_name)
         
         if tx_hist is not None:
@@ -1028,7 +1037,8 @@ class GenericPFTUtilities:
                             total_rows_inserted += rows_inserted
                             print(f"Inserted {rows_inserted} new rows.")
                     
-                    print(f"Total rows inserted: {total_rows_inserted}")
+                    if total_rows_inserted > 0:
+                        print(f"Total rows inserted: {total_rows_inserted}")
             
             except sqlalchemy.exc.InternalError as e:
                 if "current transaction is aborted" in str(e):
@@ -1047,36 +1057,40 @@ class GenericPFTUtilities:
         else:
             print("No transaction history to write.")
 
-    def write_all_postfiat_holder_transaction_history(self,public=True):
-        """ This writes all the transaction history. if public is True then it goes through full history """ 
-        holder_df = self.output_post_fiat_holder_df()
-        all_post_fiat_holders = list(holder_df['account'].unique())
-        for xholder in all_post_fiat_holders:
-            self.write_full_transaction_history_for_account(account_address=xholder, public=public)
-
     def run_transaction_history_updates(self):
-        # TODO: This results in race conditions very often
-        # TODO: Consider refactoring
         """
-        Runs transaction history updates in separate threads.
-        This function creates two threads:
-        1. Updates with public=True every 60 minutes
-        2. Updates with public=False every 30 seconds
+        Runs transaction history updates using a single coordinated thread
+        Updates happen every 30 seconds using the primary endpoint
         """
-        def update_public():
+        self._last_update = 0
+        self._update_lock = threading.Lock()
+        self._pft_accounts = None
+        TRANSACTION_HISTORY_UPDATE_INTERVAL = constants.TRANSACTION_HISTORY_UPDATE_INTERVAL
+
+        def update_loop():
             while True:
-                self.write_all_postfiat_holder_transaction_history(public=True)
-                time.sleep(3600)  # 60 minutes
-        def update_private():
-            while True:
-                self.write_all_postfiat_holder_transaction_history(public=False)
-                time.sleep(30)  # 2 minutes
-        public_thread = threading.Thread(target=update_public)
-        private_thread = threading.Thread(target=update_private)
-        public_thread.daemon = True
-        private_thread.daemon = True
-        public_thread.start()
-        private_thread.start()
+                try:
+                    with self._update_lock:
+                        now = time.time()
+                        if now - self._last_update >= TRANSACTION_HISTORY_UPDATE_INTERVAL:
+                            print("Syncing PFT account holder transaction history...")
+                            accounts_df = self.output_post_fiat_holder_df()
+                            all_accounts = list(accounts_df['account'].unique())
+
+                            for account in all_accounts:
+                                self.write_full_transaction_history_for_account(
+                                    account_address=account
+                                )
+                            self._last_update = now
+
+                except Exception as e:
+                    print(f"Error in transaction history update loop: {e}")
+
+                time.sleep(10)  # Check every 10 seconds
+
+        update_thread = threading.Thread(target=update_loop)
+        update_thread.daemon = True
+        update_thread.start()
 
     def get_all_cached_transactions_related_to_account(self,account_address = 'r4sRyacXpbh4HbagmgfoQq8Q3j8ZJzbZ1J'):
 
@@ -1582,7 +1596,7 @@ THIS MESSAGE WILL AUTO DELETE IN 60 SECONDS
         except:
             pass
         
-        client = JsonRpcClient(self.local_rippled_url)
+        client = JsonRpcClient(self.primary_endpoint)
         
         # Get XRP balance
         acct_info = AccountInfo(
@@ -1628,7 +1642,7 @@ PFT WEEKLY AVG:   {weekly_pft_reward_avg}
             XRPAccountNotFoundException: If the account is not found
             Exception: If there is an error getting the XRP balance
         """
-        client = JsonRpcClient(self.local_rippled_url)
+        client = JsonRpcClient(self.primary_endpoint)
         acct_info = AccountInfo(
             account=address,
             ledger_index="validated"
@@ -1716,6 +1730,7 @@ PFT WEEKLY AVG:   {weekly_pft_reward_avg}
         tx_json = result['tx_json']
         
         # Extract required information
+        url_mask = self.network_config.explorer_tx_url_mask
         transaction_info = {
             'time': result['close_time_iso'],
             'amount': tx_json['DeliverMax']['value'],
@@ -1724,7 +1739,7 @@ PFT WEEKLY AVG:   {weekly_pft_reward_avg}
             'destination_address': tx_json['Destination'],
             'status': result['meta']['TransactionResult'],
             'hash': result['hash'],
-            'xrpl_explorer_url': f"https://livenet.xrpl.org/transactions/{result['hash']}/detailed"
+            'xrpl_explorer_url': url_mask.format(hash=result['hash'])
         }
         clean_string = (f"Transaction of {transaction_info['amount']} {transaction_info['currency']} "
                         f"from {transaction_info['send_address']} to {transaction_info['destination_address']} "
@@ -1749,7 +1764,8 @@ PFT WEEKLY AVG:   {weekly_pft_reward_avg}
             result = response.result if hasattr(response, 'result') else response
             
             transaction_info['hash'] = result.get('hash')
-            transaction_info['xrpl_explorer_url'] = f"https://livenet.xrpl.org/transactions/{transaction_info['hash']}/detailed"
+            url_mask = self.network_config.explorer_tx_url_mask
+            transaction_info['xrpl_explorer_url'] = url_mask.format(hash=transaction_info['hash'])
             
             tx_json = result.get('tx_json', {})
             transaction_info['send_address'] = tx_json.get('Account')
@@ -1810,7 +1826,7 @@ PFT WEEKLY AVG:   {weekly_pft_reward_avg}
         Returns:
             DataFrame: PFT holder information
         """
-        client = xrpl.clients.JsonRpcClient(self.local_rippled_url)
+        client = xrpl.clients.JsonRpcClient(self.primary_endpoint)
         response = client.request(xrpl.models.requests.AccountLines(
             account=self.pft_issuer,
             ledger_index="validated",
@@ -1875,7 +1891,7 @@ PFT WEEKLY AVG:   {weekly_pft_reward_avg}
         Raises:
             Exception: If there is an error creating the trust line
         """
-        client = xrpl.clients.JsonRpcClient(self.local_rippled_url)
+        client = xrpl.clients.JsonRpcClient(self.primary_endpoint)
         trust_set_tx = xrpl.models.transactions.TrustSet(
             account=wallet.classic_address,
             limit_amount=xrpl.models.amounts.issued_currency_amount.IssuedCurrencyAmount(
@@ -1979,11 +1995,12 @@ PFT WEEKLY AVG:   {weekly_pft_reward_avg}
                 Returns:
                 str: Formatted transaction message.
                 """
+                url_mask = self.network_config.explorer_tx_url_mask
                 return (f"Task ID: {transaction['memo_type']}\n"
                         f"Memo: {transaction['memo_data']}\n"
                         f"PFT Amount: {transaction['directional_pft']}\n"
                         f"Datetime: {transaction['datetime']}\n"
-                        f"XRPL Explorer: https://livenet.xrpl.org/transactions/{transaction['hash']}/detailed")
+                        f"XRPL Explorer: {url_mask.format(hash=transaction['hash'])}")
             
             # Format incoming message
             incoming_message = format_transaction_message(all_wallet_transactions[all_wallet_transactions['message_type']=='INCOMING'].tail(1).iloc[0])
@@ -2441,7 +2458,7 @@ PFT WEEKLY AVG:   {weekly_pft_reward_avg}
         Returns:
             float: The PFT balance for the account
         """
-        client = JsonRpcClient(self.local_rippled_url)
+        client = JsonRpcClient(self.primary_endpoint)
         try:
             account_lines = AccountLines(
                 account=account_address,

@@ -1,21 +1,27 @@
 from nodetools.utilities.credentials import CredentialManager
 import getpass
 
-def setup_credentials():    
-    # Define the required credentials
-    required_credentials = {
-        'discordbot_secret': 'Your Discord Bot Token',
-        'postfiatfoundation__v1xrpsecret': 'Your PFT Foundation XRP Secret',
-        'postfiatremembrancer__v1xrpsecret': 'Your Remembrancer XRP Secret',
-        'openai': 'Your OpenAI API Key',
-        'anthropic': 'Your Anthropic API Key',
-        'postfiatfoundation_postgresconnstring': 'PostgreSQL connection string (format: postgresql://user:password@host:port/database)'
-    }
-    
+def setup_credentials():        
     print("\nCredential Setup Script")
     print("======================")
     print("This script will help you set up the required credentials for the PFT Discord bot.")
-    print("You will need to enter an encryption password and then provide each credential.\n")
+
+    # Get node name first
+    print(f"\nFirst, you'll need to specify your node name.")
+    print("This will be used to identify your node's credentials.")
+    node_name = input("Enter your node name: ").strip()
+
+    # Define the required credentials
+    required_credentials = {
+        'discordbot_secret': 'Your Discord Bot Token',
+        f'{node_name}__v1xrpsecret': 'Your PFT Foundation XRP Secret',
+        f'{node_name}_remembrancer__v1xrpsecret': 'Your Remembrancer XRP Secret',
+        'openai': 'Your OpenAI API Key',
+        'anthropic': 'Your Anthropic API Key',
+        f'{node_name}_postgresconnstring': 'PostgreSQL connection string (format: postgresql://user:password@host:port/database)'
+    }
+
+    print("\nNow you'll need to enter a password to encrypt your credentials.\n")
     
     # Get encryption password
     while True:
