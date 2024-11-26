@@ -5,7 +5,9 @@ from enum import Enum
 # Runtime configuration
 USE_TESTNET = True      
 HAS_LOCAL_NODE = False
-TESTNET_MODE = True
+
+# TESTNET ONLY
+ENABLE_REINITIATIONS = False
 
 @dataclass
 class NetworkConfig:
@@ -80,7 +82,11 @@ def get_network_config(network: Network = Network.XRPL_TESTNET if USE_TESTNET el
 # DEFAULT OPEN AI MODEL
 DEFAULT_OPEN_AI_MODEL = 'chatgpt-4o-latest'
 DEFAULT_ANTHROPIC_MODEL = 'claude-3-5-sonnet-20241022'
+
+# Minimum XRP balance to be able to send a task
+MIN_XRP_BALANCE = 12
  
+# Maximum history length
 MAX_HISTORY = 15  # TODO: rename this to something more descriptive
 
 # Task generation parameters
@@ -99,3 +105,9 @@ TRANSACTION_HISTORY_SLEEP_TIME = 10  # in seconds
 # Transaction verification parameters
 TRANSACTION_VERIFICATION_ATTEMPTS = 12
 TRANSACTION_VERIFICATION_WAIT_TIME = 5  # in seconds
+
+# Reward processing parameters
+REWARD_PROCESSING_WINDOW = 35  # in days
+MAX_REWARD_AMOUNT = 1200  # in PFT
+MIN_REWARD_AMOUNT = 1  # in PFT
+

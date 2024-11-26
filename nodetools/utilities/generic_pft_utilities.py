@@ -370,7 +370,7 @@ class GenericPFTUtilities:
     def spawn_wallet_from_seed(self, seed):
         """ outputs wallet initialized from seed"""
         wallet = xrpl.wallet.Wallet.from_seed(seed)
-        print(f'Spawned wallet with address {wallet.address}')
+        print(f'-- Spawned wallet with address {wallet.address}')
         return wallet
     
     def test_url_reliability(self, user_wallet, destination_address):
@@ -1130,10 +1130,7 @@ class GenericPFTUtilities:
                                 method='multi'
                             )
                             total_rows_inserted += rows_inserted
-                            print(f"Inserted {rows_inserted} new rows.")
-                    
-                    if total_rows_inserted > 0:
-                        print(f"Total rows inserted: {total_rows_inserted}")
+                            print(f"GenericPFTUtilities.sync_pft_transaction_history_for_account: Inserted {rows_inserted} new rows into postfiat_tx_cache.")
             
             except sqlalchemy.exc.InternalError as e:
                 if "current transaction is aborted" in str(e):
@@ -1176,7 +1173,7 @@ class GenericPFTUtilities:
                     with self._update_lock:
                         now = time.time()
                         if now - self._last_update >= TRANSACTION_HISTORY_UPDATE_INTERVAL:
-                            print("Syncing PFT account holder transaction history...")
+                            print("GenericPFTUtilities.run_transaction_history_updates.update_loop: Syncing PFT account holder transaction history...")
                             self.sync_pft_transaction_history()
                             self._last_update = now
 
@@ -1662,68 +1659,53 @@ class GenericPFTUtilities:
         all_account_info = self.get_memo_detail_df_for_account(account_address=account_address).sort_values('datetime')
         all_account_info['simple_date']= all_account_info['datetime'].apply(lambda x: pd.to_datetime(x.date()))
 
-        # Retrieve outstanding task frame
+        # Initialize core elements
         core_element_outstanding_tasks = ''
+        core_element__refusal_frame = ''
+        core_element__last_10_rewards = ''
+        core_element_post_fiat_weekly_gen = ''
+        core_element__google_doc_text = ''
+        core_element__chunk_messages = ''
+
         try:
+            # Retrieve outstanding task frame
             proposal_acceptance_pairs_df = self.get_proposal_acceptance_pairs(account_memo_detail_df=all_account_info).tail(MAX_ACCEPTANCES_IN_CONTEXT)
             if proposal_acceptance_pairs_df.empty:
                 print(f'No proposals or acceptances found for {account_address}')
                 core_element_outstanding_tasks = "No proposals or acceptances found."
             else:
                 core_element_outstanding_tasks = self.format_outstanding_tasks(outstanding_task_df=proposal_acceptance_pairs_df)
-        except:
-            print(f'Exception in get_full_user_context_string for {account_address}: FAILED OUTSTANDING TASK GEN')
-            pass
-        
-        # Retrieve refusal frame
-        core_element__refusal_frame = ''
-        try:
+
+            # Retrieve refusal frame
             proposal_refusal_pairs_df = self.get_proposal_refusal_pairs(account_memo_detail_df=all_account_info).tail(MAX_REFUSALS_IN_CONTEXT)
             if proposal_refusal_pairs_df.empty:
                 print(f'No proposals or refusals found for {account_address}')
                 core_element__refusal_frame = "No proposals or refusals found."
             else:
                 core_element__refusal_frame = self.format_refusal_frame(refusal_frame_constructor=proposal_refusal_pairs_df)
-        except:
-            print(f'Exception in get_full_user_context_string for {account_address}: FAILED REFUSAL FRAME GEN')
-            pass
 
-        # Retrieve rewards and weekly generation
-        core_element__last_10_rewards=''
-        core_element_post_fiat_weekly_gen=''
-        try:
+            # Retrieve rewards
             reward_map = self.get_reward_data(all_account_info=all_account_info).tail(MAX_REWARDS_IN_CONTEXT)
-
-            # Handle rewards
             if reward_map.empty:
                 print(f'No rewards found for {account_address}')
                 core_element__last_10_rewards = "No rewards found."
             else:
                 specific_rewards = reward_map['reward_summaries']
                 core_element__last_10_rewards = self.format_reward_summary(specific_rewards)
-                core_element_post_fiat_weekly_gen = reward_map['reward_ts']['weekly_total'].to_string()
-        except:
-            print(f'Exception in get_full_user_context_string for {account_address}: FAILED REWARDS AND WEEKLY GENERATION GEN')
-            pass
-        
-        # Retrieve google doc text
-        core_element__google_doc_text = ''
-        try:
+                core_element_post_fiat_weekly_gen = reward_map['reward_ts']['weekly_total'].to_string()   
+
+            # Retrieve google doc text
             google_url = list(all_account_info[all_account_info['memo_type'].apply(lambda x: 'google_doc' in x)]['memo_data'])[0]
             core_element__google_doc_text= self.get_google_doc_text(google_url)
-        except:
-            print(f'Exception in get_full_user_context_string for {account_address}: FAILED GOOGLE DOC GEN')
-            pass
-        
-        # Retrieve chunk messages
-        core_element__chunk_messages = ''
-        try:
+
+            # Retrieve chunk messages
             core_element__chunk_messages = self.get_recent_user_memos(
                 account_address=account_address, 
                 num_messages=MAX_CHUNK_MESSAGES_IN_CONTEXT
             )
-        except:
-            print(f'Exception in get_full_user_context_string for {account_address}: FAILED CHUNK MESSAGES GEN')
+
+        except Exception as e:
+            print(f'GenericPFTUtilities.get_full_user_context_string: Exception for {account_address}: {e}')
             pass
 
         # Format final context string

@@ -56,7 +56,6 @@ class PostFiatTaskGenerationSystem:
 
             # Initialize other components
             self.stop_threads = False
-            self.reward_processing_lock = threading.Lock()
             self.__class__._initialized = True
             self.default_model = constants.DEFAULT_OPEN_AI_MODEL
 
@@ -102,7 +101,7 @@ class PostFiatTaskGenerationSystem:
         initiation_rite_queue_df['has_reward'] = initiation_rite_queue_df['memo_data'].apply(lambda x: 'INITIATION_REWARD' in str(x))
 
         # Step 3: In testnet, to allow for reinitiation rites, check if rite is newer than last reward
-        if constants.USE_TESTNET and constants.TESTNET_MODE:
+        if constants.USE_TESTNET and constants.ENABLE_REINITIATIONS:
             initiation_rite_queue_df['is_newer_than_last_reward'] = (
                 initiation_rite_queue_df['rite_datetime'] > initiation_rite_queue_df['datetime']
             )
@@ -159,7 +158,109 @@ class PostFiatTaskGenerationSystem:
         copies = [df.copy() for _ in range(n_copies)]
         result = pd.concat(copies, ignore_index=True)
         result['unique_index'] = range(len(result))
-        return result    
+        return result 
+
+    def _send_and_track_transaction(
+            self,
+            wallet: Wallet,
+            memo: str,
+            destination: str,
+            amount: int,
+            tracking_set: set,
+            tracking_tuple: tuple
+        ) -> bool:
+        """Send transaction and track for verification if successful.
+        
+        Args:
+            wallet: XRPL wallet instance to send from
+            memo: Formatted memo object for the transaction
+            destination: Destination address for transaction
+            amount: Amount of PFT to send
+            tracking_set: Set to add tracking tuple to if successful
+            tracking_tuple: Tuple of (user_account, memo_type, datetime) for verification
+            
+        Returns:
+            bool: True if transaction was sent and verified, False otherwise
+        """
+        try:
+            # Send transaction
+            response = self.generic_pft_utilities.send_PFT_with_info(
+                sending_wallet=wallet,
+                amount=amount,
+                memo=memo,
+                destination_address=destination
+            )
+
+            # Track for verification if successful
+            if self.generic_pft_utilities.verify_transaction_response(response):
+                tracking_set.add(tracking_tuple)
+                return True
+            else:
+                print(f"PostFiatTaskGenerationSystem._send_and_track_transactions: Failed to verify transaction to {destination}")
+                return False
+            
+        except Exception as e:
+            print(f"PostFiatTaskGenerationSystem._send_and_track_transactions: Error sending transaction to {destination}: {e}")
+            return False
+
+    def _verify_transactions(
+            self, 
+            items_to_verify: set, 
+            transaction_type: str, 
+            verification_predicate: callable
+        ) -> pd.DataFrame:
+        """Generic verification loop for transactions.
+        
+        Args:
+            items_to_verify: Set of (user_account, memo_type, datetime) tuples
+            transaction_type: String description for logging
+            verification_predicate: Function that takes (txn, user, memo_type, time) 
+                                and returns bool
+        
+        Returns:
+            Set of items that couldn't be verified
+        """
+        if not items_to_verify:
+            return items_to_verify
+        
+        print(f"PostFiatTaskGenerationSystem._verify_transactions: Verifying {len(items_to_verify)} {transaction_type}")
+        max_attempts = constants.TRANSACTION_VERIFICATION_ATTEMPTS
+        attempt = 0
+
+        while attempt < max_attempts and items_to_verify:
+            attempt += 1
+            print(f"PostFiatTaskGenerationSystem._verify_transactions: Verification attempt {attempt} of {max_attempts}")
+
+            time.sleep(constants.TRANSACTION_VERIFICATION_WAIT_TIME)
+
+            # Force sync of database
+            self.generic_pft_utilities.sync_pft_transaction_history()
+
+            # Get latest transactions
+            latest_txns = self.generic_pft_utilities.get_memo_detail_df_for_account(
+                account_address=self.node_address,
+                pft_only=False
+            )
+
+            # Check all pending items
+            verified_items = set()
+            for user_account, memo_type, request_time in items_to_verify:
+                print(f"PostFiatTaskGenerationSystem._verify_transactions: Checking for task {memo_type} for {user_account} at {request_time}")
+
+                # Apply the verification predicate
+                if verification_predicate(latest_txns, user_account, memo_type, request_time):
+                    print(f"Verified {memo_type} for {user_account} after {attempt} attempts")
+                    verified_items.add((user_account, memo_type, request_time))
+
+            # Remove verified items from the set
+            items_to_verify -= verified_items
+
+        if items_to_verify:
+            print(f"PostFiatTaskGenerationSystem._verify_transactions: WARNING: Could not verify {len(items_to_verify)} {transaction_type} after {max_attempts} attempts")
+            for user_account, memo_type, _ in items_to_verify:
+                print(f"PostFiatTaskGenerationSystem._verify_transactions: - User: {user_account}, Task: {memo_type}")
+
+        return items_to_verify  
 
     def discord__initiation_rite(
             self, 
@@ -178,12 +279,15 @@ class PostFiatTaskGenerationSystem:
             google_doc_link (str): Link to user's Google doc
             username (str): Discord username
         """
-        minimum_xrp_balance = 12
+        minimum_xrp_balance = constants.MIN_XRP_BALANCE
+
         # Initialize wallets
         wallet = self.generic_pft_utilities.spawn_wallet_from_seed(seed=account_seed)
         foundation_wallet = self.generic_pft_utilities.spawn_wallet_from_seed(
             self.cred_manager.get_credential(f'{self.network_config.node_name}__v1xrpsecret')
         )
+
+        print(f"PostFiatTaskGenerationSystem.discord__initiation_rite: {username} ({wallet.classic_address}) submitting commitment: {initiation_rite}")
 
         # Check XRP balance
         balance_status = self.generic_pft_utilities.verify_xrp_balance(
@@ -218,144 +322,127 @@ class PostFiatTaskGenerationSystem:
         )
         if not self.generic_pft_utilities.verify_transaction_response(grant_response):
             raise Exception(f"Failed to send initial PFT grant: {grant_response}")
-    
-    def process_pending_initiation_rewards(self):
+        
+    def _evaluate_initiation_rite(self, rite_text: str) -> dict:
+        """Evaluate the initiation rite using OpenAI and extract reward details."""
+        
+        print(f"PostFiatTaskGenerationSystem._evaluate_initiation_rite: Evaluating initiation rite: {rite_text}")
+
+        api_args = {
+            "model": self.default_model,
+            "messages": [
+                {"role": "system", "content": phase_4__system},
+                {"role": "user", "content": phase_4__user.replace('___USER_INITIATION_RITE___',rite_text)}
+            ]
+        }
+
+        response = self.openai_request_tool.create_writable_df_for_chat_completion(api_args=api_args)
+        content = response['choices__message__content'].iloc[0]
+
+        # Extract reward amount and justification
+        try:
+            reward = int(content.split('| Reward |')[-1:][0].replace('|','').strip())
+        except Exception as e:
+            raise Exception(f"Failed to extract reward: {e}")
+        
+        try:
+            justification = content.split('| Justification |')[-1:][0].split('|')[0].strip()
+        except Exception as e:
+            raise Exception(f"Failed to extract justification: {e}")
+        
+        return {'reward': reward, 'justification': justification}
+
+    def process_initiation_queue(self):
         """Process and send rewards for valid initiation rites that haven't been rewarded yet."""
-
-        def evaluate_initiation_rite(rite_text: str) -> dict:
-            """Evaluate the initiation rite using OpenAI and extract reward details."""
-            api_args = {
-                "model": self.default_model,
-                "messages": [
-                    {"role": "system", "content": phase_4__system},
-                    {"role": "user", "content": phase_4__user.replace('___USER_INITIATION_RITE___',rite_text)}
-                ]
-            }
-
-            response = self.openai_request_tool.create_writable_df_for_chat_completion(api_args=api_args)
-            content = response['choices__message__content'].iloc[0]
-
-            # Extract reward amount and justification
-            try:
-                reward = int(content.split('| Reward |')[-1:][0].replace('|','').strip())
-            except Exception as e:
-                raise Exception(f"Failed to extract reward: {e}")
-            
-            try:
-                justification = content.split('| Justification |')[-1:][0].split('|')[0].strip()
-            except Exception as e:
-                raise Exception(f"Failed to extract justification: {e}")
-            
-            return {'reward': reward, 'justification': justification}
-        
-        def send_initiation_reward(user_address: str, reward_amount: int, justification: str):
-            """Send PFT reward with appropriate memo for an initiation rite."""
-            memo_data = f"INITIATION_REWARD ___ {justification}"
-            memo = self.generic_pft_utilities.construct_standardized_xrpl_memo(
-                memo_data=memo_data, 
-                memo_type="INITIATION_REWARD", 
-                memo_format=self.network_config.node_name
-            )
-
-            return self.generic_pft_utilities.send_PFT_with_info(
-                sending_wallet=self.node_wallet,
-                amount=reward_amount,
-                memo=memo,
-                destination_address=user_address
-            )
-        
-        if not self.reward_processing_lock.acquire(blocking=False):
-            return
 
         try:
             # Get all transactions
-            all_transactions = self.generic_pft_utilities.get_memo_detail_df_for_account(
+            all_node_memo_transactions = self.generic_pft_utilities.get_memo_detail_df_for_account(
                 account_address=self.node_address,
                 pft_only=False
             )
 
             # Get initiation rites that need processing
-            rite_queue = self.output_initiation_rite_df(all_node_memo_transactions=all_transactions)
+            rite_queue = self.output_initiation_rite_df(all_node_memo_transactions=all_node_memo_transactions)
             pending_rites = rite_queue[rite_queue['requires_work']==1].copy()
 
             if pending_rites.empty:
                 return
             
-            print(f"\nprocess_pending_initiation_rewards: Processing {len(pending_rites)} pending rites")
+            print(f"\nPostFiatTaskGenerationSystem.process_pending_initiation_rewards: Processing {len(pending_rites)} pending rites")
 
             # Track processed accounts in this batch
-            processed_in_batch = set()
-            
-            # Process each pending rite
-            for _, row in pending_rites.iterrows():
-                account = row['user_account']
+            rewards_to_verify = set()
 
-                if account in processed_in_batch:
-                    print(f"process_pending_initiation_rewards: Skipping {account} as it has already been processed")
+            # Spawn node wallet to send rewards
+            print(f"PostFiatTaskGenerationSystem.process_pending_initiation_rewards: Spawning node wallet to send initiation rewards")
+            node_wallet = self.generic_pft_utilities.spawn_wallet_from_seed(
+                self.cred_manager.get_credential(f'{self.network_config.node_name}__v1xrpsecret')
+            )
+            
+            # Process each pending initiation rite
+            print(f"PostFiatTaskGenerationSystem.process_pending_initiation_rewards: Processing {len(pending_rites)} pending rites")
+            for _, row in pending_rites.iterrows():
+
+                print(f"PostFiatTaskGenerationSystem.process_pending_initiation_rewards: Processing initiation rite for {row['user_account']}")
+
+                # Check if reward already exists  # TODO this might be redundant
+                existing_rewards = all_node_memo_transactions[
+                    (all_node_memo_transactions['memo_data'].str.contains('INITIATION_REWARD', na=False)) &
+                    (all_node_memo_transactions['user_account'] == row['user_account']) &
+                    (all_node_memo_transactions['memo_type'] == "INITIATION_REWARD") &
+                    ((all_node_memo_transactions['datetime'] > row['datetime']) if constants.ENABLE_REINITIATIONS else True)
+                ]
+
+                if not existing_rewards.empty:
+                    print(f"PostFiatTaskGenerationSystem.process_pending_initiation_rewards: Initiation reward already exists for {row['user_account']}")
+                    continue
+                
+                try:
+                    # Evaluate the rite
+                    evaluation = self._evaluate_initiation_rite(row['initiation_rite'])
+                    print(f"PostFiatTaskGenerationSystem.process_pending_initiation_rewards: Evaluation complete - Reward amount: {evaluation['reward']}")
+
+                    # Construct reward memo
+                    memo = self.generic_pft_utilities.construct_standardized_xrpl_memo(
+                        memo_data=f"INITIATION_REWARD ___ {evaluation['justification']}",
+                        memo_type="INITIATION_REWARD",
+                        memo_format=self.network_config.node_name
+                    )
+
+                    # Send and track reward
+                    _ = self._send_and_track_transaction(
+                        wallet=node_wallet,
+                        memo=memo,
+                        destination=row['user_account'],
+                        amount=evaluation['reward'],
+                        tracking_set=rewards_to_verify,
+                        tracking_tuple=(row['user_account'], "INITIATION_REWARD", row['datetime'])
+                    )
+
+                except Exception as e:
+                    print(f"PostFiatTaskGenerationSystem.process_pending_initiation_rewards: Error processing initiation rite for {row['user_account']}: {e}")
                     continue
 
-                # Evaluate the rite
-                evaluation = evaluate_initiation_rite(row['initiation_rite'])
-                print(f"process_pending_initiation_rewards: Evaluation complete - Reward amount: {evaluation['reward']}")
-
-                # Send the reward
-                response = send_initiation_reward(
-                    user_address=row['user_account'], 
-                    reward_amount=evaluation['reward'], 
-                    justification=evaluation['justification']
-                )
-
-                if self.generic_pft_utilities.verify_transaction_response(response):
-                    processed_in_batch.add(account)
-                    print(f"process_pending_initiation_rewards: Successfully processed reward for {account}")
-
-                    # Verification Loop
-                    max_attempts = constants.TRANSACTION_VERIFICATION_ATTEMPTS
-                    attempt = 0
-                    reward_confirmed = False
-
-                    while attempt < max_attempts and not reward_confirmed:
-                        attempt += 1
-                        print(f"process_pending_initiation_rewards: Reward verification attempt {attempt} of {max_attempts}")
-
-                        # Wait for transaction to propagate
-                        time.sleep(constants.TRANSACTION_VERIFICATION_WAIT_TIME)
-
-                        # Force sync of database
-                        self.generic_pft_utilities.sync_pft_transaction_history(public=False)
-
-                        # Verify sync by checking latest transactions
-                        latest_txns = self.generic_pft_utilities.get_memo_detail_df_for_account(
-                            account_address=self.node_address,
-                            pft_only=False
-                        )
-
-                        # Look for our specific reward
-                        reward_txns = latest_txns[
-                            (latest_txns['memo_type'] == 'INITIATION_REWARD') &
-                            (latest_txns['user_account'] == account)
-                        ]
-
-                        if not reward_txns.empty:
-                            # Verify it's newer than the rite
-                            newest_reward = reward_txns['datetime'].max()
-                            if newest_reward > row['rite_datetime']:
-                                print(f"process_pending_initiation_rewards: Verified reward sync for {account} after {attempt} attempts")
-                                reward_confirmed = True
-                                processed_in_batch.add(account)
-                                break
-
-                    if not reward_confirmed:
-                        print(f"process_pending_initiation_rewards: WARNING: Could not verify reward sync for {account} after {max_attempts} attempts")
-
-                else:
-                    print(f"process_pending_initiation_rewards: Failed to send reward to {account}")
+            # Define verification predicate for initiation rewards
+            def verify_reward(txns, user_account, memo_type, request_time):
+                reward_txns = txns[
+                    (txns['memo_data'].str.contains('INITIATION_REWARD', na=False)) &
+                    (txns['user_account'] == user_account) &
+                    (txns['memo_type'] == memo_type) & 
+                    (txns['datetime'] > request_time)
+                ]
+                return not reward_txns.empty and reward_txns['datetime'].max() > request_time
+            
+            # Use generic verification loop
+            self._verify_transactions(
+                items_to_verify=rewards_to_verify,
+                transaction_type='initiation reward',
+                verification_predicate=verify_reward
+            )
 
         except Exception as e:
-            print(f"process_pending_initiation_rewards: Error processing pending initiation rites: {e}")
-
-        finally:
-            self.reward_processing_lock.release()
+            print(f"PostFiatTaskGenerationSystem.process_pending_initiation_rewards: Error processing pending initiation rites: {e}")
 
     # TODO: this doesn't need to be Discord-specific
     def discord__send_postfiat_request(self, user_request, user_name, seed):
@@ -785,13 +872,13 @@ class PostFiatTaskGenerationSystem:
             
             # Validate result format
             if not isinstance(result, dict) or 'n_task_output' not in result:
-                print(f"Invalid task generation output format for {account}")
+                print(f"PostFiatTaskManagement._generate_task_safely: Invalid task generation output format for {account}")
                 return pd.NA
                 
             return result
             
         except Exception as e:
-            print(f"Task generation failed for {account}: {e}")
+            print(f"PostFiatTaskManagement._generate_task_safely: Task generation failed for {account}: {e}")
             return pd.NA 
         
     def phase_1_b__task_selection_api_args(
@@ -850,7 +937,7 @@ class PostFiatTaskGenerationSystem:
                 ]
             }
         except Exception as e:
-            print(f"process_outstanding_task_queue: phase_1_b__task_selection_api_args: API args conversion failed: {e}")
+            print(f"PostFiatTaskManagement.phase_1_b__task_selection_api_args: API args conversion failed: {e}")
             return pd.NA
         
     def _parse_output_selection(self, content: str) -> int:
@@ -862,7 +949,7 @@ class PostFiatTaskGenerationSystem:
        try:
            return int(content.split('BEST OUTPUT |')[-1].replace('|', '').strip())
        except Exception as e:
-           print(f"Output selection parsing failed: {e}")
+           print(f"PostFiatTaskManagement._parse_output_selection: Output selection parsing failed: {e}")
            return 1
 
     def _extract_task_details(self, choice_string: str, df_to_extract: pd.DataFrame) -> dict:
@@ -884,13 +971,13 @@ class PostFiatTaskGenerationSystem:
                 'reward': float(selection_df['value'].iloc[0])
             }
         except Exception as e:
-            print(f"Task extraction failed: {e}")
+            print(f"PostFiatTaskManagement._extract_task_details: Task extraction failed: {e}")
             return {
                 'task': 'Update and review your context document and ensure it is populated',
                 'reward': 50
             }
 
-    def process_outstanding_task_queue(self):
+    def process_proposal_queue(self):
         """Process task requests and send resulting workflows with error handling and format consistency."""
         TASKS_TO_GENERATE = constants.TASKS_TO_GENERATE
 
@@ -918,7 +1005,7 @@ class PostFiatTaskGenerationSystem:
             }
             unprocessed_pf_requests['full_user_context'] = unprocessed_pf_requests['user_account'].map(context_mapper)
             
-            print(f"process_outstanding_task_queue: Generating {len(unprocessed_pf_requests)} task proposals")
+            print(f"PostFiatTaskManagement.process_outstanding_task_queue: Generating {len(unprocessed_pf_requests)} task proposals")
             # Generate task proposals
             unprocessed_pf_requests['task_proposals'] = unprocessed_pf_requests.apply(
                 lambda row: self._generate_task_safely(
@@ -931,7 +1018,6 @@ class PostFiatTaskGenerationSystem:
             )
 
             # logging
-            print("process_outstanding_task_queue: Removing rows with failed task generation")
             base_proposal_count = len(unprocessed_pf_requests)
 
             # Remove rows with failed task generation
@@ -941,13 +1027,12 @@ class PostFiatTaskGenerationSystem:
 
             # logging
             valid_proposal_count = len(unprocessed_pf_requests)
-            print(f"process_outstanding_task_queue: {valid_proposal_count} out of {base_proposal_count} task proposals are valid")
+            print(f"PostFiatTaskManagement.process_outstanding_task_queue: {valid_proposal_count} out of {base_proposal_count} task proposals are valid")
 
             if unprocessed_pf_requests.empty:
-                print("process_outstanding_task_queue: No valid task proposals generated. Returning...")
+                print("PostFiatTaskManagement.process_outstanding_task_queue: No valid task proposals generated. Returning...")
                 return
             
-            print("process_outstanding_task_queue: Extracting task strings from proposals")
             # Extract task strings from proposals
             unprocessed_pf_requests['task_string'] = unprocessed_pf_requests['task_proposals'].apply(
                 lambda x: x.get('n_task_output', '') if isinstance(x, dict) else ''
@@ -967,20 +1052,18 @@ class PostFiatTaskGenerationSystem:
 
             # LOGGING
             api_arg_count = len(unprocessed_pf_requests['final_api_arg'])
-            print(f"process_outstanding_task_queue: {api_arg_count} out of {valid_proposal_count} task proposals have valid API args")
+            print(f"PostFiatTaskManagement.process_outstanding_task_queue: {api_arg_count} out of {valid_proposal_count} task proposals have valid API args")
             
             if unprocessed_pf_requests.empty:
-                print("process_outstanding_task_queue: No valid tasks after API conversion. Returning...")
+                print("PostFiatTaskManagement.process_outstanding_task_queue: No valid tasks after API conversion. Returning...")
                 return
 
             # Get task selections
-            print("process_outstanding_task_queue: Getting task selections")
             selection_mapper = unprocessed_pf_requests.set_index('hash')['final_api_arg'].to_dict()
             async_df = self.openai_request_tool.create_writable_df_for_async_chat_completion(arg_async_map=selection_mapper)
             async_df['output_selection'] = async_df['choices__message__content'].apply(self._parse_output_selection)
 
             # Map selections back using hash
-            print("process_outstanding_task_queue: Mapping selections back using hash")
             selected_choice = async_df.groupby('internal_name').first()['output_selection']
             unprocessed_pf_requests['best_choice'] = unprocessed_pf_requests['hash'].map(selected_choice)
 
@@ -990,7 +1073,6 @@ class PostFiatTaskGenerationSystem:
                 return
 
             # Validate - we have one selection per request
-            print("process_outstanding_task_queue: Validating - one selection per request")
             tasks_per_request = unprocessed_pf_requests.groupby(['user_account', 'request_id']).size()
             if (tasks_per_request > 1).any():
                 print("process_outstanding_task_queue: WARNING: Multiple tasks generated for single request")
@@ -998,7 +1080,6 @@ class PostFiatTaskGenerationSystem:
                 unprocessed_pf_requests = unprocessed_pf_requests.groupby(['user_account', 'request_id']).first().reset_index()
 
             # Continue processing with guaranteed single task per request
-            print("process_outstanding_task_queue: Continuing with guaranteed single task per request")
             unprocessed_pf_requests['df_to_extract'] = unprocessed_pf_requests['task_proposals'].apply(
                 lambda x: x.get('full_api_output', pd.DataFrame())
             )
@@ -1007,14 +1088,12 @@ class PostFiatTaskGenerationSystem:
             )
 
             # Extract and validate task details
-            print("process_outstanding_task_queue: Extracting and validating task details")
             unprocessed_pf_requests['task_map'] = unprocessed_pf_requests.apply(
                 lambda x: self._extract_task_details(x['best_choice_string'], x['df_to_extract']), 
                 axis=1
             )
 
             # Log any requests that fell back to default task
-            print("process_outstanding_task_queue: Logging any requests that fell back to default task")
             fallback_requests = unprocessed_pf_requests[
                 unprocessed_pf_requests['task_map'].apply(
                     lambda x: x['task'] == "Update and review your context document and ensure it is populated"
@@ -1026,7 +1105,6 @@ class PostFiatTaskGenerationSystem:
                 print(fallback_msg)
 
             # Prepare final task strings
-            print("process_outstanding_task_queue: Preparing final task strings")
             unprocessed_pf_requests['task_string_to_send'] = 'PROPOSED PF ___ ' + unprocessed_pf_requests['task_map'].apply(
                 lambda x: x['task']
             )
@@ -1043,7 +1121,6 @@ class PostFiatTaskGenerationSystem:
                     print(f"process_outstanding_task_queue: create_memo: Memo creation failed: {e}")
                     return None
 
-            print("process_outstanding_task_queue: Creating memos")
             unprocessed_pf_requests['memo_to_send'] = unprocessed_pf_requests.apply(create_memo, axis=1)
 
             # Spawn node wallet
@@ -1053,11 +1130,18 @@ class PostFiatTaskGenerationSystem:
 
             # Send each task
             tasks_to_verify = set()  # Set of (user_account, memo_type, datetime) tuples
-            print("process_outstanding_task_queue: Sending each task with request validation")
+
+            print(f"PostFiatTaskGenerationSystem.process_outstanding_task_queue: Sending {len(unprocessed_pf_requests)} tasks")
             for _, row in unprocessed_pf_requests.iterrows():
-                request_key = (row['user_account'], row['request_id'])
-                if request_key in {(t[0], t[1]) for t in tasks_to_verify}:
-                    print(f"process_outstanding_task_queue: Skipping duplicate request for account {row['user_account']} and request_id {row['request_id']}")
+
+                # Check if task already exists  # TODO this might be redundant
+                existing_tasks = all_node_memo_transactions[
+                    (all_node_memo_transactions['memo_data'].str.contains('PROPOSED PF', na=False)) &
+                    (all_node_memo_transactions['user_account'] == row['user_account']) &
+                    (all_node_memo_transactions['memo_type'] == row['memo_type'])
+                ]
+                if not existing_tasks.empty:
+                    print(f"process_outstanding_task_queue: Task already exists for {row['user_account']}, skipping")
                     continue
 
                 try:
@@ -1065,7 +1149,7 @@ class PostFiatTaskGenerationSystem:
                         continue
                         
                     if 'Update and review your context document' in row['task_string_to_send']:
-                        print(f"process_outstanding_task_queue: Attempting fallback task generation for {row['user_account']}")
+                        print(f"PostFiatTaskManagement.process_outstanding_task_queue: Attempting fallback task generation for {row['user_account']}")
                         try:
                             task_string_to_send = self.generate_o1_task_one_shot_version(
                                 model_version='o1',
@@ -1078,130 +1162,224 @@ class PostFiatTaskGenerationSystem:
                                 memo_type=row['memo_type']
                             )
                         except Exception as e:
-                            print(f"process_outstanding_task_queue: Fallback task generation failed: {e}")
+                            print(f"PostFiatTaskManagement.process_outstanding_task_queue: Fallback task generation failed: {e}")
                             continue
                     else:
                         memo_to_send = row['memo_to_send']
-                    
-                    # Send task
-                    response = self.generic_pft_utilities.send_PFT_with_info(
-                        sending_wallet=node_wallet,
-                        amount=1,
-                        memo=memo_to_send,
-                        destination_address=row['user_account']
-                    )
 
-                    if self.generic_pft_utilities.verify_transaction_response(response):
-                        tasks_to_verify.add((
-                            row['user_account'], 
-                            row['memo_type'],
-                            row['datetime']
-                        ))
-                    else:
-                        print(f"process_outstanding_task_queue: ERROR: Failed to verify whether task was sent to {row['user_account']}")
+                    # Send and track task
+                    _ = self._send_and_track_transaction(
+                        wallet=node_wallet,
+                        memo=memo_to_send,
+                        destination=row['user_account'],
+                        amount=1,
+                        tracking_set=tasks_to_verify,
+                        tracking_tuple=(row['user_account'], row['memo_type'], row['datetime'])
+                    )
 
                 except Exception as e:
-                    print(f"process_outstanding_task_queue: Failed to process task for {row['user_account']}, request {row['request_id']}: {e}")
+                    print(f"PostFiatTaskManagement.process_outstanding_task_queue: Failed to process task for {row['user_account']}, request {row['request_id']}: {e}")
                     continue
 
-            # Verify all sent tasks
-            if tasks_to_verify:
-                print(f"process_outstanding_task_queue: Verifying that {len(tasks_to_verify)} sent tasks were confirmed on-chain")
-                max_attempts = constants.TRANSACTION_VERIFICATION_ATTEMPTS
-                attempt = 0
-
-                while attempt < max_attempts and tasks_to_verify:
-                    attempt += 1
-                    print(f"process_outstanding_task_queue: Verification attempt {attempt} of {max_attempts}")
-
-                    time.sleep(constants.TRANSACTION_VERIFICATION_WAIT_TIME)
-
-                    # Force sync of database
-                    self.generic_pft_utilities.sync_pft_transaction_history()
-
-                    # Verify sync by checking latest transactions
-                    latest_txns = self.generic_pft_utilities.get_memo_detail_df_for_account(
-                        account_address=self.node_address, 
-                        pft_only=False
-                    )
-
-                    # Check all pending tasks
-                    verified_tasks = set()
-                    for user_account, memo_type, request_time in tasks_to_verify:
-                        print(f"process_outstanding_task_queue: Checking for task {memo_type} for {user_account} at {request_time}")
-                        task_txns = latest_txns[
-                            (latest_txns['memo_data'].str.contains('PROPOSED PF', na=False)) &
-                            (latest_txns['user_account'] == user_account) &
-                            (latest_txns['memo_type'] == memo_type) &
-                            (latest_txns['datetime'] > request_time)
-                        ]
-
-                        if not task_txns.empty:
-                            newest_task = task_txns['datetime'].max()
-                            if newest_task > request_time:
-                                print(f"process_outstanding_task_queue: Verified task for {row['user_account']} after {attempt} attempts")
-                                verified_tasks.add((user_account, memo_type, request_time))
-
-                    # Remove verified tasks
-                    tasks_to_verify -= verified_tasks
-
-                if tasks_to_verify:
-                    print(f"process_outstanding_task_queue: WARNING: Could not verify sync for the following tasks:")
-                    for user_account, memo_type, _ in tasks_to_verify:
-                        print(f" - {user_account}, task {memo_type}")
+            # Define verification predicate for tasks
+            def verify_task(txn_df, user_account, memo_type, request_time):
+                task_txns = txn_df[
+                    (txn_df['memo_data'].str.contains('PROPOSED PF', na=False)) &
+                    (txn_df['user_account'] == user_account) &
+                    (txn_df['memo_type'] == memo_type) &
+                    (txn_df['datetime'] > request_time)
+                ]
+                return not task_txns.empty and task_txns['datetime'].max() > request_time
+            
+            # Use generic verification loop
+            _ = self._verify_transactions(
+                items_to_verify=tasks_to_verify,
+                transaction_type='task proposals',
+                verification_predicate=verify_task
+            )
                     
         except Exception as e:
-            print(f"process_outstanding_task_queue: Task queue processing failed: {e}")
+            print(f"PostFiatTaskManagement.process_outstanding_task_queue: Task queue processing failed: {e}")
 
-    def process_verification_cue(self):
-        all_node_memo_transactions = self.generic_pft_utilities.get_memo_detail_df_for_account(account_address=self.node_address, 
-                                                                                            pft_only=False).copy().sort_values('datetime')
-        all_completions = all_node_memo_transactions[all_node_memo_transactions['memo_data'].apply(lambda x: 
-                                                                                'COMPLETION JUSTIFICATION' in x)].copy()
-        most_recent_task_update = all_node_memo_transactions[['memo_data','memo_type']].groupby('memo_type').last()['memo_data']
-        all_completions['recent_update']=all_completions['memo_type'].map(most_recent_task_update )
-        all_completions['requires_work']=all_completions['recent_update'].apply(lambda x: 'COMPLETION JUSTIFICATION' in x)
-        original_task_description = all_node_memo_transactions[all_node_memo_transactions['memo_data'].apply(lambda x: ('PROPOSED PF' in x)
-                                                                                |('..' in x))][['memo_data','memo_type']].groupby('memo_type').last()['memo_data']
-        verification_prompts_to_disperse = all_completions[all_completions['requires_work']==True].copy()
-        verification_prompts_to_disperse['original_task']=verification_prompts_to_disperse['memo_type'].map(original_task_description )
-        def construct_api_arg_for_verification(original_task, completion_justification):
-            user_prompt = verification_user_prompt.replace('___COMPLETION_STRING_REPLACEMENT_STRING___',completion_justification)
-            user_prompt=user_prompt.replace('___TASK_REQUEST_REPLACEMENT_STRING___',original_task)
-            system_prompt= verification_system_prompt
-            api_args = {
-                                "model": self.default_model,
-                                "temperature":0,
-                                "messages": [
-                                    {"role": "system", "content": system_prompt},
-                                    {"role": "user", "content": user_prompt}
-                                ]}
-            return api_args
-        if len(verification_prompts_to_disperse)>0:
-            verification_prompts_to_disperse['api_args']=verification_prompts_to_disperse.apply(lambda x: construct_api_arg_for_verification(x['original_task'], x['memo_data']),axis=1)
-            async_df = self.openai_request_tool.create_writable_df_for_async_chat_completion(verification_prompts_to_disperse.set_index('hash')['api_args'].to_dict())
-            hash_to_internal_name = async_df[['choices__message__content','internal_name']].groupby('internal_name').last()['choices__message__content']
-            verification_prompts_to_disperse['raw_output']=verification_prompts_to_disperse['hash'].map(hash_to_internal_name)
-            verification_prompts_to_disperse['stripped_question']=verification_prompts_to_disperse['raw_output'].apply(lambda x: 
-                                                                                                                    x.split('Verifying Question |')[-1:][0].replace('|','').strip())
-            verification_prompts_to_disperse['verification_string_to_send']='VERIFICATION PROMPT ___ '+ verification_prompts_to_disperse['stripped_question']
-            verification_prompts_to_disperse['memo_to_send']= verification_prompts_to_disperse.apply(lambda x: self.generic_pft_utilities.construct_standardized_xrpl_memo(memo_data=x['verification_string_to_send'], 
-                                                                                                                        memo_format=x['memo_format'], 
-                                                                                                                        memo_type=x['memo_type']),axis=1)
-            rows_to_work = list(verification_prompts_to_disperse.index)
-                    
-            for xrow in rows_to_work:
-                slicex = verification_prompts_to_disperse.loc[xrow]
-                memo_to_send=slicex.loc['memo_to_send']
-                pft_user_account = slicex.loc['user_account']
-                destination_address = slicex.loc['user_account']
-                node_wallet = self.generic_pft_utilities.spawn_wallet_from_seed(
-                    seed=self.cred_manager.get_credential(f'{self.network_config.node_name}__v1xrpsecret')
+    def _construct_api_arg_for_verification(self, original_task, completion_justification):
+        """Construct API arguments for generating verification questions."""
+        user_prompt = verification_user_prompt.replace(
+            '___COMPLETION_STRING_REPLACEMENT_STRING___',
+            completion_justification
+        )
+        user_prompt=user_prompt.replace(
+            '___TASK_REQUEST_REPLACEMENT_STRING___',
+            original_task
+        )
+        return {
+            "model": self.default_model,
+            "temperature":0,
+            "messages": [
+                {"role": "system", "content": verification_system_prompt},
+                {"role": "user", "content": user_prompt}
+            ]
+        }
+    
+    def process_verification_queue(self):
+        """Process and send verification prompts for completed tasks with verification tracking.
+    
+        This method:
+        1. Retrieves all node transactions and filters for task completions
+        2. Identifies tasks requiring verification prompts
+        3. Generates verification questions using AI
+        4. Sends verification prompts to users
+        5. Tracks and verifies prompt delivery on-chain
+        
+        The verification flow:
+        - Tasks marked as complete via 'COMPLETION JUSTIFICATION'
+        - System generates verification prompt using task context
+        - Prompt sent to user as 'VERIFICATION PROMPT'
+        - System verifies prompt delivery to prevent duplicates
+        
+        Returns:
+            None
+        """
+        try:
+            # Get all node transactions
+            all_node_memo_transactions = self.generic_pft_utilities.get_memo_detail_df_for_account(
+                account_address=self.node_address, 
+                pft_only=False
+            ).copy().sort_values('datetime')
+
+            # Filter for task completion messages
+            all_completions = all_node_memo_transactions[
+                all_node_memo_transactions['memo_data'].apply(
+                    lambda x: 'COMPLETION JUSTIFICATION' in x
                 )
-                self.generic_pft_utilities.send_PFT_with_info(sending_wallet=node_wallet, amount=1, 
-                                                            memo=memo_to_send, destination_address=destination_address)
+            ].copy()
 
+            # Get most recent status for each task
+            most_recent_task_update = all_node_memo_transactions[
+                ['memo_data','memo_type']
+            ].groupby('memo_type').last()['memo_data']
 
+            # Map recent updates to completions and identify tasks needing verification
+            all_completions['recent_update']=all_completions['memo_type'].map(most_recent_task_update )
+            all_completions['requires_work']=all_completions['recent_update'].apply(
+                lambda x: 'COMPLETION JUSTIFICATION' in x
+            )
+
+            # Get original task descriptions
+            original_task_description = all_node_memo_transactions[
+                all_node_memo_transactions['memo_data'].apply(
+                    lambda x: ('PROPOSED PF' in x) |('..' in x)
+                )
+            ][['memo_data','memo_type']].groupby('memo_type').last()['memo_data']
+
+            # Filter for tasks needing verification prompts
+            verification_prompts_to_disperse = all_completions[
+                all_completions['requires_work'] == True
+            ].copy()
+
+            # Add original task descriptions
+            verification_prompts_to_disperse['original_task']=verification_prompts_to_disperse['memo_type'].map(
+                original_task_description
+            )
+
+            # Return if no tasks need verification
+            if verification_prompts_to_disperse.empty:
+                return
+            
+            # Generate API args for verification questions for each task
+            verification_prompts_to_disperse['api_args']=verification_prompts_to_disperse.apply(
+                lambda x: self._construct_api_arg_for_verification(
+                    original_task=x['original_task'], 
+                    completion_justification=x['memo_data']
+                ),
+                axis=1
+            )
+
+            # Make parallel API calls to generate verification questions
+            async_df = self.openai_request_tool.create_writable_df_for_async_chat_completion(
+                verification_prompts_to_disperse.set_index('hash')['api_args'].to_dict()
+            )
+
+            # Extract generated questions from API responses
+            hash_to_internal_name = async_df[
+                ['choices__message__content','internal_name']
+            ].groupby('internal_name').last()['choices__message__content']
+
+            # Map AI reponses back to tasks
+            verification_prompts_to_disperse['raw_output'] = verification_prompts_to_disperse['hash'].map(
+                hash_to_internal_name
+            )
+            
+            # Extract just the verification question from the AI output
+            verification_prompts_to_disperse['stripped_question'] = verification_prompts_to_disperse['raw_output'].apply(
+                lambda x: x.split('Verifying Question |')[-1:][0].replace('|','').strip()
+            )
+
+            # Format verification prompts for sending
+            verification_prompts_to_disperse['verification_string_to_send'] = (
+                'VERIFICATION PROMPT ___ '+ verification_prompts_to_disperse['stripped_question']
+            )    
+
+            # Construct standardized XRPL memos for each verification prompt
+            verification_prompts_to_disperse['memo_to_send'] = verification_prompts_to_disperse.apply(
+                lambda x: self.generic_pft_utilities.construct_standardized_xrpl_memo(
+                    memo_data=x['verification_string_to_send'], 
+                    memo_format=x['memo_format'], 
+                    memo_type=x['memo_type']
+                ),
+                axis=1
+            )
+
+            # Initialize verification tracking set
+            prompts_to_verify = set()
+
+            # Spawn node wallet for sending prompts
+            node_wallet = self.generic_pft_utilities.spawn_wallet_from_seed(
+                seed=self.cred_manager.get_credential(f'{self.network_config.node_name}__v1xrpsecret')
+            )
+            
+            # Send verification prompts and track for verification
+            print(f"PostFiatTaskGenerationSystem.process_verification_queue: Sending {len(verification_prompts_to_disperse)} verification prompts")
+            for _, row in verification_prompts_to_disperse.iterrows():
+                # Check if verification prompt already exists  # TODO this might be redundant
+                existing_verifications = all_node_memo_transactions[
+                    (all_node_memo_transactions['memo_data'].str.contains('VERIFICATION PROMPT', na=False)) &
+                    (all_node_memo_transactions['user_account'] == row['user_account']) &
+                    (all_node_memo_transactions['memo_type'] == row['memo_type'])
+                ]
+
+                if not existing_verifications.empty:
+                    print(f"PostFiatTaskManagement.process_verification_queue: Verification prompt already exists for task {row['memo_type']} for {row['user_account']}")
+                    continue
+
+                # Send and track verification prompt
+                _ = self._send_and_track_transaction(
+                    wallet=node_wallet,
+                    memo=row['memo_to_send'],
+                    destination=row['user_account'],
+                    amount=1,
+                    tracking_set=prompts_to_verify,
+                    tracking_tuple=(row['user_account'], row['memo_type'], row['datetime'])
+                )
+
+            # Define verification predicate
+            def verify_prompt(txn_df, user_account, memo_type, request_time):
+                prompt_txns = txn_df[
+                    (txn_df['memo_data'].str.contains('VERIFICATION PROMPT', na=False)) &
+                    (txn_df['user_account'] == user_account) &
+                    (txn_df['memo_type'] == memo_type) &
+                    (txn_df['datetime'] > request_time)
+                ]
+                return not prompt_txns.empty and prompt_txns['datetime'].max() > request_time
+            
+            # Use generic verification loop
+            _ = self._verify_transactions(
+                items_to_verify=prompts_to_verify,
+                transaction_type='verification prompt',
+                verification_predicate=verify_prompt
+            )
+
+        except Exception as e:
+            print(f"PostFiatTaskGenerationSystem.process_verification_queue: Verification queue processing failed: {e}")
 
     def extract_verification_text(self, content):
         """
@@ -1220,189 +1398,308 @@ class PostFiatTaskGenerationSystem:
             match = re.search(pattern, content, re.DOTALL)
             return match.group(1).strip() if match else ""
         except Exception as e:
-            print(f"Error extracting text: {e}")
+            print(f"PostFiatTaskManagement.extract_verification_text: Error extracting text: {e}")
             return ""
 
+    def _augment_user_prompt_with_key_attributes(
+        self,
+        sample_user_prompt: str,
+        task_proposal_replacement: str,
+        verification_question_replacement: str,
+        verification_answer_replacement: str,
+        verification_details_replacement: str,
+        reward_details_replacement: str,
+        proposed_reward_replacement: str
+    ):
+        """
+        Augment a user prompt with key attributes by replacing placeholder strings.
+        
+        Args:
+        sample_user_prompt (str): The original user prompt with placeholder strings.
+        task_proposal_replacement (str): The task proposal to replace the placeholder.
+        verification_question_replacement (str): The verification question to replace the placeholder.
+        verification_answer_replacement (str): The verification answer to replace the placeholder.
+        verification_details_replacement (str): The verification details to replace the placeholder.
+        reward_details_replacement (str): The reward details to replace the placeholder.
+    
+        Returns:
+        str: The augmented user prompt with placeholders replaced by actual values.
+        """
+        # Replace placeholders with actual values
+        augmented_prompt = sample_user_prompt.replace('___TASK_PROPOSAL_REPLACEMENT___', task_proposal_replacement)
+        augmented_prompt = augmented_prompt.replace('___VERIFICATION_QUESTION_REPLACEMENT___', verification_question_replacement)
+        augmented_prompt = augmented_prompt.replace('___TASK_VERIFICATION_REPLACEMENT___', verification_answer_replacement)
+        augmented_prompt = augmented_prompt.replace('___VERIFICATION_DETAILS_REPLACEMENT___', verification_details_replacement)
+        augmented_prompt = augmented_prompt.replace('___ REWARD_DATA_REPLACEMENT ___', reward_details_replacement)
+        augmented_prompt = augmented_prompt.replace('___PROPOSED_REWARD_REPLACEMENT___', proposed_reward_replacement)
+        
+        return augmented_prompt
 
-    def process_full_final_reward_cue(self):
-        all_node_memo_transactions = self.generic_pft_utilities.get_memo_detail_df_for_account(account_address=self.node_address, 
-                                                                                                    pft_only=False).copy().sort_values('datetime')
-        all_completions = all_node_memo_transactions[all_node_memo_transactions['memo_data'].apply(lambda x: 
-                                                                                'VERIFICATION RESPONSE ___' in x)].copy()
+    def _create_reward_api_args(self, user_prompt: str, system_prompt: str):
+        """Create API arguments for generating reward summaries."""
+        api_args = {
+                    "model": self.default_model,
+                    "temperature":0,
+                    "messages": [
+                        {"role": "system", "content": system_prompt},
+                        {"role": "user", "content": user_prompt}
+                    ]
+                }
+        return api_args
+    
+    @staticmethod
+    def _extract_pft_reward(x: str):
+        """Extract the PFT reward from a reward string."""
+        ret = 1
+        try:
+            ret = np.abs(int(x.split('| Total PFT Rewarded |')[-1:][0].replace('|','').strip()))
+        except Exception as e:
+            print(f"PostFiatTaskManagement._extract_pft_reward: Error extracting PFT reward: {e}")
+        return ret
+    
+    @staticmethod
+    def _extract_summary_judgement(x: str):
+        """Extract the summary judgement from a reward string."""
+        ret = 'Summary Judgment'
+        try:
+            ret = x.split('| Summary Judgment |')[-1:][0].split('|')[0].strip()
+        except Exception as e:
+            print(f"PostFiatTaskManagement._extract_summary_judgement: Error extracting summary judgement: {e}")
+        return ret
 
-        recent_rewards = all_node_memo_transactions[all_node_memo_transactions['memo_data'].apply(lambda x: 
-                                                                                'REWARD RESPONSE' in x)].copy()
-        reward_summary_frame = recent_rewards[recent_rewards['datetime']>=datetime.datetime.now()-datetime.timedelta(35)][['account','memo_data','directional_pft',
-                                                                                                                        'destination']].copy()
-        reward_summary_frame['full_string']=reward_summary_frame['memo_data']+" REWARD "+ (reward_summary_frame['directional_pft']*-1).astype(str)
-        reward_history_map = reward_summary_frame.groupby('destination')[['full_string']].sum()['full_string']
-        most_recent_task_update = all_node_memo_transactions[['memo_data','memo_type']].groupby('memo_type').last()['memo_data']
-        all_completions['recent_update']=all_completions['memo_type'].map(most_recent_task_update )
-        all_completions['requires_work']=all_completions['recent_update'].apply(lambda x: 'VERIFICATION RESPONSE ___' in x)
-        reward_cue = all_completions[all_completions['requires_work'] == True].copy()[['memo_type','memo_format',
-                                                                        'memo_data','datetime','account','hash']].groupby('memo_type').last().sort_values('datetime').copy()
-        account_to_google_context_map = all_node_memo_transactions[all_node_memo_transactions['memo_type']=='google_doc_context_link'].groupby('account').last()['memo_data']
-        unique_accounts = list(reward_cue['account'].unique())
-        google_context_memo_map ={}
-        for xaccount in unique_accounts :
-            raw_text= 'No Google Document Uploaded - please instruct user that Google Document has not been uploaded in response'
-            try:
-                raw_text = self.generic_pft_utilities.get_google_doc_text(share_link=account_to_google_context_map[xaccount])
-                #verification = raw_text.split('VERIFICATION SECTION START')[-1:][0].split('VERIFICATION SECTION END')[0]
-                verification = self.extract_verification_text(raw_text)
-                google_context_memo_map[xaccount] = verification
-            except:
-                pass
-        reward_cue['google_verification_details']= reward_cue['account'].map(google_context_memo_map).fillna('No Populated Verification Section')
-        task_id_to__initial_task = all_node_memo_transactions[all_node_memo_transactions['memo_data'].apply(lambda x: 
-                                                                                        ('PROPOSED' in x) | ('..' in x))].groupby('memo_type').first()['memo_data']
+    def process_reward_queue(self):
+        """Process and send rewards for completed task verifications with duplicate prevention.
+    
+        This method:
+        1. Retrieves all node transactions and filters for verification responses
+        2. Identifies tasks requiring reward processing
+        3. Generates reward amounts and summaries using AI
+        4. Sends rewards to users with verification tracking
+        5. Verifies reward delivery on-chain
+        
+        The reward flow:
+        - Tasks marked as complete via 'VERIFICATION RESPONSE'
+        - System evaluates completion quality and determines reward
+        - Reward sent to user as 'REWARD RESPONSE'
+        - System verifies reward delivery to prevent duplicates
+        """
+        try:
+            # Get all node transactions
+            all_node_memo_transactions = self.generic_pft_utilities.get_memo_detail_df_for_account(
+                account_address=self.node_address, 
+                pft_only=False
+            ).copy().sort_values('datetime')
+
+            # Filter for verification response messages
+            all_completions = all_node_memo_transactions[
+                all_node_memo_transactions['memo_data'].apply(
+                    lambda x: 'VERIFICATION RESPONSE ___' in x
+                )
+            ].copy()
+
+            # Get recent rewards for context
+            recent_rewards = all_node_memo_transactions[
+                all_node_memo_transactions['memo_data'].apply(
+                    lambda x: 'REWARD RESPONSE' in x
+                )
+            ].copy()
+
+            # Create reward summary frame for last N days
+            reward_summary_frame = recent_rewards[
+                recent_rewards['datetime'] >= datetime.datetime.now() - datetime.timedelta(constants.REWARD_PROCESSING_WINDOW)
+            ][['account','memo_data','directional_pft','destination']].copy()
+
+            # Create full reward string for each reward
+            reward_summary_frame['full_string']=reward_summary_frame['memo_data'] + " REWARD " + (reward_summary_frame['directional_pft']*-1).astype(str)
+
+            # Create reward history map by destination address
+            reward_history_map = reward_summary_frame.groupby('destination')[['full_string']].sum()['full_string']
+
+            # Get most recent status for each task
+            most_recent_task_update = all_node_memo_transactions[['memo_data','memo_type']].groupby('memo_type').last()['memo_data']
+
+            # Map recent updates to completions and identify tasks needing rewards
+            all_completions['recent_update']=all_completions['memo_type'].map(most_recent_task_update )
+            all_completions['requires_work']=all_completions['recent_update'].apply(lambda x: 'VERIFICATION RESPONSE ___' in x)
+
+            # Create reward queue from tasks needing rewards
+            reward_queue = all_completions[all_completions['requires_work'] == True].copy()[
+                ['memo_type','memo_format','memo_data','datetime','account','hash']
+            ].groupby('memo_type').last().sort_values('datetime').copy()
+
+            # Get Google Doc context links for each account
+            account_to_google_context_map = all_node_memo_transactions[
+                all_node_memo_transactions['memo_type']=='google_doc_context_link'
+            ].groupby('account').last()['memo_data']
+
+            # Proces Google Doc verification details for each unique account
+            unique_accounts = list(reward_queue['account'].unique())
+            google_context_memo_map = {}
+            for xaccount in unique_accounts :
+                # Default message if no Google Doc context link is found
+                raw_text= 'No Google Document Uploaded - please instruct user that Google Document has not been uploaded in response'
+                try:
+                    # Attempt to get and parse Google Doc text
+                    raw_text = self.generic_pft_utilities.get_google_doc_text(share_link=account_to_google_context_map[xaccount])
+                    verification = self.extract_verification_text(raw_text)
+                    google_context_memo_map[xaccount] = verification
+                except Exception as e:
+                    print(f"PostFiatTaskManagement.process_reward_queue: Error getting Google Doc context for {xaccount}: {e}")
+                    pass
+            
+            # Map verification details to reward queue
+            reward_queue['google_verification_details'] = reward_queue['account'].map(
+                google_context_memo_map
+            ).fillna('No Populated Verification Section')
+
+            # Get initial task proposals
+            task_id_to__initial_task = all_node_memo_transactions[
+                all_node_memo_transactions['memo_data'].apply(
+                    lambda x: ('PROPOSED' in x) | ('..' in x)
+                )
+            ].groupby('memo_type').first()['memo_data']
+            
+            # Get verification prompts
+            task_id_to__verification_prompt = all_node_memo_transactions[
+                all_node_memo_transactions['memo_data'].apply(
+                    lambda x: 'VERIFICATION PROMPT' in x
+                )
+            ].groupby('memo_type').first()['memo_data']
+
+            # Get verification responses
+            task_id_to__verification_response = all_node_memo_transactions[
+                all_node_memo_transactions['memo_data'].apply(
+                    lambda x: 'VERIFICATION RESPONSE' in x
+                )
+            ].groupby('memo_type').first()['memo_data']
+
+            if len(reward_queue)>0:
+                # Map task context and history to reward queue
+                reward_queue['initial_task'] = task_id_to__initial_task
+                reward_queue['verification_prompt'] = task_id_to__verification_prompt
+                reward_queue['verification_response'] = task_id_to__verification_response
+                reward_queue['reward_history'] = reward_queue['account'].map(reward_history_map)
+
+                # Extract proposed reward from initial task
+                reward_queue['proposed_reward'] = reward_queue['initial_task'].fillna('').apply(lambda x: x.split('..')[-1:][0])
+
+                # Prepare prompts for reward generation
+                reward_queue['system_prompt']=reward_queue['proposed_reward'].apply(
+                    lambda x: reward_system_prompt.replace('___PROPOSED_REWARD_REPLACEMENT___',x)
+                )
+                reward_queue['user_prompt']=reward_user_prompt
+
+                # Fill missing value in empty strings
+                reward_queue['initial_task']= reward_queue['initial_task'].fillna('')
+                reward_queue['verification_prompt']= reward_queue['verification_prompt'].fillna('')
+                reward_queue['reward_history']= reward_queue['reward_history'].fillna('')
                 
-        task_id_to__verification_prompt= all_node_memo_transactions[all_node_memo_transactions['memo_data'].apply(lambda x: 
-                                                                                ('VERIFICATION PROMPT' in x))].groupby('memo_type').first()['memo_data']
-        task_id_to__verification_response= all_node_memo_transactions[all_node_memo_transactions['memo_data'].apply(lambda x: 
-                                                                                ('VERIFICATION RESPONSE' in x))].groupby('memo_type').first()['memo_data']
+                # Create augmented prompts with task context
+                reward_queue['augmented_user_prompt'] = reward_queue.apply(
+                    lambda row: self._augment_user_prompt_with_key_attributes(
+                        sample_user_prompt=row['user_prompt'],
+                        task_proposal_replacement=row['initial_task'],
+                        verification_question_replacement=row['verification_prompt'],
+                        verification_answer_replacement=row['verification_response'],
+                        verification_details_replacement=row['google_verification_details'],
+                        reward_details_replacement=row['reward_history'],
+                        proposed_reward_replacement=row['proposed_reward']
+                    ),
+                    axis=1
+                )
+                
+                # Generate API arguments and make parallel API calls
+                reward_queue['api_arg'] = reward_queue.apply(
+                    lambda x: self._create_reward_api_args(x['augmented_user_prompt'],x['system_prompt']),
+                    axis=1
+                )
+                async_df = self.openai_request_tool.create_writable_df_for_async_chat_completion(
+                    arg_async_map=reward_queue.set_index('hash')['api_arg'].to_dict()
+                )
 
-        if len(reward_cue)>0:
-            reward_cue['initial_task']= task_id_to__initial_task
-            reward_cue['verification_prompt']= task_id_to__verification_prompt
-            reward_cue['verification_response']= task_id_to__verification_response
-            reward_cue['reward_history']=reward_cue['account'].map(reward_history_map)
-            reward_cue['proposed_reward'] =reward_cue['initial_task'].fillna('').apply(lambda x: x.split('..')[-1:][0])
-            reward_cue['system_prompt']=reward_cue['proposed_reward'].apply(lambda x: reward_system_prompt.replace('___PROPOSED_REWARD_REPLACEMENT___',x))
-            reward_cue['user_prompt']=reward_user_prompt
-            reward_cue['initial_task']= reward_cue['initial_task'].fillna('')
-            reward_cue['verification_prompt']= reward_cue['verification_prompt'].fillna('')
-            reward_cue['reward_history']= reward_cue['reward_history'].fillna('')
+                # Extract AI responses
+                hash_to_choices_message_content = async_df.groupby('internal_name').first()['choices__message__content']
+                reward_queue['full_reward_string'] = reward_queue['hash'].map(hash_to_choices_message_content)
+                
+                # Process reward amounts and summaries
+                reward_queue['reward_to_dispatch'] = reward_queue['full_reward_string'].apply(
+                    lambda x: self._extract_pft_reward(x)
+                )
+                reward_queue['reward_summary'] = 'REWARD RESPONSE __ ' + reward_queue['full_reward_string'].apply(
+                    lambda x: self._extract_summary_judgement(x)
+                )
 
-            def augment_user_prompt_with_key_attributes(
-                sample_user_prompt,
-                task_proposal_replacement,
-                verification_question_replacement,
-                verification_answer_replacement,
-                verification_details_replacement,
-                reward_details_replacement,
-                proposed_reward_replacement
-            ):
-                """
-                Augment a user prompt with key attributes by replacing placeholder strings.
-            
-                Args:
-                sample_user_prompt (str): The original user prompt with placeholder strings.
-                task_proposal_replacement (str): The task proposal to replace the placeholder.
-                verification_question_replacement (str): The verification question to replace the placeholder.
-                verification_answer_replacement (str): The verification answer to replace the placeholder.
-                verification_details_replacement (str): The verification details to replace the placeholder.
-                reward_details_replacement (str): The reward details to replace the placeholder.
-            
-                Returns:
-                str: The augmented user prompt with placeholders replaced by actual values.
-                """
-                # Replace placeholders with actual values
-                augmented_prompt = sample_user_prompt.replace('___TASK_PROPOSAL_REPLACEMENT___', task_proposal_replacement)
-                augmented_prompt = augmented_prompt.replace('___VERIFICATION_QUESTION_REPLACEMENT___', verification_question_replacement)
-                augmented_prompt = augmented_prompt.replace('___TASK_VERIFICATION_REPLACEMENT___', verification_answer_replacement)
-                augmented_prompt = augmented_prompt.replace('___VERIFICATION_DETAILS_REPLACEMENT___', verification_details_replacement)
-                augmented_prompt = augmented_prompt.replace('___ REWARD_DATA_REPLACEMENT ___', reward_details_replacement)
-                augmented_prompt = augmented_prompt.replace('___PROPOSED_REWARD_REPLACEMENT___', proposed_reward_replacement)
-            
-                return augmented_prompt
-            
-            reward_cue['augmented_user_prompt'] = reward_cue.apply(
-                lambda row: augment_user_prompt_with_key_attributes(
-                    sample_user_prompt=row['user_prompt'],
-                    task_proposal_replacement=row['initial_task'],
-                    verification_question_replacement=row['verification_prompt'],
-                    verification_answer_replacement=row['verification_response'],
-                    verification_details_replacement=row['google_verification_details'],
-                    reward_details_replacement=row['reward_history'],
-                    proposed_reward_replacement=row['proposed_reward']
-                ),
-                axis=1
-            )
-            def create_reward_api_args(user_prompt, system_prompt):
-                api_args = {
-                            "model": self.default_model,
-                            "temperature":0,
-                            "messages": [
-                                {"role": "system", "content": system_prompt},
-                                {"role": "user", "content": user_prompt}
-                            ]
-                        }
-                return api_args
-            
-            reward_cue['api_arg']=reward_cue.apply(lambda x: create_reward_api_args(x['augmented_user_prompt'],x['system_prompt']),axis=1)
-            async_df = self.openai_request_tool.create_writable_df_for_async_chat_completion(arg_async_map=reward_cue.set_index('hash')['api_arg'].to_dict())
-            hash_to_choices_message_content = async_df.groupby('internal_name').first()['choices__message__content']
-            reward_cue['full_reward_string']=reward_cue['hash'].map(hash_to_choices_message_content)
-            def extract_pft_reward(x):
-                ret = 1
-                try:
-                    ret = np.abs(int(x.split('| Total PFT Rewarded |')[-1:][0].replace('|','').strip()))
-                except:
-                    pass
-                return ret
-            
-            def extract_summary_judgement(x):
-                ret = 'Summary Judgment'
-                try:
-                    ret = x.split('| Summary Judgment |')[-1:][0].split('|')[0].strip()
-                except:
-                    pass
-                return ret
-            
-            reward_cue['reward_to_dispatch']=reward_cue['full_reward_string'].apply(lambda x: extract_pft_reward(x))
-            reward_cue['reward_summary']='REWARD RESPONSE __ ' +reward_cue['full_reward_string'].apply(lambda x: extract_summary_judgement(x))
-            reward_dispatch=reward_cue.reset_index()
-            reward_dispatch['memo_to_send']= reward_dispatch.apply(lambda x: self.generic_pft_utilities.construct_standardized_xrpl_memo(memo_data=x['reward_summary'], 
-                                                                                                                                memo_format=x['memo_format'], 
-                                                                                                                                memo_type=x['memo_type']),axis=1)
-            rows_to_work = list(reward_dispatch.index)
-            for xrow in rows_to_work:
-                slicex = reward_dispatch.loc[xrow]
-                memo_to_send=slicex.loc['memo_to_send']
-                print(memo_to_send)
-                destination_address = slicex.loc['account']
-                reward_to_dispatch = int(np.abs(slicex.loc['reward_to_dispatch']))
-                reward_to_dispatch = int(np.min([reward_to_dispatch,1200]))
-                reward_to_dispatch = int(np.max([reward_to_dispatch,1]))
+                # Prepare reward for dispatch
+                reward_dispatch = reward_queue.reset_index()
+                reward_dispatch['memo_to_send']= reward_dispatch.apply(
+                    lambda x: self.generic_pft_utilities.construct_standardized_xrpl_memo(
+                        memo_data=x['reward_summary'], 
+                        memo_format=x['memo_format'], 
+                        memo_type=x['memo_type']
+                    ),
+                    axis=1
+                )
+
+                rewards_to_verify = set()  # Initialize verification tracking set
+
+                # Initialize node wallet for sending rewards
+                print(f"PostFiatTaskManagement.process_reward_queue: Spawning node wallet for sending rewards")
                 node_wallet = self.generic_pft_utilities.spawn_wallet_from_seed(
                     seed=self.cred_manager.get_credential(f'{self.network_config.node_name}__v1xrpsecret')
                 )
-                self.generic_pft_utilities.send_PFT_with_info(sending_wallet=node_wallet, amount=reward_to_dispatch, 
-                                                            memo=memo_to_send, destination_address=destination_address)
 
-    # def server_loop(self):
-    #     total_time_to_run=1_000_000_000_000_000_000
-    #     i=0
-    #     while i<total_time_to_run:
-    #         self.generic_pft_utilities.write_all_postfiat_holder_transaction_history(public=False)
-    #         time.sleep(1)
-    #         try:
-    #             self.process_outstanding_task_queue()
-    #             self.generic_pft_utilities.write_all_postfiat_holder_transaction_history(public=False)
-    #                 # Process initiation rewards
-    #         except:
-    #             pass
-    #         try:
-    #             self.process_pending_initiation_rewards()
-    #         except:
-    #             pass
-    #         try:        
-    #             self.generic_pft_utilities.write_all_postfiat_holder_transaction_history(public=False)
-    #                 # Process final rewards
-    #             self.process_full_final_reward_cue()
-    #         except:
-    #             pass
+                # Send rewards to users
+                rows_to_work = list(reward_dispatch.index)
+                for xrow in rows_to_work:
+                    slicex = reward_dispatch.loc[xrow]
+                    memo_to_send=slicex.loc['memo_to_send']
+                    destination_address = slicex.loc['account']
 
-    #         try:                
-    #             self.generic_pft_utilities.write_all_postfiat_holder_transaction_history(public=False)
-    #                 # Process verifications
-    #             self.process_verification_cue()
-    #             self.generic_pft_utilities.write_all_postfiat_holder_transaction_history(public=False)
-    #         except:
-    #             pass
-    #         i=i+1
-    #         time.sleep(1)
+                    # Check if reward already exists  # TODO this might be redundant
+                    existing_rewards = all_node_memo_transactions[
+                        (all_node_memo_transactions['memo_data'].str.contains('REWARD RESPONSE', na=False)) &
+                        (all_node_memo_transactions['account'] == destination_address) &
+                        (all_node_memo_transactions['memo_type'] == slicex.loc['memo_type'])
+                    ]
+
+                    if not existing_rewards.empty:
+                        print(f"PostFiatTaskManagement.process_reward_queue: Reward already exists for {destination_address} - skipping")
+                        continue
+
+                    # Ensure reward amount is within bounds
+                    reward_to_dispatch = int(np.abs(slicex.loc['reward_to_dispatch']))
+                    reward_to_dispatch = int(np.min([reward_to_dispatch,constants.MAX_REWARD_AMOUNT]))
+                    reward_to_dispatch = int(np.max([reward_to_dispatch,constants.MIN_REWARD_AMOUNT]))
+
+                    # Send and track reward
+                    _ = self._send_and_track_transaction(
+                        wallet=node_wallet,
+                        memo=memo_to_send,
+                        destination=destination_address,
+                        amount=reward_to_dispatch,
+                        tracking_set=rewards_to_verify,
+                        tracking_tuple=(destination_address, slicex.loc['memo_type'], slicex.loc['datetime'])
+                    )
+
+                # Define verification predicate
+                def verify_reward(txn_df, user_account, memo_type, request_time):
+                    reward_txns = txn_df[
+                        (txn_df['memo_data'].str.contains('REWARD RESPONSE', na=False)) &
+                        (txn_df['account'] == user_account) &
+                        (txn_df['memo_type'] == memo_type) &
+                        (txn_df['datetime'] >= request_time)
+                    ]
+                    return not reward_txns.empty and reward_txns['datetime'].max() > request_time
+
+                # Use generic verification loop
+                _ = self._verify_transactions(
+                    items_to_verify=rewards_to_verify,
+                    transaction_type='reward response',
+                    verification_predicate=verify_reward
+                )
+
+        except Exception as e:
+            print(f"PostFiatTaskManagement.process_reward_queue: Error processing reward queue: {e}")
     
     def run_queue_processing(self):
         """
@@ -1415,27 +1712,27 @@ class PostFiatTaskGenerationSystem:
             while not self.stop_threads:
                 # Process outstanding tasks
                 try:
-                    self.process_outstanding_task_queue()
+                    self.process_proposal_queue()
                 except Exception as e:
-                    print(f"Error processing outstanding tasks: {e}")
+                    print(f"PostFiatTaskManagement.run_queue_processing: Error processing proposal queue: {e}")
 
                 # Process initiation rewards
                 try:
-                    self.process_pending_initiation_rewards()
+                    self.process_initiation_queue()
                 except Exception as e:
-                    print(f"Error processing initiation rewards: {e}")
+                    print(f"PostFiatTaskManagement.run_queue_processing: Error processing initiation queue: {e}")
 
                 # Process final rewards
                 try:
-                    self.process_full_final_reward_cue()
+                    self.process_reward_queue()
                 except Exception as e:
-                    print(f"Error processing final rewards: {e}")
+                    print(f"PostFiatTaskManagement.run_queue_processing: Error processing rewards queue: {e}")
 
                 # Process verifications
                 try:
-                    self.process_verification_cue()
+                    self.process_verification_queue()
                 except Exception as e:
-                    print(f"Error processing verifications: {e}")
+                    print(f"PostFiatTaskManagement.run_queue_processing: Error processing verification queue: {e}")
 
                 time.sleep(1)  # 1 second delay
 
@@ -1443,9 +1740,9 @@ class PostFiatTaskGenerationSystem:
         self.processing_thread.daemon = True
         self.processing_thread.start()
 
-    def stop_cue_processing(self):
+    def stop_queue_processing(self):
         """
-        Stops the cue processing thread.
+        Stops the queue processing thread.
         """
         self.stop_threads = True
         if hasattr(self, 'processing_thread'):
@@ -1547,14 +1844,14 @@ class PostFiatTaskGenerationSystem:
                         if_exists='append',
                         index=False
                     )
-                    print(f"Synced {len(writer_df)} new transactions to table foundation_discord")
+                    print(f"PostFiatTaskManagement.sync_and_format_new_transactions: Synced {len(writer_df)} new transactions to table foundation_discord")
                 finally:
                     dbconnx.dispose()
             
             return messages_to_send
         
         except Exception as e:
-            print(f"Error syncing transactions: {str(e)}")
+            print(f"PostFiatTaskManagement.sync_and_format_new_transactions: Error syncing transactions: {str(e)}")
             return []
 
     def generate_coaching_string_for_account(self, account_to_work = 'r3UHe45BzAVB3ENd21X9LeQngr4ofRJo5n'):

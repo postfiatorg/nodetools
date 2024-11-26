@@ -39,13 +39,13 @@ class MyClient(discord.Client):
         guild = Object(id=guild_id)
         self.tree.copy_global_to(guild=guild)
         await self.tree.sync(guild=guild)
-        print(f"Slash commands synced to guild ID: {guild_id}")
+        print(f"MyClient.setup_hook: Slash commands synced to guild ID: {guild_id}")
 
         self.bg_task = self.loop.create_task(self.transaction_checker())
 
         # Initialize queue processing
         self.post_fiat_task_generation_system.run_queue_processing()
-        print(f"Task management queue processing initialized.")
+        print(f"MyClient.setup_hook: Task management queue processing initialized.")
 
         @self.tree.command(name="pf_send", description="Open a transaction form")
         async def pf_send(interaction: Interaction):
@@ -107,6 +107,7 @@ class MyClient(discord.Client):
             seed = self.user_seeds[user_id]
 
             # Fetch the tasks that are not yet accepted
+            print(f"MyClient.pf_accept_menu: Spawning wallet to fetch tasks for {interaction.user.name}")
             wallet = generic_pft_utilities.spawn_wallet_from_seed(seed=seed)
             classic_address = wallet.classic_address
             all_node_memo_transactions = generic_pft_utilities.get_memo_detail_df_for_account(account_address=classic_address, pft_only=False).copy()
@@ -209,6 +210,7 @@ class MyClient(discord.Client):
             seed = self.user_seeds[user_id]
 
             # Fetch the tasks that are not yet accepted
+            print(f"MyClient.pf_refuse_menu: Spawning wallet to fetch tasks for {interaction.user.name}")
             wallet = generic_pft_utilities.spawn_wallet_from_seed(seed=seed)
             classic_address = wallet.classic_address
             all_node_memo_transactions = generic_pft_utilities.get_memo_detail_df_for_account(account_address=classic_address, pft_only=False).copy()
@@ -367,6 +369,7 @@ class MyClient(discord.Client):
                 return
 
             seed = self.user_seeds[user_id]
+            print(f"MyClient.pf_chart: Spawning wallet to generate chart for {interaction.user.name}")
             wallet = generic_pft_utilities.spawn_wallet_from_seed(seed)
             wallet_address = wallet.classic_address
 
@@ -463,6 +466,7 @@ class MyClient(discord.Client):
                 return
 
             seed = self.user_seeds[user_id]
+            print(f"MyClient.pf_outstanding: Spawning wallet to fetch tasks for {interaction.user.name}")
             wallet = generic_pft_utilities.spawn_wallet_from_seed(seed)
             wallet_address = wallet.classic_address
 
@@ -592,11 +596,11 @@ class MyClient(discord.Client):
             print("Seed storage command executed!")
         # Sync the commands to the guild
         await self.tree.sync(guild=guild)
-        print(f"Slash commands synced to guild ID: {guild_id}")
+        print(f"MyClient.setup_hook: Slash commands synced to guild ID: {guild_id}")
 
         # Sync the commands to the guild
         await self.tree.sync(guild=guild)
-        print(f"Slash commands synced to guild ID: {guild_id}")
+        print(f"MyClient.setup_hook: Slash commands synced to guild ID: {guild_id}")
 
         @self.tree.command(name="pf_initiate", description="Initiate your commitment")
         async def pf_initiate(interaction: discord.Interaction):
@@ -611,7 +615,25 @@ class MyClient(discord.Client):
 
             try:
                 # Spawn the user's wallet
+                print(f"MyClient.pf_initiate: Spawning wallet to initiate for {interaction.user.name}")
                 seed = self.user_seeds[user_id]
+                wallet = generic_pft_utilities.spawn_wallet_from_seed(seed)
+
+                # Check for existing initiation
+                all_txns = generic_pft_utilities.get_memo_detail_df_for_account(
+                    wallet.classic_address,
+                    pft_only=False
+                )
+                existing_initiations = all_txns[all_txns['memo_type'] == 'INITIATION_RITE']
+
+                # Block re-initiation unless on testnet with ENABLE_REINITIATIONS = True
+                if not existing_initiations.empty and not (constants.USE_TESTNET and constants.ENABLE_REINITIATIONS):
+                    print(f"MyClient.pf_initiate: Blocking re-initiation for {interaction.user.name} ({wallet.classic_address})")
+                    await interaction.response.send_message(
+                        "You have already completed an initiation rite. Re-initiation is not allowed.", 
+                        ephemeral=True
+                    )
+                    return
 
                 # Define the modal to collect Google Doc Link and Commitment
                 class InitiationModal(discord.ui.Modal, title='Initiation Commitment'):
@@ -636,7 +658,7 @@ class MyClient(discord.Client):
                                 initiation_rite=self.commitment_sentence.value, 
                                 google_doc_link=self.google_doc_link.value, 
                                 username=interaction.user.name,
-                                allow_reinitiation=constants.USE_TESTNET and constants.TESTNET_MODE  # Allow re-initiation in test mode
+                                allow_reinitiation=constants.USE_TESTNET and constants.ENABLE_REINITIATIONS  # Allow re-initiation in test mode
                             )
                             
                             mode = "(TEST MODE)" if constants.USE_TESTNET else ""
@@ -653,7 +675,6 @@ class MyClient(discord.Client):
 
                 # Present the modal to the user
                 await interaction.response.send_modal(InitiationModal())
-                print(f"Initiation rite sent by {interaction.user.name}!")
 
             except Exception as e:
                 await interaction.followup.send(f"An error occurred during initiation: {str(e)}", ephemeral=True)
@@ -705,6 +726,7 @@ class MyClient(discord.Client):
             seed = self.user_seeds[user_id]
 
             # Fetch the tasks that are accepted but not completed
+            print(f"MyClient.pf_initial_verification: Spawning wallet to fetch tasks for {interaction.user.name}")
             wallet = generic_pft_utilities.spawn_wallet_from_seed(seed=seed)
             wallet_address = wallet.classic_address
             all_wallet_transactions = generic_pft_utilities.get_memo_detail_df_for_account(wallet_address).copy()
@@ -912,6 +934,7 @@ Note: XRP wallets need 15 XRP to transact.
 
             try:
                 seed = self.user_seeds[user_id]
+                print(f"MyClient.pf_my_wallet: Spawning wallet to fetch info for {interaction.user.name}")
                 wallet = generic_pft_utilities.spawn_wallet_from_seed(seed)
                 wallet_address = wallet.classic_address
 
@@ -978,6 +1001,7 @@ Note: XRP wallets need 15 XRP to transact.
                 return
 
             seed = self.user_seeds[user_id]
+            print(f"MyClient.pf_rewards: Spawning wallet to fetch rewards for {interaction.user.name}")
             wallet = generic_pft_utilities.spawn_wallet_from_seed(seed)
             wallet_address = wallet.classic_address
 
@@ -1027,6 +1051,7 @@ Note: XRP wallets need 15 XRP to transact.
             seed = self.user_seeds[user_id]
 
             # Fetch the tasks that are in the verification queue
+            print(f"MyClient.pf_final_verification: Spawning wallet to fetch tasks for {interaction.user.name}")
             wallet = generic_pft_utilities.spawn_wallet_from_seed(seed=seed)
             wallet_address = wallet.classic_address
             all_wallet_transactions = generic_pft_utilities.get_memo_detail_df_for_account(wallet_address).copy()
@@ -1111,15 +1136,15 @@ Note: XRP wallets need 15 XRP to transact.
             await interaction.response.send_message("Please choose a task for final verification:", view=view, ephemeral=True)
 
     async def on_ready(self):
-        print(f'Logged in as {self.user} (ID: {self.user.id})')
-        print('------')
-        print('Connected to the following guilds:')
+        print(f'MyClient.on_ready: Logged in as {self.user} (ID: {self.user.id})')
+        print('MyClient.on_ready: ------------------------------')
+        print('MyClient.on_ready: Connected to the following guilds:')
         for guild in self.guilds:
             print(f'- {guild.name} (ID: {guild.id})')
 
         # Optionally, re-sync slash commands in all guilds
         await self.tree.sync()
-        print('Slash commands synced across all guilds.')
+        print('MyClient.on_ready: Slash commands synced across all guilds.')
 
 
     async def send_message_chunks(self, channel, message, user):
@@ -1273,6 +1298,7 @@ Note: XRP wallets need 15 XRP to transact.
                     if channel:
                         if target_user_id in self.user_seeds:
                             seed = self.user_seeds[target_user_id]
+                            print(f"MyClient.death_march_reminder: Spawning wallet to fetch info for {interaction.user.name}")
                             user_wallet = self.generic_pft_utilities.spawn_wallet_from_seed(seed=seed)
                             user_address = user_wallet.classic_address
                             tactical_string = self.post_fiat_task_generation_system.get_o1_coaching_string_for_account(user_address)
@@ -1333,6 +1359,7 @@ Note: XRP wallets need 15 XRP to transact.
                 
                 try:
                     generic_pft_utilities = GenericPFTUtilities(node_name=constants.NODE_NAME)
+                    print(f"MyClient.tactics: Spawning wallet to fetch info for {message.author.name}")
                     user_wallet = generic_pft_utilities.spawn_wallet_from_seed(seed=seed)
                     full_user_context = generic_pft_utilities.get_full_user_context_string(user_wallet.classic_address)
                     
@@ -1376,6 +1403,7 @@ Note: XRP wallets need 15 XRP to transact.
                 
                 try:
                     # Get user's wallet address
+                    print(f"MyClient.coach: Spawning wallet to fetch info for {message.author.name}")
                     user_wallet = self.generic_pft_utilities.spawn_wallet_from_seed(seed=seed)
                     wallet_address = user_wallet.classic_address
 
@@ -1459,6 +1487,7 @@ My specific question/request is: {user_query}"""
                 seed = self.user_seeds[user_id]
                 
                 try:
+                    print(f"MyClient.blackprint: Spawning wallet to fetch info for {message.author.name}")
                     user_wallet = self.generic_pft_utilities.spawn_wallet_from_seed(seed=seed)
                     user_address = user_wallet.classic_address
                     #full_user_context = self.generic_pft_utilities.get_full_user_context_string(user_wallet.classic_address)
@@ -1478,6 +1507,7 @@ My specific question/request is: {user_query}"""
                 seed = self.user_seeds[user_id]
                 
                 try:
+                    print(f"MyClient.deathmarch: Spawning wallet to fetch info for {message.author.name}")
                     user_wallet = self.generic_pft_utilities.spawn_wallet_from_seed(seed=seed)
                     user_address = user_wallet.classic_address
                     #full_user_context = self.generic_pft_utilities.get_full_user_context_string(user_wallet.classic_address)
@@ -1496,6 +1526,7 @@ My specific question/request is: {user_query}"""
                 seed = self.user_seeds[user_id]
                 
                 try:
+                    print(f"MyClient.redpill: Spawning wallet to fetch info for {message.author.name}")
                     user_wallet = self.generic_pft_utilities.spawn_wallet_from_seed(seed=seed)
                     user_address = user_wallet.classic_address
                     #full_user_context = self.generic_pft_utilities.get_full_user_context_string(user_wallet.classic_address)
@@ -1514,6 +1545,7 @@ My specific question/request is: {user_query}"""
                 seed = self.user_seeds[user_id]
                 
                 try:
+                    print(f"MyClient.docrewrite: Spawning wallet to fetch info for {message.author.name}")
                     user_wallet = self.generic_pft_utilities.spawn_wallet_from_seed(seed=seed)
                     user_address = user_wallet.classic_address
                     #full_user_context = self.generic_pft_utilities.get_full_user_context_string(user_wallet.classic_address)
@@ -1570,6 +1602,7 @@ My specific question/request is: {user_query}"""
             # Retrieve and show the stored seed for the user
             if user_id in self.user_seeds:
                 seed = self.user_seeds[user_id]
+                print(f"MyClient.my_wallet: Spawning wallet to fetch info for {message.author.name}")
                 wallet = generic_pft_utilities.spawn_wallet_from_seed(seed)
                 wallet_address = wallet.address
                 account_info = generic_pft_utilities.generate_basic_balance_info_string_for_account_address(account_address=wallet_address)
@@ -1585,11 +1618,12 @@ My specific question/request is: {user_query}"""
                 await message.reply("You must store a seed before initiating.", mention_author=True)
                 return
             seed = self.user_seeds[user_id]
+            print(f"MyClient.pf_initiate: Spawning wallet to initiate for {message.author.name}")
             wallet = generic_pft_utilities.spawn_wallet_from_seed(seed)
             wallet_address = wallet.classic_address
             xrp_balance = generic_pft_utilities.get_xrp_balance(address=wallet_address)
-            if xrp_balance < 12:
-                await message.reply("You must fund your wallet with at least 15 XRP before initiating.", mention_author=True)
+            if xrp_balance < constants.MIN_XRP_BALANCE:
+                await message.reply(f"You must fund your wallet with at least {constants.MIN_XRP_BALANCE} XRP before initiating.", mention_author=True)
                 return
 
             full_memo_detail = generic_pft_utilities.get_memo_detail_df_for_account(account_address=wallet_address,pft_only=False)
@@ -1602,6 +1636,7 @@ My specific question/request is: {user_query}"""
             if user_id not in self.user_seeds:
                 await message.reply("You must store a seed before getting outstanding tasks.", mention_author=True)
                 return
+            print(f"MyClient.pf_outstanding: Spawning wallet to fetch tasks for {message.author.name}")
             wallet = generic_pft_utilities.spawn_wallet_from_seed(seed)
             wallet_address = wallet.classic_address
             output_message = generic_pft_utilities.create_full_outstanding_pft_string(account_address=wallet_address)
