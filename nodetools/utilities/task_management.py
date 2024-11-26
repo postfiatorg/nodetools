@@ -357,75 +357,146 @@ class PostFiatTaskGenerationSystem:
         finally:
             self.reward_processing_lock.release()
 
+    # TODO: this doesn't need to be Discord-specific
     def discord__send_postfiat_request(self, user_request, user_name, seed):
+        """Send a PostFiat task request via Discord.
+
+        This method constructs and sends a transaction to request a new task. It:
+        1. Generates a unique task ID
+        2. Creates a standardized memo with the request
+        3. Sends 1 PFT to the node address with the memo attached
+
+        Args:
+            user_request (str): The task request text from the user
+            user_name (str): Discord username (format: '.username')
+            seed (str): Wallet seed for transaction signing
+
+        Returns:
+            dict: Transaction response object containing:
         """
-        user_request = 'I want a task'
-        user_name = '.goodalexander'
-        seed = 's____S'
-        """ 
         task_id = self.generic_pft_utilities.generate_custom_id()
         full_memo_string = 'REQUEST_POST_FIAT ___ '+user_request
         memo_type= task_id
         memo_format = user_name
-        xmemo_to_send = self.generic_pft_utilities.construct_standardized_xrpl_memo(memo_data=full_memo_string, 
-                                                                    memo_type=memo_type,
-                                                                    memo_format=memo_format)
+
         sending_wallet = self.generic_pft_utilities.spawn_wallet_from_seed(seed)
-        op_response = self.generic_pft_utilities.send_PFT_with_info(sending_wallet=sending_wallet,
+        wallet_address = sending_wallet.classic_address
+
+        print(f"PostFiatTaskGenerationSystem.discord__send_postfiat_request: User {user_name} ({wallet_address}) has requested task {task_id}: {user_request}")
+
+        xmemo_to_send = self.generic_pft_utilities.construct_standardized_xrpl_memo(
+            memo_data=full_memo_string, 
+            memo_type=memo_type,
+            memo_format=memo_format
+        )
+
+        op_response = self.generic_pft_utilities.send_PFT_with_info(
+            sending_wallet=sending_wallet,
             amount=1,
             memo=xmemo_to_send,
             destination_address=self.generic_pft_utilities.node_address,
-            url=None)
+            url=None
+        )
         return op_response 
 
+    # TODO: this doesn't need to be Discord-specific
     def discord__task_acceptance(self,seed_to_work,user_name, task_id_to_accept,acceptance_string):
-        """ EXAMPLE PARAMS
-        seed_to_work = 's___'
-        user_name = '.goodalexander'
-        task_id_to_accept = '2024-08-17_17:57__TO94'
-        acceptance_string = "I will get this done as soon as I am able" 
+        """Accept a proposed task via Discord.
+        
+        Args:
+            seed_to_work (str): Wallet seed for transaction signing
+            user_name (str): Discord username for memo formatting
+            task_id_to_accept (str): Task ID to accept (format: YYYY-MM-DD_HH:MM__XXNN)
+            acceptance_string (str): Acceptance reason/message
+            
+        Returns:
+            str: Transaction result or error message
         """
+        # Initialize wallet 
         wallet= self.generic_pft_utilities.spawn_wallet_from_seed(seed=seed_to_work)
         wallet_address = wallet.classic_address
+
+        print(f"PostFiatTaskGenerationSystem.discord__task_acceptance: User {user_name} ({wallet_address}) has accepted task {task_id_to_accept}: {acceptance_string}")
+
+        # Get all transactions and filter for pending proposals
         all_wallet_transactions = self.generic_pft_utilities.get_memo_detail_df_for_account(wallet_address).copy()
-        pf_df = self.generic_pft_utilities.get_proposal_acceptance_pairs(account_memo_detail_df=all_wallet_transactions)
+        pf_df = self.generic_pft_utilities.get_proposal_acceptance_pairs(
+            account_memo_detail_df=all_wallet_transactions,
+            include_pending=True
+        )
+
+        # Get list of tasks that can be accepted (pending proposals)
         valid_task_ids_to_accept= list(pf_df[pf_df['acceptance']==''].index)
+
         if task_id_to_accept in valid_task_ids_to_accept:
-            print('valid task ID proceeding to accept')
+            print('PostFiatTaskGenerationSystem.discord__task_acceptance: valid task ID proceeding to accept')
             formatted_acceptance_string = 'ACCEPTANCE REASON ___ '+acceptance_string
-            acceptance_memo= self.generic_pft_utilities.construct_standardized_xrpl_memo(memo_data=formatted_acceptance_string, 
-                                                                                        memo_format=user_name, memo_type=task_id_to_accept)
-            acceptance_response = self.generic_pft_utilities.send_PFT_with_info(sending_wallet=wallet, amount=1, memo=acceptance_memo, destination_address=self.node_address)
+            acceptance_memo= self.generic_pft_utilities.construct_standardized_xrpl_memo(
+                memo_data=formatted_acceptance_string, 
+                memo_format=user_name, 
+                memo_type=task_id_to_accept
+            )
+            acceptance_response = self.generic_pft_utilities.send_PFT_with_info(
+                sending_wallet=wallet, 
+                amount=1, 
+                memo=acceptance_memo, 
+                destination_address=self.node_address
+            )
             transaction_info = self.generic_pft_utilities.extract_transaction_info_from_response_object(acceptance_response)
             output_string = transaction_info['clean_string']
-        if task_id_to_accept not in valid_task_ids_to_accept:
-            print('task ID already accepted or not valid')
+        else:
+            print('PostFiatTaskGenerationSystem.discord__task_acceptance: task ID already accepted or not valid')
             output_string = 'task ID already accepted or not valid'
+
         return output_string
 
-    def discord__task_refusal(self, seed_to_work, user_name, task_id_to_accept, refusal_string):
-        """ EXAMPLE PARAMS
-        seed_to_work = '___S'
-        user_name = '.goodalexander'
-        task_id_to_accept = '2024-08-17_17:57__TO94'
-        refusal_string = "I will get this done as soon as I am able" 
-        """ 
+    def discord__task_refusal(self, seed_to_work, user_name, task_id_to_refuse, refusal_string):
+        """Refuse a proposed task via Discord.
+        
+        Args:
+            seed_to_work (str): Wallet seed for transaction signing
+            user_name (str): Discord username for memo formatting
+            task_id_to_refuse (str): Task ID to refuse (format: YYYY-MM-DD_HH:MM__XXNN)
+            refusal_string (str): Refusal reason/message
+            
+        Returns:
+            str: Transaction result or error message
+        """
+        # Initialize wallet
         wallet= self.generic_pft_utilities.spawn_wallet_from_seed(seed=seed_to_work)
         wallet_address = wallet.classic_address
+
+        print(f"PostFiatTaskGenerationSystem.discord__task_refusal: User {user_name} ({wallet_address}) has refused task {task_id_to_refuse}: {refusal_string}")
+
+        # Get all transactions and filter for pending proposals
         all_wallet_transactions = self.generic_pft_utilities.get_memo_detail_df_for_account(wallet_address).copy()
-        pf_df = self.generic_pft_utilities.get_proposal_acceptance_pairs(account_memo_detail_df=all_wallet_transactions)
+        pf_df = self.generic_pft_utilities.get_proposal_refusal_pairs(
+            account_memo_detail_df=all_wallet_transactions,
+            exclude_refused=True
+        )
+
+        # Get list of tasks that can be refused (proposals without refusals)
+        # TODO: Also filter out tasks that have been rewarded
         valid_task_ids_to_refuse = list(pf_df.index)
 
-        if task_id_to_accept in valid_task_ids_to_refuse:
-            print('valid task ID proceeding to refuse')
+        if task_id_to_refuse in valid_task_ids_to_refuse:
+            print('PostFiatTaskGenerationSystem.discord__task_refusal: valid task ID proceeding to refuse')
             formatted_refusal_string = 'REFUSAL REASON ___ '+refusal_string
-            refusal_memo= self.generic_pft_utilities.construct_standardized_xrpl_memo(memo_data=formatted_refusal_string, 
-                                                                                                memo_format=user_name, memo_type=task_id_to_accept)
-            refusal_response = self.generic_pft_utilities.send_PFT_with_info(sending_wallet=wallet, amount=1, memo=refusal_memo, destination_address=self.node_address)
+            refusal_memo= self.generic_pft_utilities.construct_standardized_xrpl_memo(
+                memo_data=formatted_refusal_string, 
+                memo_format=user_name, 
+                memo_type=task_id_to_refuse
+            )
+            refusal_response = self.generic_pft_utilities.send_PFT_with_info(
+                sending_wallet=wallet, 
+                amount=1, 
+                memo=refusal_memo, 
+                destination_address=self.node_address
+            )
             transaction_info = self.generic_pft_utilities.extract_transaction_info_from_response_object(refusal_response)
             output_string = transaction_info['clean_string']
-        if task_id_to_accept not in valid_task_ids_to_refuse:
-            print('task ID already accepted or not valid')
+        else:
+            print('PostFiatTaskGenerationSystem.discord__task_refusal: task ID already accepted or not valid')
             output_string = 'task ID already accepted or not valid'
         return output_string
 
@@ -1053,8 +1124,6 @@ class PostFiatTaskGenerationSystem:
                         account_address=self.node_address, 
                         pft_only=False
                     )
-
-                    latest_txns.to_csv('latest_txns.csv')
 
                     # Check all pending tasks
                     verified_tasks = set()

@@ -94,6 +94,7 @@ MAX_CHUNK_MESSAGES_IN_CONTEXT = 20
 
 # Update intervals
 TRANSACTION_HISTORY_UPDATE_INTERVAL = 30  # in seconds
+TRANSACTION_HISTORY_SLEEP_TIME = 10  # in seconds
 
 # Transaction verification parameters
 TRANSACTION_VERIFICATION_ATTEMPTS = 12

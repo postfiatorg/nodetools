@@ -110,19 +110,25 @@ class MyClient(discord.Client):
             wallet = generic_pft_utilities.spawn_wallet_from_seed(seed=seed)
             classic_address = wallet.classic_address
             all_node_memo_transactions = generic_pft_utilities.get_memo_detail_df_for_account(account_address=classic_address, pft_only=False).copy()
-            pf_df = generic_pft_utilities.get_proposal_acceptance_pairs(account_memo_detail_df=all_node_memo_transactions)
-            non_accepted_tasks = pf_df[pf_df['acceptance'] == ''].copy()
-            map_of_non_accepted_tasks = non_accepted_tasks['proposal']
+            pf_df = generic_pft_utilities.get_proposal_acceptance_pairs(
+                account_memo_detail_df=all_node_memo_transactions, 
+                include_pending=True
+            )
+
+            # Filter out tasks that have already been accepted
+            eligible_tasks = pf_df[pf_df['acceptance'] == ''].copy()
+
+            map_of_eligible_tasks = eligible_tasks['proposal']
 
             # If there are no non-accepted tasks, notify the user
-            if map_of_non_accepted_tasks.empty:
+            if map_of_eligible_tasks.empty:
                 await interaction.response.send_message("You have no tasks to accept.", ephemeral=True)
                 return
 
             # Create dropdown options based on the non-accepted tasks
             options = [
                 SelectOption(label=task_id, description=proposal[:100], value=task_id)
-                for task_id, proposal in map_of_non_accepted_tasks.items()
+                for task_id, proposal in map_of_eligible_tasks.items()
             ]
 
             # Create the Select menu
@@ -173,7 +179,7 @@ class MyClient(discord.Client):
             # Define the callback for when a user selects an option
             async def select_callback(interaction: discord.Interaction):
                 selected_task_id = select.values[0]
-                task_text = map_of_non_accepted_tasks[selected_task_id]
+                task_text = map_of_eligible_tasks[selected_task_id]
                 # Open the modal to get the acceptance string with the task text pre-populated
                 await interaction.response.send_modal(AcceptanceModal(
                     task_id=selected_task_id,
@@ -206,19 +212,25 @@ class MyClient(discord.Client):
             wallet = generic_pft_utilities.spawn_wallet_from_seed(seed=seed)
             classic_address = wallet.classic_address
             all_node_memo_transactions = generic_pft_utilities.get_memo_detail_df_for_account(account_address=classic_address, pft_only=False).copy()
-            pf_df = generic_pft_utilities.get_proposal_acceptance_pairs(account_memo_detail_df=all_node_memo_transactions)
-            non_accepted_tasks = pf_df# MADE THIS CHANGE TO REFUSE ANY [pf_df['acceptance'] == ''].copy()
-            map_of_non_accepted_tasks = non_accepted_tasks['proposal']
+            pf_df = generic_pft_utilities.get_proposal_refusal_pairs(
+                account_memo_detail_df=all_node_memo_transactions, 
+                exclude_refused=True
+            )
+            
+            # TODO: Filter out tasks that have already been rewarded
+            eligible_tasks = pf_df.copy()
+
+            map_of_eligible_tasks = eligible_tasks['proposal']
 
             # If there are no non-accepted tasks, notify the user
-            if map_of_non_accepted_tasks.empty:
+            if map_of_eligible_tasks.empty:
                 await interaction.response.send_message("You have no tasks to refuse.", ephemeral=True)
                 return
 
             # Create dropdown options based on the non-accepted tasks
             options = [
                 SelectOption(label=task_id, description=proposal[:100], value=task_id)
-                for task_id, proposal in map_of_non_accepted_tasks.items()
+                for task_id, proposal in map_of_eligible_tasks.items()
             ]
 
             # Create the Select menu
@@ -259,7 +271,7 @@ class MyClient(discord.Client):
                     output_string = post_fiat_task_generation_system.discord__task_refusal(
                         seed_to_work=self.seed,
                         user_name=self.user_name,
-                        task_id_to_accept=self.task_id,
+                        task_id_to_refuse=self.task_id,
                         refusal_string=refusal_string
                     )
                     
@@ -269,7 +281,7 @@ class MyClient(discord.Client):
             # Define the callback for when a user selects an option
             async def select_callback(interaction: discord.Interaction):
                 selected_task_id = select.values[0]
-                task_text = map_of_non_accepted_tasks[selected_task_id]
+                task_text = map_of_eligible_tasks[selected_task_id]
                 # Open the modal to get the refusal string with the task text pre-populated
                 await interaction.response.send_modal(RefusalModal(
                     task_id=selected_task_id,
@@ -286,7 +298,7 @@ class MyClient(discord.Client):
             view.add_item(select)
 
             # Send the message with the dropdown menu
-            await interaction.response.send_message("Please choose a task to refuse:", view=view)
+            await interaction.response.send_message("Please choose a task to refuse:", view=view, ephemeral=True)
 
         @self.tree.command(name="wallet_info", description="Get information about a wallet")
         async def wallet_info(interaction: discord.Interaction, wallet_address: str):
