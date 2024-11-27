@@ -731,7 +731,13 @@ class MyClient(discord.Client):
             wallet_address = wallet.classic_address
             all_wallet_transactions = generic_pft_utilities.get_memo_detail_df_for_account(wallet_address).copy()
             pf_df = generic_pft_utilities.get_proposal_acceptance_pairs(account_memo_detail_df=all_wallet_transactions)
-            accepted_tasks = pf_df[pf_df['acceptance'] != ''].copy()
+            # Filter for accepted tasks that have not been completed yet
+            accepted_tasks = pf_df[
+                (pf_df['acceptance'] != '') & 
+                ~pf_df.index.isin(all_wallet_transactions[
+                    all_wallet_transactions['memo_data'].str.contains('VERIFICATION PROMPT', na=False)
+                ]['memo_type'].unique())
+            ].copy()
             
             # If there are no accepted tasks, notify the user
             if accepted_tasks.empty:
@@ -1055,7 +1061,7 @@ Note: XRP wallets need 15 XRP to transact.
             wallet = generic_pft_utilities.spawn_wallet_from_seed(seed=seed)
             wallet_address = wallet.classic_address
             all_wallet_transactions = generic_pft_utilities.get_memo_detail_df_for_account(wallet_address).copy()
-            outstanding_verification = generic_pft_utilities.convert_all_account_info_into_outstanding_verification_df(account_memo_detail_df=all_wallet_transactions)
+            outstanding_verification = generic_pft_utilities.get_verification_df(account_memo_detail_df=all_wallet_transactions)
             
             # If there are no tasks in the verification queue, notify the user
             if outstanding_verification.empty:
@@ -1298,7 +1304,7 @@ Note: XRP wallets need 15 XRP to transact.
                     if channel:
                         if target_user_id in self.user_seeds:
                             seed = self.user_seeds[target_user_id]
-                            print(f"MyClient.death_march_reminder: Spawning wallet to fetch info for {interaction.user.name}")
+                            print(f"MyClient.death_march_reminder: Spawning wallet to fetch info for {target_user_id}")
                             user_wallet = self.generic_pft_utilities.spawn_wallet_from_seed(seed=seed)
                             user_address = user_wallet.classic_address
                             tactical_string = self.post_fiat_task_generation_system.get_o1_coaching_string_for_account(user_address)
@@ -1640,8 +1646,6 @@ My specific question/request is: {user_query}"""
             wallet = generic_pft_utilities.spawn_wallet_from_seed(seed)
             wallet_address = wallet.classic_address
             output_message = generic_pft_utilities.create_full_outstanding_pft_string(account_address=wallet_address)
-            #escaped_output = f"""```{output_message}```"""
-            #await self.send_long_message(message, escaped_output)
             await self.send_long_escaped_message(message, output_message)
 
 def init_bot():

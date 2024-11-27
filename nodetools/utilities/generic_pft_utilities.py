@@ -917,20 +917,30 @@ class GenericPFTUtilities:
 
         return task_pairs
     
-    def get_proposal_acceptance_pairs(self, account_memo_detail_df, include_pending=False):
+    def get_proposal_acceptance_pairs(self, account_memo_detail_df, include_pending=False, include_rewarded=False):
         """Convert account info into a DataFrame of proposed and accepted tasks.
     
         Args:
             account_memo_detail_df: DataFrame containing account memo details
+            include_pending: If True, includes proposals without responses
+            include_rewarded: If True, includes tasks that have been rewarded
             
         Returns:
             DataFrame with two columns:
                 - proposal: The proposed task text (with 'PROPOSED PF ___' prefix removed)
                 - acceptance: The acceptance text (with 'ACCEPTANCE REASON ___' prefix removed)
-            If include_pending is True, also includes proposals that have not yet been accepted or refused
         """
         # Get the base pairs from get_proposal_response_pairs
         task_pairs = self.get_proposal_response_pairs(account_memo_detail_df)
+
+        if not include_rewarded:
+            # Get task IDs that have been rewarded
+            rewarded_tasks = account_memo_detail_df[
+                account_memo_detail_df['memo_data'].str.contains('REWARD RESPONSE', na=False)
+            ]['memo_type'].unique()
+
+            # Filter out rewarded tasks
+            task_pairs = task_pairs[~task_pairs.index.isin(rewarded_tasks)]
 
         if include_pending:
             # Keep acceptances and proposals without responses
@@ -976,11 +986,17 @@ class GenericPFTUtilities:
         """
         # Get base pairs from get_proposal_response_pairs
         task_pairs = self.get_proposal_response_pairs(account_memo_detail_df)
+        
+        # Get tasks that have been rewarded and always exclude them
+        rewarded_tasks = account_memo_detail_df[
+            account_memo_detail_df['memo_data'].str.contains('REWARD RESPONSE', na=False)
+        ]['memo_type'].unique()
+
+        task_pairs = task_pairs[~task_pairs.index.isin(rewarded_tasks)]
 
         if exclude_refused:
             # Keep only proposals that have never been refused
             # This checks the entire RESPONSES string for any refusal,
-            # ev
             refusal_pairs = task_pairs[
                 ~task_pairs['RESPONSES'].str.contains('REFUSAL', na=False)
             ].copy()
@@ -1265,14 +1281,15 @@ class GenericPFTUtilities:
         return live_memo_tx
 
 
-    def format_outstanding_tasks(self,outstanding_task_df):
+    def format_outstanding_tasks(self, outstanding_task_df):
         """
         Convert outstanding_task_df to a more legible string format for AI tools.
         
-        :param outstanding_task_df: DataFrame containing outstanding tasks
-        :return: Formatted string representation of the tasks
-        
-        outstanding_task_df = self.convert_all_account_info_into_outstanding_task_df(account_memo_detail_df=all_account_info)
+        Args:
+            outstanding_task_df: DataFrame containing outstanding tasks
+            
+        Returns:
+            Formatted string representation of the tasks
         """
         formatted_tasks = []
         for idx, row in outstanding_task_df.iterrows():
@@ -1858,13 +1875,44 @@ PFT WEEKLY AVG:   {weekly_pft_reward_avg}
         return (balance >= minimum_xrp_balance, balance)
 
     # TODO: Refactor using get_verification_df as reference (pftpyclient/task_manager/basic_tasks.py)
-    def convert_all_account_info_into_outstanding_verification_df(self,account_memo_detail_df):
-        """ takes the outstanding account data and converts into outstanding memos """ 
+    def get_verification_df(self,account_memo_detail_df):
+        """Takes the account memo dataframe and converts into outstanding verification tasks.
+        
+        Args:
+            account_memo_detail_df: DataFrame containing account memo details
+        Returns:
+            DataFrame with verification requirements
+        """
         all_memos = account_memo_detail_df.copy()
-        most_recent_memos = all_memos.sort_values('datetime').groupby('memo_type').last().copy()
-        task_id_to_original_task_map = all_memos[all_memos['memo_data'].apply(lambda x: ('..' in x) | ('PROPOS' in x))][['memo_data','memo_type','memo_format']].groupby('memo_type').first()['memo_data']
-        verification_requirements = most_recent_memos[most_recent_memos['memo_data'].apply(lambda x: 'VERIFICATION PROMPT ' in x)][['memo_data','memo_format']].reset_index().copy()
-        verification_requirements['original_task']=verification_requirements['memo_type'].map(task_id_to_original_task_map)
+
+        # Get rewarded task IDs to exclude
+        rewarded_tasks = all_memos[
+            all_memos['memo_data'].apply(lambda x: 'REWARD RESPONSE' in str(x))
+        ]['memo_type'].unique()
+
+        # Get most recent memos excluding rewarded tasks
+        most_recent_memos = (all_memos[~all_memos['memo_type'].isin(rewarded_tasks)]
+                             .sort_values('datetime')
+                             .groupby('memo_type')
+                             .last()
+                             .copy())
+
+        # Map task IDs to original proposals
+        task_id_to_original_task_map = (all_memos[
+            all_memos['memo_data'].apply(lambda x: ('..' in x) | ('PROPOS' in x))
+        ][['memo_data','memo_type','memo_format']]
+            .groupby('memo_type')
+            .first()['memo_data'])
+
+        # Filter for verification prompts
+        verification_requirements = (most_recent_memos[
+            most_recent_memos['memo_data'].apply(lambda x: 'VERIFICATION PROMPT ' in x)
+        ][['memo_data','memo_format']]
+            .reset_index()
+            .copy())
+
+        verification_requirements['original_task'] = verification_requirements['memo_type'].map(task_id_to_original_task_map)
+
         return verification_requirements
 
     def format_outstanding_verification_df(self, verification_requirements):
@@ -1889,14 +1937,19 @@ PFT WEEKLY AVG:   {weekly_pft_reward_avg}
     def create_full_outstanding_pft_string(self, account_address='r3UHe45BzAVB3ENd21X9LeQngr4ofRJo5n'):
         """ This takes in an account address and outputs the current state of its outstanding tasks
         """ 
-        all_memos = self.get_memo_detail_df_for_account(account_address=account_address,
-                                            pft_only=True).sort_values('datetime')
-        outstanding_task_df = self.get_proposal_acceptance_pairs(account_memo_detail_df=all_memos)
+        all_memos = self.get_memo_detail_df_for_account(
+            account_address=account_address,
+            pft_only=True
+        ).sort_values('datetime')
+        outstanding_task_df = self.get_proposal_acceptance_pairs(
+            account_memo_detail_df=all_memos, 
+            include_pending=True,
+            include_rewarded=False
+        )
         task_string = self.format_outstanding_tasks(outstanding_task_df)
-        verification_df = self.convert_all_account_info_into_outstanding_verification_df(account_memo_detail_df=all_memos)
+        verification_df = self.get_verification_df(account_memo_detail_df=all_memos)
         verification_string = self.format_outstanding_verification_df(verification_requirements=verification_df)
-        full_postfiat_outstanding_string=f"""{task_string}
-        {verification_string}"""
+        full_postfiat_outstanding_string=f"{task_string}\n{verification_string}"
         print(full_postfiat_outstanding_string)
         return full_postfiat_outstanding_string
 
@@ -2205,13 +2258,16 @@ PFT WEEKLY AVG:   {weekly_pft_reward_avg}
         Format task list for Discord with proper formatting and emoji indicators
         Returns a list of formatted chunks ready for Discord sending
         """
-        # Split the input into tasks
-        tasks = input_text.split('--------------------------------------------------')
+        # Split into main sections first
+        if "VERIFICATION REQUIREMENTS" in input_text:
+            tasks_section, verification_section = input_text.split("VERIFICATION REQUIREMENTS", 1)
+        else:
+            tasks_section, verification_section = input_text, ""
         
-        # Extract the header and footer
-        header = tasks[0].strip()
-        footer = tasks[-1].strip() if tasks else ""
-        tasks = tasks[1:-1] if len(tasks) > 2 else []  # Remove header and footer
+        # Process tasks - remove the header line and split remaining tasks
+        tasks_lines = tasks_section.strip().split('\n', 1)[1]  # Skip the "OUTSTANDING TASKS" header
+        tasks = tasks_lines.split('--------------------------------------------------')
+        tasks = [t.strip() for t in tasks if t.strip()]  # Remove empty tasks and whitespace
         
         # Initialize formatted output parts
         formatted_parts = []
@@ -2222,37 +2278,38 @@ PFT WEEKLY AVG:   {weekly_pft_reward_avg}
             nonlocal current_chunk, current_chunk_size
             content_size = len(content) + 1  # +1 for newline
             
-            # If adding this content would exceed Discord's limit, start a new chunk
             if current_chunk_size + content_size > 1900:
                 current_chunk.append("```")
                 formatted_parts.append("\n".join(current_chunk))
-                current_chunk = ["```ansi\n"]  # Start new chunk with ANSI header
+                current_chunk = ["```ansi\n"]
                 current_chunk_size = len(current_chunk[0])
                 
             current_chunk.append(content)
             current_chunk_size += content_size
         
-        # Process each task
+        # Process tasks
         for task in tasks:
             if not task.strip():
                 continue
                 
-            # Extract task components using regex
-            task_id_match = re.search(r'Task ID: ([\w-]+)', task)
+            task_id_match = re.search(r'Task ID: ([0-9A-Za-z\-_:]+)', task)
             proposal_match = re.search(r'Proposal: (.+?)(?=\nAcceptance:|$)', task, re.DOTALL)
-            acceptance_match = re.search(r'Acceptance: (.+?)(?=\n|$)', task, re.DOTALL)
+            acceptance_match = re.search(r'Acceptance: ?(.*?)(?=\n|$)', task, re.DOTALL)
             priority_match = re.search(r'\.\. (\d+)', task)
             
             if not all([task_id_match, proposal_match, acceptance_match, priority_match]):
                 continue
                 
-            # Extract date from task ID
-            date_str = task_id_match.group(1).split('_')[0]
+            datetime_str = task_id_match.group(1).split('__')[0]
             try:
-                date_obj = datetime.datetime.strptime(date_str, '%Y-%m-%d')
-                formatted_date = date_obj.strftime('%d %b %Y')
+                date_obj = datetime.datetime.strptime(datetime_str, '%Y-%m-%d_%H:%M')
+                formatted_date = date_obj.strftime('%d %b %Y %H:%M')
             except ValueError:
-                formatted_date = date_str
+                formatted_date = datetime_str
+
+            # Format acceptance status
+            acceptance_text = acceptance_match.group(1).strip()
+            acceptance_display = acceptance_text if acceptance_text else "(Pending)"
             
             # Format task components
             task_parts = [
@@ -2260,17 +2317,49 @@ PFT WEEKLY AVG:   {weekly_pft_reward_avg}
                 f"\u001b[0;37mDate: {formatted_date}\u001b[0m",
                 f"\u001b[0;32mPriority: {priority_match.group(1)}\u001b[0m",
                 f"\u001b[1;37mProposal:\u001b[0m\n{proposal_match.group(1).strip()}",
-                f"\u001b[1;37mAcceptance:\u001b[0m\n{acceptance_match.group(1).strip()}",
+                f"\u001b[1;37mAcceptance:\u001b[0m\n{acceptance_display}",
                 "─" * 50
             ]
             
             # Add each part to chunks
             for part in task_parts:
                 add_to_chunks(part)
-        
-        # Add footer if it exists
-        if footer:
-            add_to_chunks(f"\u001b[1;33m{footer}\u001b[0m")
+
+        # Process verification section if it exists
+        if verification_section:
+            add_to_chunks("\n")  # Add spacing
+            add_to_chunks(f"\u001b[1;33m=== VERIFICATION REQUIREMENTS ===\u001b[0m")
+            
+            # Process each verification requirement
+            v_tasks = verification_section.split('--------------------------------------------------')
+            for vtask in v_tasks:
+                if not vtask.strip():
+                    continue
+                    
+                v_task_id_match = re.search(r'Task ID: ([0-9A-Za-z\-_:]+)', vtask)
+                v_prompt_match = re.search(r'Verification Prompt: (.+?)(?=\nOriginal Task:|$)', vtask, re.DOTALL)
+                v_original_match = re.search(r'Original Task: (.+?)(?=\n|$)', vtask, re.DOTALL)
+                
+                if not all([v_task_id_match, v_prompt_match]):
+                    continue
+                    
+                datetime_str = v_task_id_match.group(1).split('__')[0]
+                try:
+                    date_obj = datetime.datetime.strptime(datetime_str, '%Y-%m-%d_%H:%M')
+                    formatted_date = date_obj.strftime('%d %b %Y %H:%M')
+                except ValueError:
+                    formatted_date = datetime_str
+                
+                v_parts = [
+                    f"\u001b[1;36mTask {v_task_id_match.group(1)}\u001b[0m",
+                    f"\u001b[0;37mDate: {formatted_date}\u001b[0m",
+                    f"\u001b[1;37mPrompt:\u001b[0m\n{v_original_match.group(1).strip().replace('PROPOSED PF ___ ', '')}",
+                    f"\u001b[1;37mVerification Prompt:\u001b[0m\n{v_prompt_match.group(1).strip().replace('VERIFICATION PROMPT ___ ', '')}",
+                    "─" * 50
+                ]
+                
+                for part in v_parts:
+                    add_to_chunks(part)
         
         # Finalize last chunk
         current_chunk.append("```")

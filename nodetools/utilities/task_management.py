@@ -626,7 +626,7 @@ class PostFiatTaskGenerationSystem:
         wallet_address = wallet.classic_address
         all_wallet_transactions = self.generic_pft_utilities.get_memo_detail_df_for_account(wallet_address).copy()
         #outstanding_verification.tail(1)['memo_data'].unique()
-        outstanding_verification = self.generic_pft_utilities.convert_all_account_info_into_outstanding_verification_df(account_memo_detail_df=all_wallet_transactions)
+        outstanding_verification = self.generic_pft_utilities.get_verification_df(account_memo_detail_df=all_wallet_transactions)
         valid_task_ids_to_submit_for_completion = list(outstanding_verification['memo_type'].unique())
         if task_id_to_submit in valid_task_ids_to_submit_for_completion:
             formatted_completed_justification_string = 'VERIFICATION RESPONSE ___ '+justification_string
