@@ -68,7 +68,8 @@ class GenericPFTUtilities:
             self.__class__._initialized = True
             print("---Initialized GenericPFTUtilities---")
 
-    def convert_ripple_timestamp_to_datetime(self, ripple_timestamp = 768602652):
+    @staticmethod
+    def convert_ripple_timestamp_to_datetime(ripple_timestamp = 768602652):
         ripple_epoch_offset = 946684800
         unix_timestamp = ripple_timestamp + ripple_epoch_offset
         date_object = datetime.datetime.fromtimestamp(unix_timestamp)
@@ -98,10 +99,6 @@ class GenericPFTUtilities:
         the view of the issuer account so balances appear negative so the pft_holdings 
         are reverse signed.
         """
-        # # Debugging
-        # caller = traceback.extract_stack()[-2]  # Get the caller's info
-        # print(f"output_post_fiat_holder_df called from {caller.filename}:{caller.lineno} in {caller.name}")
-
         client = xrpl.clients.JsonRpcClient(self.primary_endpoint)
         response = client.request(xrpl.models.requests.AccountLines(
             account=self.pft_issuer,
@@ -113,8 +110,9 @@ class GenericPFTUtilities:
             full_post_fiat_holder_df[xfield] = full_post_fiat_holder_df['lines'].apply(lambda x: x[xfield])
         full_post_fiat_holder_df['pft_holdings']=full_post_fiat_holder_df['balance'].astype(float)*-1
         return full_post_fiat_holder_df
-        
-    def generate_random_utf8_friendly_hash(self, length=6):
+
+    @staticmethod
+    def generate_random_utf8_friendly_hash(length=6):
         # Generate a random sequence of bytes
         random_bytes = os.urandom(16)  # 16 bytes of randomness
         # Create a SHA-256 hash of the random bytes
@@ -126,11 +124,13 @@ class GenericPFTUtilities:
         utf8_friendly_hash = base64_hash[:length]
         return utf8_friendly_hash
 
-    def get_number_of_bytes(self, text):
+    @staticmethod
+    def get_number_of_bytes(text):
         text_bytes = text.encode('utf-8')
         return len(text_bytes)
         
-    def split_text_into_chunks(self, text, max_chunk_size=760):
+    @staticmethod
+    def split_text_into_chunks(text, max_chunk_size=760):
         chunks = []
         text_bytes = text.encode('utf-8')
         for i in range(0, len(text_bytes), max_chunk_size):
@@ -141,7 +141,8 @@ class GenericPFTUtilities:
             chunks.append(chunk_with_label)
         return [chunk.decode('utf-8', errors='ignore') for chunk in chunks]
 
-    def compress_string(self,input_string):
+    @staticmethod
+    def compress_string(input_string):
         # Compress the string using Brotli
         compressed_data=brotli.compress(input_string.encode('utf-8'))
         # Encode the compressed data to a Base64 string
@@ -150,14 +151,16 @@ class GenericPFTUtilities:
         compressed_string=base64_encoded_data.decode('utf-8')
         return compressed_string
 
-    def decompress_string(self, compressed_string):
+    @staticmethod
+    def decompress_string(compressed_string):
         # Decode the Base64 string to bytes
         base64_decoded_data=base64.b64decode(compressed_string)
         decompressed_data=brotli.decompress(base64_decoded_data)
         decompressed_string=decompressed_data.decode('utf-8')
         return decompressed_string
 
-    def shorten_url(self,url):
+    @staticmethod
+    def shorten_url(url):
         api_url="http://tinyurl.com/api-create.php"
         params={'url': url}
         response = requests.get(api_url, params=params)
@@ -166,7 +169,8 @@ class GenericPFTUtilities:
         else:
             return None
     
-    def check_if_tx_pft(self,tx):
+    @staticmethod
+    def check_if_tx_pft(tx):
         ret= False
         try:
             if tx['Amount']['currency'] == "PFT":
@@ -175,7 +179,8 @@ class GenericPFTUtilities:
             pass
         return ret
     
-    def verify_transaction_response(self, response: dict) -> bool:
+    @staticmethod
+    def verify_transaction_response(response: dict) -> bool:
         """
         Verify that a transaction response indicates success.
 
@@ -226,22 +231,23 @@ class GenericPFTUtilities:
             print(f"Error verifying transaction hash {tx_hash}: {e}")
             return False
 
-    def convert_memo_dict__generic(self, memo_dict):
+    @staticmethod
+    def convert_memo_dict__generic(memo_dict):
         # TODO: Replace with MemoBuilder once MemoBuilder is implemented in Pftpyclient
         """Constructs a memo object with user, task_id, and full_output from hex-encoded values."""
         MemoFormat= ''
         MemoType=''
         MemoData=''
         try:
-            MemoFormat = self.hex_to_text(memo_dict['MemoFormat'])
+            MemoFormat = GenericPFTUtilities.hex_to_text(memo_dict['MemoFormat'])
         except:
             pass
         try:
-            MemoType = self.hex_to_text(memo_dict['MemoType'])
+            MemoType = GenericPFTUtilities.hex_to_text(memo_dict['MemoType'])
         except:
             pass
         try:
-            MemoData = self.hex_to_text(memo_dict['MemoData'])
+            MemoData = GenericPFTUtilities.hex_to_text(memo_dict['MemoData'])
         except:
             pass
         return {
@@ -250,47 +256,53 @@ class GenericPFTUtilities:
             'MemoData': MemoData
         }
     
-    def construct_google_doc_context_memo(self, user, google_doc_link):                  
-        return self.construct_memo(user=user, memo_type="google_doc_context_link", memo_data=google_doc_link) 
+    @staticmethod
+    def construct_google_doc_context_memo(user, google_doc_link):                  
+        return GenericPFTUtilities.construct_memo(
+            user=user, 
+            memo_type=constants.SystemMemoType.GOOGLE_DOC_CONTEXT_LINK.value, 
+            memo_data=google_doc_link
+        ) 
 
-    def construct_genesis_memo(self, user, task_id, full_output):
-        return self.construct_memo(user=user, memo_type=task_id, memo_data=full_output)
+    @staticmethod
+    def construct_genesis_memo(user, task_id, full_output):
+        return GenericPFTUtilities.construct_memo(
+            user=user, 
+            memo_type=task_id, 
+            memo_data=full_output
+        )
 
-    def construct_memo(self, user, memo_type, memo_data):
+    @staticmethod
+    def construct_memo(user, memo_type, memo_data):
 
-        if self.is_over_1kb(memo_data):
+        if GenericPFTUtilities.is_over_1kb(memo_data):
             raise ValueError("Memo exceeds 1 KB, raising ValueError")
 
         return Memo(
-            memo_data=self.to_hex(memo_data),
-            memo_type=self.to_hex(memo_type),
-            memo_format=self.to_hex(user)
+            memo_data=GenericPFTUtilities.to_hex(memo_data),
+            memo_type=GenericPFTUtilities.to_hex(memo_type),
+            memo_format=GenericPFTUtilities.to_hex(user)
         )
 
-    def classify_task_string(self,string):
-        # TODO: Leverage Enums as defined in pftpyclient/wallet_ux/constants.py
-        # TODO: Reference classify_task_string in pftpyclient/task_manager/basic_tasks.py
-        """ These are the canonical classifications for task strings 
-        on a Post Fiat Node
+    @staticmethod
+    def classify_task_string(string: str) -> str:
+        """Classifies a task string using TaskType enum patterns.
+        
+        Args:
+            string: The string to classify
+            
+        Returns:
+            str: The name of the task type or 'UNKNOWN'
         """
-        categories = {
-                'ACCEPTANCE': ['ACCEPTANCE REASON ___'],
-                'PROPOSAL': [' .. ','PROPOSED PF ___'],
-                'REFUSAL': ['REFUSAL REASON ___'],
-                'VERIFICATION_PROMPT': ['VERIFICATION PROMPT ___'],
-                'VERIFICATION_RESPONSE': ['VERIFICATION RESPONSE ___'],
-                'REWARD': ['REWARD RESPONSE __'],
-                'TASK_OUTPUT': ['COMPLETION JUSTIFICATION ___'],
-                'USER_GENESIS': ['USER GENESIS __'],
-                'REQUEST_POST_FIAT':['REQUEST_POST_FIAT ___'],
-                'NODE_REQUEST': ['NODE REQUEST ___'],
-            }
-        for category, keywords in categories.items():
-            if any(keyword in string for keyword in keywords):
-                return category
+
+        for task_type, patterns in constants.TASK_PATTERNS.items():
+            if any(pattern in string for pattern in patterns):
+                return task_type.name
+
         return 'UNKNOWN'
 
-    def generate_custom_id(self):
+    @staticmethod
+    def generate_custom_id():
         """ These are the custom IDs generated for each task that is generated
         in a Post Fiat Node """ 
         letters = ''.join(random.choices(string.ascii_uppercase, k=2))
@@ -301,22 +313,24 @@ class GenericPFTUtilities:
         output = output.replace(' ',"_")
         return output
     
-    def construct_basic_postfiat_memo(self, user, task_id, full_output):
+    @staticmethod
+    def construct_basic_postfiat_memo(user, task_id, full_output):
         # TODO: Replace with MemoBuilder
-        user_hex = self.to_hex(user)
-        task_id_hex = self.to_hex(task_id)
-        full_output_hex = self.to_hex(full_output)
+        user_hex = GenericPFTUtilities.to_hex(user)
+        task_id_hex = GenericPFTUtilities.to_hex(task_id)
+        full_output_hex = GenericPFTUtilities.to_hex(full_output)
         memo = Memo(
         memo_data=full_output_hex,
         memo_type=task_id_hex,
         memo_format=user_hex)  
         return memo
 
-    def construct_standardized_xrpl_memo(self, memo_data, memo_type, memo_format):
+    @staticmethod
+    def construct_standardized_xrpl_memo(memo_data, memo_type, memo_format):
         # TODO: Replace with MemoBuilder
-        memo_hex = self.to_hex(memo_data)
-        memo_type_hex = self.to_hex(memo_type)
-        memo_format_hex = self.to_hex(memo_format)
+        memo_hex = GenericPFTUtilities.to_hex(memo_data)
+        memo_type_hex = GenericPFTUtilities.to_hex(memo_type)
+        memo_format_hex = GenericPFTUtilities.to_hex(memo_format)
         
         memo = Memo(
             memo_data=memo_hex,
@@ -367,51 +381,53 @@ class GenericPFTUtilities:
     
         return response
 
-    def spawn_wallet_from_seed(self, seed):
+    @staticmethod
+    def spawn_wallet_from_seed(seed):
         """ outputs wallet initialized from seed"""
         wallet = xrpl.wallet.Wallet.from_seed(seed)
         print(f'-- Spawned wallet with address {wallet.address}')
         return wallet
     
-    def test_url_reliability(self, user_wallet, destination_address):
-        """_summary_
-        EXAMPLE
-        user_wallet = self.spawn_user_wallet_based_on_name(user_name='goodalexander')
-        url_reliability_df = self.test_url_reliability(user_wallet=user_wallet,destination_address='rKZDcpzRE5hxPUvTQ9S3y2aLBUUTECr1vN')
-        """
-        results = []
+    # TODO: self.mainnet_urls doesn't exist anymore. Also this method isn't used anywhere 
+    # def test_url_reliability(self, user_wallet, destination_address):
+    #     """_summary_
+    #     EXAMPLE
+    #     user_wallet = self.spawn_user_wallet_based_on_name(user_name='goodalexander')
+    #     url_reliability_df = self.test_url_reliability(user_wallet=user_wallet,destination_address='rKZDcpzRE5hxPUvTQ9S3y2aLBUUTECr1vN')
+    #     """
+    #     results = []
 
-        for url in self.mainnet_urls:
-            for i in range(7):
-                memo = self.construct_basic_postfiat_memo(
-                    user='test_tx', 
-                    task_id=f'999_{i}', 
-                    full_output=f'NETWORK FUNCTION __ {url}'
-                )
-                start_time = time.time()
-                try:
-                    self.send_PFT_with_info(
-                        sending_wallet=user_wallet, 
-                        amount=1, 
-                        memo=memo, 
-                        destination_address=destination_address, 
-                        url=url
-                    )
-                    success = True
-                except Exception as e:
-                    success = False
-                    print(f"Error: {e}")
-                end_time = time.time()
-                elapsed_time = end_time - start_time
-                results.append({
-                    'URL': url,
-                    'Test Number': i + 1,
-                    'Elapsed Time (s)': elapsed_time,
-                    'Success': success
-                })
+    #     for url in self.mainnet_urls:
+    #         for i in range(7):
+    #             memo = self.construct_basic_postfiat_memo(
+    #                 user='test_tx', 
+    #                 task_id=f'999_{i}', 
+    #                 full_output=f'NETWORK FUNCTION __ {url}'
+    #             )
+    #             start_time = time.time()
+    #             try:
+    #                 self.send_PFT_with_info(
+    #                     sending_wallet=user_wallet, 
+    #                     amount=1, 
+    #                     memo=memo, 
+    #                     destination_address=destination_address, 
+    #                     url=url
+    #                 )
+    #                 success = True
+    #             except Exception as e:
+    #                 success = False
+    #                 print(f"Error: {e}")
+    #             end_time = time.time()
+    #             elapsed_time = end_time - start_time
+    #             results.append({
+    #                 'URL': url,
+    #                 'Test Number': i + 1,
+    #                 'Elapsed Time (s)': elapsed_time,
+    #                 'Success': success
+    #             })
 
-        df = pd.DataFrame(results)
-        return df
+    #     df = pd.DataFrame(results)
+    #     return df
 
     def get_account_transactions(self, account_address='r3UHe45BzAVB3ENd21X9LeQngr4ofRJo5n',
                                  ledger_index_min=-1,
@@ -541,6 +557,9 @@ class GenericPFTUtilities:
     def get_memo_detail_df_for_account(self,account_address,pft_only=True):
         # TODO: Refactor, using get_memos_df as reference (pftpyclient/task_manager/basic_tasks.py)
         full_transaction_history = self.get_all_cached_transactions_related_to_account(account_address=account_address)
+        if full_transaction_history.empty:
+            return pd.DataFrame()
+
         validated_tx=full_transaction_history
 
         # Extract transaction result from meta
@@ -878,7 +897,7 @@ class GenericPFTUtilities:
             simplified_task_frame['converted_memos'] = simplified_task_frame.apply(lambda x: add_field_to_map(x['converted_memos'],
                 xfield,x[xfield]),1)
         core_task_df = pd.DataFrame(list(simplified_task_frame['converted_memos'])).copy()
-        core_task_df['task_type']=core_task_df['MemoData'].apply(lambda x: self.classify_task_string(x))
+        core_task_df['task_type'] = core_task_df['MemoData'].apply(lambda x: self.classify_task_string(x))
         return core_task_df
 
     def get_proposal_response_pairs(self, account_memo_detail_df):
@@ -903,10 +922,10 @@ class GenericPFTUtilities:
         }, inplace=True)
 
         # Get proposals and responses
-        proposals = task_frame[task_frame['task_type']=='PROPOSAL'].groupby('task_id').first()['full_output']
+        proposals = task_frame[task_frame['task_type']==constants.TaskType.PROPOSAL.name].groupby('task_id').first()['full_output']
         responses = task_frame[
-            (task_frame['task_type']=='ACCEPTANCE') |
-            (task_frame['task_type']=='REFUSAL')
+            (task_frame['task_type']==constants.TaskType.ACCEPTANCE.name) |
+            (task_frame['task_type']==constants.TaskType.REFUSAL.name)
         ].groupby('task_id').last()['full_output']
 
         # Combine proposals and responses, keeping all proposals
@@ -936,7 +955,7 @@ class GenericPFTUtilities:
         if not include_rewarded:
             # Get task IDs that have been rewarded
             rewarded_tasks = account_memo_detail_df[
-                account_memo_detail_df['memo_data'].str.contains('REWARD RESPONSE', na=False)
+                account_memo_detail_df['memo_data'].str.contains(constants.TaskType.REWARD.value, na=False)
             ]['memo_type'].unique()
 
             # Filter out rewarded tasks
@@ -945,13 +964,13 @@ class GenericPFTUtilities:
         if include_pending:
             # Keep acceptances and proposals without responses
             acceptance_pairs = task_pairs[
-                (task_pairs['RESPONSES'].str.contains('ACCEPTANCE', na=False)) |
+                (task_pairs['RESPONSES'].str.contains(constants.TaskType.ACCEPTANCE.value, na=False)) |
                 (task_pairs['RESPONSES'] == '')
             ].copy()
         else:
             # Keep only acceptances
             acceptance_pairs = task_pairs[
-                task_pairs['RESPONSES'].str.contains('ACCEPTANCE', na=False)
+                task_pairs['RESPONSES'].str.contains(constants.TaskType.ACCEPTANCE.value, na=False)
             ].copy()
 
         # Rename columns to match expected output
@@ -962,10 +981,10 @@ class GenericPFTUtilities:
 
         # Clean up the text content
         acceptance_pairs['acceptance'] = acceptance_pairs['acceptance'].apply(
-            lambda x: str(x).replace('ACCEPTANCE REASON ___ ', '').replace('nan', '')
+            lambda x: str(x).replace(constants.TaskType.ACCEPTANCE.value, '').replace('nan', '')
         )
         acceptance_pairs['proposal'] = acceptance_pairs['proposal'].apply(
-            lambda x: str(x).replace('PROPOSED PF ___ ', '').replace('nan', '')
+            lambda x: str(x).replace(constants.TaskType.PROPOSAL.value, '').replace('nan', '')
         )
 
         return acceptance_pairs
@@ -989,7 +1008,7 @@ class GenericPFTUtilities:
         
         # Get tasks that have been rewarded and always exclude them
         rewarded_tasks = account_memo_detail_df[
-            account_memo_detail_df['memo_data'].str.contains('REWARD RESPONSE', na=False)
+            account_memo_detail_df['memo_data'].str.contains(constants.TaskType.REWARD.value, na=False)
         ]['memo_type'].unique()
 
         task_pairs = task_pairs[~task_pairs.index.isin(rewarded_tasks)]
@@ -998,7 +1017,7 @@ class GenericPFTUtilities:
             # Keep only proposals that have never been refused
             # This checks the entire RESPONSES string for any refusal,
             refusal_pairs = task_pairs[
-                ~task_pairs['RESPONSES'].str.contains('REFUSAL', na=False)
+                ~task_pairs['RESPONSES'].str.contains(constants.TaskType.REFUSAL.value, na=False)
             ].copy()
         else:
             # Keep all refusals
@@ -1012,10 +1031,10 @@ class GenericPFTUtilities:
 
         # Clean up the text content
         refusal_pairs['refusal'] = refusal_pairs['refusal'].apply(
-            lambda x: str(x).replace('REFUSAL REASON ___ ', '').replace('nan', '')
+            lambda x: str(x).replace(constants.TaskType.REFUSAL.value, '').replace('nan', '')
         )
         refusal_pairs['proposal'] = refusal_pairs['proposal'].apply(
-            lambda x: str(x).replace('PROPOSED PF ___ ', '').replace('nan', '')
+            lambda x: str(x).replace(constants.TaskType.PROPOSAL.value, '').replace('nan', '')
         )
 
         return refusal_pairs
@@ -1202,10 +1221,8 @@ class GenericPFTUtilities:
         update_thread.daemon = True
         update_thread.start()
 
-    def get_all_cached_transactions_related_to_account(self,account_address = 'r4sRyacXpbh4HbagmgfoQq8Q3j8ZJzbZ1J'):
-
-        dbconnx = self.db_connection_manager.spawn_sqlalchemy_db_connection_for_user(user_name
-                                                                                     =self.node_name)
+    def get_all_cached_transactions_related_to_account(self, account_address):
+        dbconnx = self.db_connection_manager.spawn_sqlalchemy_db_connection_for_user(user_name=self.node_name)
         query = f"""
         SELECT * FROM postfiat_tx_cache
         WHERE account = '{account_address}' OR destination = '{account_address}'
@@ -1327,6 +1344,10 @@ class GenericPFTUtilities:
         # Return weekly totals
         weekly_totals = extended_daily_totals.resample('W').last()[['weekly_total']]
         weekly_totals.index.name = 'date'
+
+        # if weekly totals are NaN, set them to 0
+        weekly_totals = weekly_totals.fillna(0)
+
         return weekly_totals
     
     def _pair_rewards_with_tasks(self, specific_rewards, all_account_info):
@@ -1341,11 +1362,12 @@ class GenericPFTUtilities:
 
         # Get original requests and proposals
         task_requests = all_account_info[
-            all_account_info['memo_data'].apply(lambda x: 'REQUEST_POST_FIAT' in x)
+            all_account_info['memo_data'].apply(lambda x: constants.TaskType.REQUEST_POST_FIAT.value in x)
         ].groupby('memo_type').first()['memo_data']
 
+        proposal_patterns = constants.TASK_PATTERNS[constants.TaskType.PROPOSAL]
         task_proposals = all_account_info[
-            all_account_info['memo_data'].apply(lambda x: ('PROPOSED' in x) | ('..' in x))
+            all_account_info['memo_data'].apply(lambda x: any(pattern in str(x) for pattern in proposal_patterns))
         ].groupby('memo_type').first()['memo_data']
 
         # Map requests and proposals to rewards
@@ -1397,7 +1419,7 @@ class GenericPFTUtilities:
             reward_str += f"Request: {row['request']}\n"
             reward_str += f"Proposal: {row['proposal']}\n"
             reward_str += f"Reward: {row['directional_pft']} PFT\n"
-            reward_str += f"Response: {row['memo_data'].replace('REWARD RESPONSE __ ', '')}\n"
+            reward_str += f"Response: {row['memo_data'].replace(constants.TaskType.REWARD.value, '')}\n"
             reward_str += "-" * 50  # Separator
             formatted_rewards.append(reward_str)
         
@@ -1419,7 +1441,7 @@ class GenericPFTUtilities:
                 pft_only=False
             )
             context_docs = memo_df[
-                (memo_df['memo_type'].apply(lambda x: 'google_doc_context_link' in str(x))) &
+                (memo_df['memo_type'].apply(lambda x: constants.SystemMemoType.GOOGLE_DOC_CONTEXT_LINK.value in str(x))) &
                 (memo_df['account'] == wallet.classic_address) &
                 (memo_df['transaction_result'] == "tesSUCCESS")
             ]
@@ -1428,7 +1450,7 @@ class GenericPFTUtilities:
                 return context_docs.iloc[-1]['memo_data']
             return None
         except Exception as e:
-            print(f"Error getting latest context doc link: {e}")
+            print(f"GenericPFTUtilities.get_latest_outgoing_context_doc_link: Error getting latest context doc link: {e}")
             return None   
     
     @staticmethod
@@ -1456,7 +1478,7 @@ class GenericPFTUtilities:
             return response.text
         else:
             # Return an error message if the request was unsuccessful
-            return f"Failed to retrieve the document. Status code: {response.status_code}"
+            return f"GenericPFTUtilities.get_google_doc_text: Failed to retrieve the document. Status code: {response.status_code}"
 
     # # TODO: Replace with retrieve_xrp_address_from_google_doc
     # # TODO: Add separate call to get_xrp_balance where relevant
@@ -1531,7 +1553,7 @@ class GenericPFTUtilities:
         Returns:
             bool: True if Google Doc has been sent
         """
-        print(f"Checking if google doc has been sent for {wallet.classic_address}")
+        print(f"GenericPFTUtilities.google_doc_sent: Checking if google doc has been sent for {wallet.classic_address}")
         return self.get_latest_outgoing_context_doc_link(wallet) is not None
     
     def handle_google_doc(self, wallet: xrpl.wallet.Wallet, google_doc_link: str, username: str):
@@ -1549,18 +1571,18 @@ class GenericPFTUtilities:
                 - message (str): Description of what happened
                 - tx_hash (str, optional): Transaction hash if doc was sent
         """
-        print(f"Handling google doc for {username} ({wallet.classic_address})")
+        print(f"GenericPFTUtilities.handle_google_doc: Handling google doc for {username} ({wallet.classic_address})")
         try:
             self.check_if_google_doc_is_valid(wallet, google_doc_link)
         except Exception as e:
-            print(f"Error validating Google Doc: {e}")
+            print(f"GenericPFTUtilities.handle_google_doc: Error validating Google Doc: {e}")
             raise
 
         if not self.google_doc_sent(wallet):
-            print(f"Google doc not sent for {wallet.classic_address}, sending now...")
+            print(f"GenericPFTUtilities.handle_google_doc: Google doc not sent for {wallet.classic_address}, sending now...")
             return self.send_google_doc(wallet, google_doc_link, username)
         else:
-            print(f"Google doc already sent for {wallet.classic_address}.")
+            print(f"GenericPFTUtilities.handle_google_doc: Google doc already sent for {wallet.classic_address}.")
 
     def send_google_doc(self, wallet: xrpl.wallet.Wallet, google_doc_link: str, username: str) -> dict:
         """Send Google Doc context link to the node.
@@ -1586,10 +1608,10 @@ class GenericPFTUtilities:
                 destination_address=self.node_address
             )
             if not self.verify_transaction_response(response):
-                raise Exception(f"Failed to send Google Doc link: {response}")
+                raise Exception(f"GenericPFTUtilities.send_google_doc: Failed to send Google Doc link: {response}")
 
         except Exception as e:
-            raise Exception(f"Error sending Google Doc: {str(e)}")
+            raise Exception(f"GenericPFTUtilities.send_google_doc: Error sending Google Doc: {str(e)}")
 
     def format_recent_chunk_messages(self, message_df):
         """
@@ -1617,9 +1639,9 @@ class GenericPFTUtilities:
         :return: Formatted string representation of the refusal frame
         """
         formatted_string = ""
-        for idx, row in refusal_frame_constructor.tail(5).iterrows():
+        for idx, row in refusal_frame_constructor.iterrows():
             formatted_string += f"Task ID: {idx}\n"
-            formatted_string += f"Refusal Reason: {row['memo_data']}\n"
+            formatted_string += f"Refusal Reason: {row['refusal']}\n"
             formatted_string += f"Proposal: {row['proposal']}\n"
             formatted_string += "-" * 50 + "\n"
         
@@ -1688,33 +1710,57 @@ class GenericPFTUtilities:
             # Retrieve outstanding task frame
             proposal_acceptance_pairs_df = self.get_proposal_acceptance_pairs(account_memo_detail_df=all_account_info).tail(MAX_ACCEPTANCES_IN_CONTEXT)
             if proposal_acceptance_pairs_df.empty:
-                print(f'No proposals or acceptances found for {account_address}')
+                print(f'GenericPFTUtilities.get_full_user_context_string: No proposals or acceptances found for {account_address}')
                 core_element_outstanding_tasks = "No proposals or acceptances found."
             else:
                 core_element_outstanding_tasks = self.format_outstanding_tasks(outstanding_task_df=proposal_acceptance_pairs_df)
 
+        except Exception as e:
+            print(f'GenericPFTUtilities.get_full_user_context_string: Exception for {account_address} while retrieving outstanding tasks: {e}')
+
+        try:
             # Retrieve refusal frame
             proposal_refusal_pairs_df = self.get_proposal_refusal_pairs(account_memo_detail_df=all_account_info).tail(MAX_REFUSALS_IN_CONTEXT)
             if proposal_refusal_pairs_df.empty:
-                print(f'No proposals or refusals found for {account_address}')
+                print(f'GenericPFTUtilities.get_full_user_context_string: No proposals or refusals found for {account_address}')
                 core_element__refusal_frame = "No proposals or refusals found."
             else:
                 core_element__refusal_frame = self.format_refusal_frame(refusal_frame_constructor=proposal_refusal_pairs_df)
 
+        except Exception as e:
+            print(f'GenericPFTUtilities.get_full_user_context_string: Exception for {account_address} while retrieving refusal frame: {e}')
+
+        try:
             # Retrieve rewards
-            reward_map = self.get_reward_data(all_account_info=all_account_info).tail(MAX_REWARDS_IN_CONTEXT)
-            if reward_map.empty:
-                print(f'No rewards found for {account_address}')
+            reward_map = self.get_reward_data(all_account_info=all_account_info)
+            weekly_totals, reward_summaries = reward_map['reward_ts'], reward_map['reward_summaries']
+
+            if reward_summaries.empty:
+                print(f'GenericPFTUtilities.get_full_user_context_string: No rewards found for {account_address}')
                 core_element__last_10_rewards = "No rewards found."
             else:
-                specific_rewards = reward_map['reward_summaries']
-                core_element__last_10_rewards = self.format_reward_summary(specific_rewards)
-                core_element_post_fiat_weekly_gen = reward_map['reward_ts']['weekly_total'].to_string()   
+                core_element__last_10_rewards = self.format_reward_summary(reward_summaries.tail(MAX_REWARDS_IN_CONTEXT))
+            
+            if weekly_totals.empty:
+                print(f'GenericPFTUtilities.get_full_user_context_string: No weekly totals found for {account_address}')
+                core_element_post_fiat_weekly_gen = "No weekly totals found."
+            else:
+                core_element_post_fiat_weekly_gen = weekly_totals['weekly_total'].to_string()
 
+        except Exception as e:
+            print(f'GenericPFTUtilities.get_full_user_context_string: Exception for {account_address} while retrieving rewards: {e}')
+
+        try:
             # Retrieve google doc text
-            google_url = list(all_account_info[all_account_info['memo_type'].apply(lambda x: 'google_doc' in x)]['memo_data'])[0]
+            google_url = list(all_account_info[all_account_info['memo_type'].apply(
+                lambda x: constants.SystemMemoType.GOOGLE_DOC_CONTEXT_LINK.value in x
+            )]['memo_data'])[0]
             core_element__google_doc_text= self.get_google_doc_text(google_url)
 
+        except Exception as e:
+            print(f'GenericPFTUtilities.get_full_user_context_string: Exception for {account_address} while retrieving google doc text: {e}')
+
+        try:
             # Retrieve chunk messages
             core_element__chunk_messages = self.get_recent_user_memos(
                 account_address=account_address, 
@@ -1722,8 +1768,7 @@ class GenericPFTUtilities:
             )
 
         except Exception as e:
-            print(f'GenericPFTUtilities.get_full_user_context_string: Exception for {account_address}: {e}')
-            pass
+            print(f'GenericPFTUtilities.get_full_user_context_string: Exception for {account_address} while retrieving chunk messages: {e}')
 
         # Format final context string
         current_date = datetime.datetime.now().strftime('%Y-%m-%d')
@@ -1747,7 +1792,7 @@ class GenericPFTUtilities:
         HERE IS THE USERS RECENT POST FIAT OUTPUT SUMMED AS A WEEKLY TIMESERIES
         <POST FIAT GENERATION STARTS HERE>
         {core_element_post_fiat_weekly_gen}
-        <POST FIAT GENEREATION ENDS HERE>
+        <POST FIAT GENERATION ENDS HERE>
         
         THE FOLLOWING IS THE PRIMARY CONTENT OF THE USERS CONTEXT DOCUMENT AND PLANNING
         <USER CONTEXT AND PLANNING STARTS HERE>
@@ -1757,8 +1802,9 @@ class GenericPFTUtilities:
         THE FOLLOWING ARE THE RECENT LONG FORM DIALOGUES WITH THE USER
         <USER LONG FORM DIALOGUE>
         {core_element__chunk_messages}
-        <USER LONG FORM DIALGOUE ENDS>
+        <USER LONG FORM DIALOGUE ENDS>
         """
+
         return final_context_string
 
     def create_xrp_wallet(self):
@@ -1887,7 +1933,7 @@ PFT WEEKLY AVG:   {weekly_pft_reward_avg}
 
         # Get rewarded task IDs to exclude
         rewarded_tasks = all_memos[
-            all_memos['memo_data'].apply(lambda x: 'REWARD RESPONSE' in str(x))
+            all_memos['memo_data'].apply(lambda x: constants.TaskType.REWARD.value in str(x))
         ]['memo_type'].unique()
 
         # Get most recent memos excluding rewarded tasks
@@ -1898,15 +1944,16 @@ PFT WEEKLY AVG:   {weekly_pft_reward_avg}
                              .copy())
 
         # Map task IDs to original proposals
+        proposal_patterns = constants.TASK_PATTERNS[constants.TaskType.PROPOSAL]
         task_id_to_original_task_map = (all_memos[
-            all_memos['memo_data'].apply(lambda x: ('..' in x) | ('PROPOS' in x))
+            all_memos['memo_data'].apply(lambda x: any(pattern in str(x) for pattern in proposal_patterns))
         ][['memo_data','memo_type','memo_format']]
             .groupby('memo_type')
             .first()['memo_data'])
 
         # Filter for verification prompts
         verification_requirements = (most_recent_memos[
-            most_recent_memos['memo_data'].apply(lambda x: 'VERIFICATION PROMPT ' in x)
+            most_recent_memos['memo_data'].apply(lambda x: constants.TaskType.VERIFICATION_PROMPT.value in str(x))
         ][['memo_data','memo_format']]
             .reset_index()
             .copy())
@@ -1934,13 +1981,19 @@ PFT WEEKLY AVG:   {weekly_pft_reward_avg}
             formatted_output += "-" * 50 + "\n"
         return formatted_output
 
-    def create_full_outstanding_pft_string(self, account_address='r3UHe45BzAVB3ENd21X9LeQngr4ofRJo5n'):
-        """ This takes in an account address and outputs the current state of its outstanding tasks
+    def create_full_outstanding_pft_string(self, account_address):
+        """ 
+        This takes in an account address and outputs the current state of its outstanding tasks.
+        Returns empty string for accounts with no PFT-related transactions.
         """ 
         all_memos = self.get_memo_detail_df_for_account(
             account_address=account_address,
             pft_only=True
-        ).sort_values('datetime')
+        )
+        if all_memos.empty:
+            return ""
+        
+        all_memos.sort_values('datetime', inplace=True)
         outstanding_task_df = self.get_proposal_acceptance_pairs(
             account_memo_detail_df=all_memos, 
             include_pending=True,
@@ -1950,7 +2003,6 @@ PFT WEEKLY AVG:   {weekly_pft_reward_avg}
         verification_df = self.get_verification_df(account_memo_detail_df=all_memos)
         verification_string = self.format_outstanding_verification_df(verification_requirements=verification_df)
         full_postfiat_outstanding_string=f"{task_string}\n{verification_string}"
-        print(full_postfiat_outstanding_string)
         return full_postfiat_outstanding_string
 
     def extract_transaction_info_from_response_object(self, response):
@@ -2168,7 +2220,7 @@ PFT WEEKLY AVG:   {weekly_pft_reward_avg}
                 pft_only=False
             )
             successful_initiations = memo_detail[
-                (memo_detail['memo_type'] == "INITIATION_RITE") & 
+                (memo_detail['memo_type'] == constants.SystemMemoType.INITIATION_RITE.value) & 
                 (memo_detail['transaction_result'] == "tesSUCCESS")
             ]
             return len(successful_initiations) > 0
@@ -2201,7 +2253,7 @@ PFT WEEKLY AVG:   {weekly_pft_reward_avg}
         else:
             initiation_memo = self.construct_standardized_xrpl_memo(
                 memo_data=initiation_rite, 
-                memo_type='INITIATION_RITE', 
+                memo_type=constants.SystemMemoType.INITIATION_RITE.value, 
                 memo_format=username
             )
             print(f"Sending initiation rite transaction from {wallet.classic_address} to node {self.node_address}")
@@ -2253,16 +2305,25 @@ PFT WEEKLY AVG:   {weekly_pft_reward_avg}
         }
         return transaction_messages
 
-    def format_tasks_for_discord(self,input_text):
+    def format_tasks_for_discord(self, input_text: str):
         """
         Format task list for Discord with proper formatting and emoji indicators
         Returns a list of formatted chunks ready for Discord sending
         """
+        # Handle empty input
+        if not input_text or input_text.strip() == "OUTSTANDING TASKS":
+            return ["```ansi\n\u001b[1;33m=== OUTSTANDING TASKS ===\u001b[0m\n\u001b[0;37mNo outstanding tasks found.\u001b[0m\n```"]
+
         # Split into main sections first
         if "VERIFICATION REQUIREMENTS" in input_text:
             tasks_section, verification_section = input_text.split("VERIFICATION REQUIREMENTS", 1)
         else:
             tasks_section, verification_section = input_text, ""
+
+        # Check if tasks section is empty (just the header)
+        tasks_section = tasks_section.strip()
+        if tasks_section == "OUTSTANDING TASKS":
+            return ["```ansi\n\u001b[1;33m=== OUTSTANDING TASKS ===\u001b[0m\n\u001b[0;37mNo outstanding tasks found.\u001b[0m\n```"]
         
         # Process tasks - remove the header line and split remaining tasks
         tasks_lines = tasks_section.strip().split('\n', 1)[1]  # Skip the "OUTSTANDING TASKS" header
@@ -2353,8 +2414,8 @@ PFT WEEKLY AVG:   {weekly_pft_reward_avg}
                 v_parts = [
                     f"\u001b[1;36mTask {v_task_id_match.group(1)}\u001b[0m",
                     f"\u001b[0;37mDate: {formatted_date}\u001b[0m",
-                    f"\u001b[1;37mPrompt:\u001b[0m\n{v_original_match.group(1).strip().replace('PROPOSED PF ___ ', '')}",
-                    f"\u001b[1;37mVerification Prompt:\u001b[0m\n{v_prompt_match.group(1).strip().replace('VERIFICATION PROMPT ___ ', '')}",
+                    f"\u001b[1;37mPrompt:\u001b[0m\n{v_original_match.group(1).strip().replace(constants.TaskType.PROPOSAL.value, '')}",
+                    f"\u001b[1;37mVerification Prompt:\u001b[0m\n{v_prompt_match.group(1).strip().replace(constants.TaskType.VERIFICATION_PROMPT.value, '')}",
                     "─" * 50
                 ]
                 
@@ -2380,7 +2441,7 @@ PFT WEEKLY AVG:   {weekly_pft_reward_avg}
         account_name_map = account_modes.groupby('account').first()['memo_format']
         past_month_transactions = all_accounts[all_accounts['datetime']>datetime.datetime.now()-datetime.timedelta(30)]
         node_transactions = past_month_transactions[past_month_transactions['account']==self.node_address].copy()
-        rewards_only=node_transactions[node_transactions['memo_data'].apply(lambda x: 'REWARD RESPONSE' in x)].copy()
+        rewards_only=node_transactions[node_transactions['memo_data'].apply(lambda x: constants.TaskType.REWARD.value in str(x))].copy()
         rewards_only['count']=1
         rewards_only['PFT']=rewards_only['tx_json'].apply(lambda x: x['DeliverMax']['value']).astype(float)
         account_to_yellow_flag__count = rewards_only[rewards_only['memo_data'].apply(lambda x: 'YELLOW FLAG' in x)][['count','destination']].groupby('destination').sum()['count']

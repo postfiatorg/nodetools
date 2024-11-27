@@ -593,7 +593,7 @@ class MyClient(discord.Client):
 
             # Pass the client instance to the modal
             await interaction.response.send_modal(SeedModal(client=self))
-            print("Seed storage command executed!")
+            print(f"Seed storage command executed by {interaction.user.name}")
         # Sync the commands to the guild
         await self.tree.sync(guild=guild)
         print(f"MyClient.setup_hook: Slash commands synced to guild ID: {guild_id}")
@@ -735,7 +735,7 @@ class MyClient(discord.Client):
             accepted_tasks = pf_df[
                 (pf_df['acceptance'] != '') & 
                 ~pf_df.index.isin(all_wallet_transactions[
-                    all_wallet_transactions['memo_data'].str.contains('VERIFICATION PROMPT', na=False)
+                    all_wallet_transactions['memo_data'].str.contains(constants.TaskType.VERIFICATION_PROMPT.value, na=False)
                 ]['memo_type'].unique())
             ].copy()
             
@@ -1070,7 +1070,7 @@ Note: XRP wallets need 15 XRP to transact.
 
             # Create dropdown options based on the tasks in the verification queue
             options = [
-                SelectOption(label=task_id, description=memo_data.replace('VERIFICATION PROMPT ___','')[:100], value=task_id)
+                SelectOption(label=task_id, description=memo_data.replace(constants.TaskType.VERIFICATION_PROMPT.value,'')[:100], value=task_id)
                 for task_id, memo_data in zip(outstanding_verification['memo_type'], outstanding_verification['memo_data'])
             ]
 

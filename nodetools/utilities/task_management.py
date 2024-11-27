@@ -79,13 +79,13 @@ class PostFiatTaskGenerationSystem:
 
         # Filter successful initiation rewards
         initiation_rewards = all_node_memo_transactions[
-            (all_node_memo_transactions['memo_type'] == 'INITIATION_REWARD') &
+            (all_node_memo_transactions['memo_type'] == constants.SystemMemoType.INITIATION_REWARD.name) &
             (all_node_memo_transactions['transaction_result'] == 'tesSUCCESS')
         ][['user_account', 'memo_data', 'memo_format', 'directional_pft', 'datetime']].groupby('user_account').last()
 
         # Filter successful initiation rites
         rites = all_node_memo_transactions[
-            (all_node_memo_transactions['memo_type'] == "INITIATION_RITE") &
+            (all_node_memo_transactions['memo_type'] == constants.SystemMemoType.INITIATION_RITE.name) &
             (all_node_memo_transactions['transaction_result'] == 'tesSUCCESS')
         ][['user_account', 'memo_data', 'datetime']].groupby('user_account').last()
 
@@ -98,7 +98,9 @@ class PostFiatTaskGenerationSystem:
         initiation_rite_queue_df['is_valid_rite'] = initiation_rite_queue_df['initiation_rite'].apply(self.is_valid_initiation_rite)
 
         # Step 2: Check if rite has been rewarded
-        initiation_rite_queue_df['has_reward'] = initiation_rite_queue_df['memo_data'].apply(lambda x: 'INITIATION_REWARD' in str(x))
+        initiation_rite_queue_df['has_reward'] = initiation_rite_queue_df['memo_data'].apply(
+            lambda x: constants.SystemMemoType.INITIATION_REWARD.value in str(x)
+        )
 
         # Step 3: In testnet, to allow for reinitiation rites, check if rite is newer than last reward
         if constants.USE_TESTNET and constants.ENABLE_REINITIATIONS:
@@ -311,7 +313,7 @@ class PostFiatTaskGenerationSystem:
         # Send initial PFT grant
         memo = self.generic_pft_utilities.construct_standardized_xrpl_memo(
             memo_data='Initial PFT Grant Post Initiation',
-            memo_type='discord_wallet_funding',
+            memo_type=constants.SystemMemoType.INITIATION_GRANT.value,
             memo_format=self.network_config.node_name
         )
         grant_response = self.generic_pft_utilities.send_PFT_with_info(
@@ -388,9 +390,9 @@ class PostFiatTaskGenerationSystem:
 
                 # Check if reward already exists  # TODO this might be redundant
                 existing_rewards = all_node_memo_transactions[
-                    (all_node_memo_transactions['memo_data'].str.contains('INITIATION_REWARD', na=False)) &
+                    (all_node_memo_transactions['memo_data'].str.contains(constants.SystemMemoType.INITIATION_REWARD.value, na=False)) &
                     (all_node_memo_transactions['user_account'] == row['user_account']) &
-                    (all_node_memo_transactions['memo_type'] == "INITIATION_REWARD") &
+                    (all_node_memo_transactions['memo_type'] == constants.SystemMemoType.INITIATION_REWARD.name) &
                     ((all_node_memo_transactions['datetime'] > row['datetime']) if constants.ENABLE_REINITIATIONS else True)
                 ]
 
@@ -405,19 +407,20 @@ class PostFiatTaskGenerationSystem:
 
                     # Construct reward memo
                     memo = self.generic_pft_utilities.construct_standardized_xrpl_memo(
-                        memo_data=f"INITIATION_REWARD ___ {evaluation['justification']}",
-                        memo_type="INITIATION_REWARD",
+                        memo_data=constants.SystemMemoType.INITIATION_REWARD.value + evaluation['justification'],
+                        memo_type=constants.SystemMemoType.INITIATION_REWARD.name,
                         memo_format=self.network_config.node_name
                     )
 
                     # Send and track reward
+                    # tracking tuple is (user_account, memo_type, datetime)
                     _ = self._send_and_track_transaction(
                         wallet=node_wallet,
                         memo=memo,
                         destination=row['user_account'],
                         amount=evaluation['reward'],
                         tracking_set=rewards_to_verify,
-                        tracking_tuple=(row['user_account'], "INITIATION_REWARD", row['datetime'])
+                        tracking_tuple=(row['user_account'], constants.SystemMemoType.INITIATION_REWARD.name, row['datetime'])
                     )
 
                 except Exception as e:
@@ -427,7 +430,7 @@ class PostFiatTaskGenerationSystem:
             # Define verification predicate for initiation rewards
             def verify_reward(txns, user_account, memo_type, request_time):
                 reward_txns = txns[
-                    (txns['memo_data'].str.contains('INITIATION_REWARD', na=False)) &
+                    (txns['memo_data'].str.contains(constants.SystemMemoType.INITIATION_REWARD.value, na=False)) &
                     (txns['user_account'] == user_account) &
                     (txns['memo_type'] == memo_type) & 
                     (txns['datetime'] > request_time)
@@ -462,7 +465,7 @@ class PostFiatTaskGenerationSystem:
             dict: Transaction response object containing:
         """
         task_id = self.generic_pft_utilities.generate_custom_id()
-        full_memo_string = 'REQUEST_POST_FIAT ___ '+user_request
+        full_memo_string = constants.TaskType.REQUEST_POST_FIAT.value + user_request
         memo_type= task_id
         memo_format = user_name
 
@@ -517,7 +520,7 @@ class PostFiatTaskGenerationSystem:
 
         if task_id_to_accept in valid_task_ids_to_accept:
             print('PostFiatTaskGenerationSystem.discord__task_acceptance: valid task ID proceeding to accept')
-            formatted_acceptance_string = 'ACCEPTANCE REASON ___ '+acceptance_string
+            formatted_acceptance_string = constants.TaskType.ACCEPTANCE.value + acceptance_string
             acceptance_memo= self.generic_pft_utilities.construct_standardized_xrpl_memo(
                 memo_data=formatted_acceptance_string, 
                 memo_format=user_name, 
@@ -568,7 +571,7 @@ class PostFiatTaskGenerationSystem:
 
         if task_id_to_refuse in valid_task_ids_to_refuse:
             print('PostFiatTaskGenerationSystem.discord__task_refusal: valid task ID proceeding to refuse')
-            formatted_refusal_string = 'REFUSAL REASON ___ '+refusal_string
+            formatted_refusal_string = constants.TaskType.REFUSAL.value + refusal_string
             refusal_memo= self.generic_pft_utilities.construct_standardized_xrpl_memo(
                 memo_data=formatted_refusal_string, 
                 memo_format=user_name, 
@@ -595,21 +598,22 @@ class PostFiatTaskGenerationSystem:
         """ 
         wallet= self.generic_pft_utilities.spawn_wallet_from_seed(seed=seed_to_work)
         wallet_address = wallet.classic_address
+        print(f'PostFiatTaskManagement.discord__initial_submission: User {user_name} ({wallet_address}) is submitting initial completion for task {task_id_to_accept}: {initial_completion_string}')
         all_wallet_transactions = self.generic_pft_utilities.get_memo_detail_df_for_account(wallet_address).copy()
         pf_df = self.generic_pft_utilities.get_proposal_acceptance_pairs(account_memo_detail_df=all_wallet_transactions)
 
         valid_task_ids_to_submit_for_completion = list(pf_df[pf_df['acceptance']!=''].index)
         if task_id_to_accept in valid_task_ids_to_submit_for_completion:
-            print('valid task ID proceeding to submit for completion')
-            formatted_completed_justification_string = 'COMPLETION JUSTIFICATION ___ '+initial_completion_string
+            print(f'PostFiatTaskManagement.discord__initial_submission: valid task ID {task_id_to_accept}, proceeding to submit for completion')
+            formatted_completed_justification_string = constants.TaskType.TASK_OUTPUT.value + initial_completion_string
             completion_memo= self.generic_pft_utilities.construct_standardized_xrpl_memo(memo_data=formatted_completed_justification_string, 
                                                                                                 memo_format=user_name, memo_type=task_id_to_accept)
             completion_response = self.generic_pft_utilities.send_PFT_with_info(sending_wallet=wallet, amount=1, memo=completion_memo, destination_address=self.node_address)
             transaction_info = self.generic_pft_utilities.extract_transaction_info_from_response_object(completion_response)
             output_string = transaction_info['clean_string']
-        if task_id_to_accept not in valid_task_ids_to_submit_for_completion:
-            print('task ID has not been accepted or is not present')
-            output_string = 'task ID has not been accepted or is not present'
+        else:
+            print(f'PostFiatTaskManagement.discord__initial_submission: task ID {task_id_to_accept} is not in a valid state to submit for initial verification')
+            output_string = f'task ID {task_id_to_accept} is not in a valid state to submit for initial verification'
         return output_string
 
     def discord__final_submission(self, seed_to_work, user_name, task_id_to_submit, justification_string):
@@ -625,19 +629,19 @@ class PostFiatTaskGenerationSystem:
         wallet= self.generic_pft_utilities.spawn_wallet_from_seed(seed=seed_to_work)
         wallet_address = wallet.classic_address
         all_wallet_transactions = self.generic_pft_utilities.get_memo_detail_df_for_account(wallet_address).copy()
-        #outstanding_verification.tail(1)['memo_data'].unique()
+        print(f'PostFiatTaskManagement.discord__final_submission: User {user_name} ({wallet_address}) is submitting final verification for task {task_id_to_submit}: {justification_string}')
         outstanding_verification = self.generic_pft_utilities.get_verification_df(account_memo_detail_df=all_wallet_transactions)
         valid_task_ids_to_submit_for_completion = list(outstanding_verification['memo_type'].unique())
         if task_id_to_submit in valid_task_ids_to_submit_for_completion:
-            formatted_completed_justification_string = 'VERIFICATION RESPONSE ___ '+justification_string
+            formatted_completed_justification_string = constants.TaskType.VERIFICATION_RESPONSE.value + justification_string
             completion_memo= self.generic_pft_utilities.construct_standardized_xrpl_memo(memo_data=formatted_completed_justification_string, 
                                                                                                             memo_format=user_name, memo_type=task_id_to_submit)
             completion_response = self.generic_pft_utilities.send_PFT_with_info(sending_wallet=wallet, amount=1, memo=completion_memo, destination_address=self.node_address)
             transaction_info = self.generic_pft_utilities.extract_transaction_info_from_response_object(completion_response)
             output_string = transaction_info['clean_string']
-        if task_id_to_submit not in valid_task_ids_to_submit_for_completion:
-            print('task ID is not a valid task for completion')
-            output_string = 'task ID has not put into the verification cue'
+        else:
+            print(f'PostFiatTaskManagement.discord__final_submission: task ID {task_id_to_submit} is not a valid task for completion')
+            output_string = f'task ID {task_id_to_submit} is not in a verification state'
         return output_string
 
     def generate_o1_task_one_shot_version(self,model_version='o1',user_account = 'r3UHe45BzAVB3ENd21X9LeQngr4ofRJo5n',
@@ -676,7 +680,7 @@ class PostFiatTaskGenerationSystem:
             
             xo = self.openai_request_tool.create_writable_df_for_chat_completion(api_args=api_hash)
             extracted_values = extract_values(xo['choices__message__content'][0])
-        task_string_to_send = 'PROPOSED PF ___ '+' .. '.join(extracted_values)
+        task_string_to_send = constants.TaskType.PROPOSAL.value + ' .. '.join(extracted_values)
         return task_string_to_send
 
     def filter_unprocessed_pf_requests(self, all_node_memo_transactions):
@@ -693,12 +697,12 @@ class PostFiatTaskGenerationSystem:
         memo_groups = all_node_memo_transactions.groupby('memo_type')
         most_recent_memo = memo_groups.last()['memo_data']
         has_proposal = memo_groups['memo_data'].apply(
-            lambda memos: any('PROPOSED PF ___' in memo for memo in memos)
+            lambda memos: any(constants.TaskType.PROPOSAL.value in memo for memo in memos)
         )
 
         # Filter and mark tasks requiring work
         postfiat_request_queue = all_node_memo_transactions[
-            all_node_memo_transactions['memo_data'].apply(lambda x: 'REQUEST_POST_FIAT' in x)
+            all_node_memo_transactions['memo_data'].apply(lambda x: constants.TaskType.REQUEST_POST_FIAT.value in x)
         ].sort_values('datetime')
 
         # Map each request's memo_type to its most recent memo_data, to know the current status of each request
@@ -707,7 +711,7 @@ class PostFiatTaskGenerationSystem:
         # Return only requests that require proposals
         return postfiat_request_queue[
             # Condition 1: Check if the most recent status is still a request
-            postfiat_request_queue['most_recent_status'].apply(lambda x: 'REQUEST_POST_FIAT' in x) &
+            postfiat_request_queue['most_recent_status'].apply(lambda x: constants.TaskType.REQUEST_POST_FIAT.value in x) &
             # Condition 2: Check that this memo_type has no proposals 
             ~postfiat_request_queue['memo_type'].map(has_proposal)
         ]
@@ -1105,7 +1109,7 @@ class PostFiatTaskGenerationSystem:
                 print(fallback_msg)
 
             # Prepare final task strings
-            unprocessed_pf_requests['task_string_to_send'] = 'PROPOSED PF ___ ' + unprocessed_pf_requests['task_map'].apply(
+            unprocessed_pf_requests['task_string_to_send'] = constants.TaskType.PROPOSAL.value + unprocessed_pf_requests['task_map'].apply(
                 lambda x: x['task']
             )
 
@@ -1136,7 +1140,7 @@ class PostFiatTaskGenerationSystem:
 
                 # Check if task already exists  # TODO this might be redundant
                 existing_tasks = all_node_memo_transactions[
-                    (all_node_memo_transactions['memo_data'].str.contains('PROPOSED PF', na=False)) &
+                    (all_node_memo_transactions['memo_data'].str.contains(constants.TaskType.PROPOSAL.value, na=False)) &
                     (all_node_memo_transactions['user_account'] == row['user_account']) &
                     (all_node_memo_transactions['memo_type'] == row['memo_type'])
                 ]
@@ -1184,7 +1188,7 @@ class PostFiatTaskGenerationSystem:
             # Define verification predicate for tasks
             def verify_task(txn_df, user_account, memo_type, request_time):
                 task_txns = txn_df[
-                    (txn_df['memo_data'].str.contains('PROPOSED PF', na=False)) &
+                    (txn_df['memo_data'].str.contains(constants.TaskType.PROPOSAL.value, na=False)) &
                     (txn_df['user_account'] == user_account) &
                     (txn_df['memo_type'] == memo_type) &
                     (txn_df['datetime'] > request_time)
@@ -1249,7 +1253,7 @@ class PostFiatTaskGenerationSystem:
             # Filter for task completion messages
             all_completions = all_node_memo_transactions[
                 all_node_memo_transactions['memo_data'].apply(
-                    lambda x: 'COMPLETION JUSTIFICATION' in x
+                    lambda x: constants.TaskType.TASK_OUTPUT.value in x
                 )
             ].copy()
 
@@ -1259,15 +1263,16 @@ class PostFiatTaskGenerationSystem:
             ].groupby('memo_type').last()['memo_data']
 
             # Map recent updates to completions and identify tasks needing verification
-            all_completions['recent_update']=all_completions['memo_type'].map(most_recent_task_update )
-            all_completions['requires_work']=all_completions['recent_update'].apply(
-                lambda x: 'COMPLETION JUSTIFICATION' in x
+            all_completions['recent_update'] = all_completions['memo_type'].map(most_recent_task_update )
+            all_completions['requires_work'] = all_completions['recent_update'].apply(
+                lambda x: constants.TaskType.TASK_OUTPUT.value in x
             )
 
             # Get original task descriptions
+            proposal_patterns = constants.TASK_PATTERNS[constants.TaskType.PROPOSAL]
             original_task_description = all_node_memo_transactions[
                 all_node_memo_transactions['memo_data'].apply(
-                    lambda x: ('PROPOSED PF' in x) |('..' in x)
+                    lambda x: any(pattern in x for pattern in proposal_patterns)
                 )
             ][['memo_data','memo_type']].groupby('memo_type').last()['memo_data']
 
@@ -1316,8 +1321,8 @@ class PostFiatTaskGenerationSystem:
 
             # Format verification prompts for sending
             verification_prompts_to_disperse['verification_string_to_send'] = (
-                'VERIFICATION PROMPT ___ '+ verification_prompts_to_disperse['stripped_question']
-            )    
+                constants.TaskType.VERIFICATION_PROMPT.value + verification_prompts_to_disperse['stripped_question']
+            ) 
 
             # Construct standardized XRPL memos for each verification prompt
             verification_prompts_to_disperse['memo_to_send'] = verification_prompts_to_disperse.apply(
@@ -1342,7 +1347,7 @@ class PostFiatTaskGenerationSystem:
             for _, row in verification_prompts_to_disperse.iterrows():
                 # Check if verification prompt already exists  # TODO this might be redundant
                 existing_verifications = all_node_memo_transactions[
-                    (all_node_memo_transactions['memo_data'].str.contains('VERIFICATION PROMPT', na=False)) &
+                    (all_node_memo_transactions['memo_data'].str.contains(constants.TaskType.VERIFICATION_PROMPT.value, na=False)) &
                     (all_node_memo_transactions['user_account'] == row['user_account']) &
                     (all_node_memo_transactions['memo_type'] == row['memo_type'])
                 ]
@@ -1364,7 +1369,7 @@ class PostFiatTaskGenerationSystem:
             # Define verification predicate
             def verify_prompt(txn_df, user_account, memo_type, request_time):
                 prompt_txns = txn_df[
-                    (txn_df['memo_data'].str.contains('VERIFICATION PROMPT', na=False)) &
+                    (txn_df['memo_data'].str.contains(constants.TaskType.VERIFICATION_PROMPT.value, na=False)) &
                     (txn_df['user_account'] == user_account) &
                     (txn_df['memo_type'] == memo_type) &
                     (txn_df['datetime'] > request_time)
@@ -1493,14 +1498,14 @@ class PostFiatTaskGenerationSystem:
             # Filter for verification response messages
             all_completions = all_node_memo_transactions[
                 all_node_memo_transactions['memo_data'].apply(
-                    lambda x: 'VERIFICATION RESPONSE ___' in x
+                    lambda x: constants.TaskType.VERIFICATION_RESPONSE.value in x
                 )
             ].copy()
 
             # Get recent rewards for context
             recent_rewards = all_node_memo_transactions[
                 all_node_memo_transactions['memo_data'].apply(
-                    lambda x: 'REWARD RESPONSE' in x
+                    lambda x: constants.TaskType.REWARD.value in x
                 )
             ].copy()
 
@@ -1520,7 +1525,7 @@ class PostFiatTaskGenerationSystem:
 
             # Map recent updates to completions and identify tasks needing rewards
             all_completions['recent_update']=all_completions['memo_type'].map(most_recent_task_update )
-            all_completions['requires_work']=all_completions['recent_update'].apply(lambda x: 'VERIFICATION RESPONSE ___' in x)
+            all_completions['requires_work']=all_completions['recent_update'].apply(lambda x: constants.TaskType.VERIFICATION_RESPONSE.value in x)
 
             # Create reward queue from tasks needing rewards
             reward_queue = all_completions[all_completions['requires_work'] == True].copy()[
@@ -1529,7 +1534,7 @@ class PostFiatTaskGenerationSystem:
 
             # Get Google Doc context links for each account
             account_to_google_context_map = all_node_memo_transactions[
-                all_node_memo_transactions['memo_type']=='google_doc_context_link'
+                all_node_memo_transactions['memo_type']==constants.SystemMemoType.GOOGLE_DOC_CONTEXT_LINK.value
             ].groupby('account').last()['memo_data']
 
             # Proces Google Doc verification details for each unique account
@@ -1553,23 +1558,24 @@ class PostFiatTaskGenerationSystem:
             ).fillna('No Populated Verification Section')
 
             # Get initial task proposals
+            proposal_patterns = constants.TASK_PATTERNS[constants.TaskType.PROPOSAL]
             task_id_to__initial_task = all_node_memo_transactions[
                 all_node_memo_transactions['memo_data'].apply(
-                    lambda x: ('PROPOSED' in x) | ('..' in x)
+                    lambda x: any(pattern in x for pattern in proposal_patterns)
                 )
             ].groupby('memo_type').first()['memo_data']
             
             # Get verification prompts
             task_id_to__verification_prompt = all_node_memo_transactions[
                 all_node_memo_transactions['memo_data'].apply(
-                    lambda x: 'VERIFICATION PROMPT' in x
+                    lambda x: constants.TaskType.VERIFICATION_PROMPT.value in x
                 )
             ].groupby('memo_type').first()['memo_data']
 
             # Get verification responses
             task_id_to__verification_response = all_node_memo_transactions[
                 all_node_memo_transactions['memo_data'].apply(
-                    lambda x: 'VERIFICATION RESPONSE' in x
+                    lambda x: constants.TaskType.VERIFICATION_RESPONSE.value in x
                 )
             ].groupby('memo_type').first()['memo_data']
 
@@ -1625,7 +1631,7 @@ class PostFiatTaskGenerationSystem:
                 reward_queue['reward_to_dispatch'] = reward_queue['full_reward_string'].apply(
                     lambda x: self._extract_pft_reward(x)
                 )
-                reward_queue['reward_summary'] = 'REWARD RESPONSE __ ' + reward_queue['full_reward_string'].apply(
+                reward_queue['reward_summary'] = constants.TaskType.REWARD.value + reward_queue['full_reward_string'].apply(
                     lambda x: self._extract_summary_judgement(x)
                 )
 
@@ -1657,7 +1663,7 @@ class PostFiatTaskGenerationSystem:
 
                     # Check if reward already exists  # TODO this might be redundant
                     existing_rewards = all_node_memo_transactions[
-                        (all_node_memo_transactions['memo_data'].str.contains('REWARD RESPONSE', na=False)) &
+                        (all_node_memo_transactions['memo_data'].str.contains(constants.TaskType.REWARD.value, na=False)) &
                         (all_node_memo_transactions['account'] == destination_address) &
                         (all_node_memo_transactions['memo_type'] == slicex.loc['memo_type'])
                     ]
@@ -1684,7 +1690,7 @@ class PostFiatTaskGenerationSystem:
                 # Define verification predicate
                 def verify_reward(txn_df, user_account, memo_type, request_time):
                     reward_txns = txn_df[
-                        (txn_df['memo_data'].str.contains('REWARD RESPONSE', na=False)) &
+                        (txn_df['memo_data'].str.contains(constants.TaskType.REWARD.value, na=False)) &
                         (txn_df['account'] == user_account) &
                         (txn_df['memo_type'] == memo_type) &
                         (txn_df['datetime'] >= request_time)
