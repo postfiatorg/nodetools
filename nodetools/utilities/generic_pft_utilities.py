@@ -33,6 +33,7 @@ from xrpl.core import addresscodec
 from xrpl.core.keypairs.ed25519 import ED25519
 from cryptography.fernet import Fernet
 from nodetools.security.hash_tools import derive_shared_secret
+from nodetools.performance.monitor import PerformanceMonitor
 
 # TODO: Add loguru as dependency and use it for all logging
 
@@ -71,6 +72,7 @@ class GenericPFTUtilities:
             self.establish_post_fiat_tx_cache_as_hash_unique()
             self.post_fiat_holder_df = self.output_post_fiat_holder_df()  # TODO: This isn't being used
             self.open_ai_request_tool = OpenAIRequestTool()
+            self.monitor = PerformanceMonitor()
             self.__class__._initialized = True
             print("---Initialized GenericPFTUtilities---")
 
@@ -565,65 +567,120 @@ class GenericPFTUtilities:
         
         print(f"Longest list of transactions: {len(longest_transactions)} transactions")
         return longest_transactions
+    
+    @PerformanceMonitor.measure('get_account_memo_history')
+    def get_account_memo_history(self, account_address: str, pft_only: bool = True) -> pd.DataFrame:
+        """Get transaction history with memos for an account.
         
-    def get_memo_detail_df_for_account(self, account_address, pft_only=True):
-        # TODO: Refactor, using get_memos_df as reference (pftpyclient/task_manager/basic_tasks.py)
-        full_transaction_history = self.get_all_cached_transactions_related_to_account(account_address=account_address)
-        if full_transaction_history.empty:
-            return pd.DataFrame()
-
-        validated_tx=full_transaction_history
-
-        # Extract transaction result from meta
-        validated_tx['transaction_result'] = validated_tx['meta'].apply(lambda x: x.get('TransactionResult', ''))
-
-        validated_tx['has_memos'] = validated_tx['tx_json'].apply(lambda x: 'Memos' in x.keys())
-        live_memo_tx = validated_tx[validated_tx['has_memos'] == True].copy()
-        live_memo_tx['main_memo_data']=live_memo_tx['tx_json'].apply(lambda x: x['Memos'][0]['Memo'])
-        live_memo_tx['converted_memos']=live_memo_tx['main_memo_data'].apply(lambda x: 
-                                                                             self.convert_memo_dict__generic(x))
-        live_memo_tx['direction']=np.where(live_memo_tx['destination']==account_address, 'INCOMING','OUTGOING')
-        live_memo_tx['user_account']= live_memo_tx[['destination','account']].sum(1).apply(
-            lambda x: str(x).replace(account_address,'')
-        )
-        live_memo_tx['datetime'] = pd.to_datetime(live_memo_tx['close_time_iso']).dt.tz_localize(None)
-        if pft_only:
-            live_memo_tx= live_memo_tx[live_memo_tx['tx_json'].apply(lambda x: self.pft_issuer in str(x))].copy()
-        live_memo_tx['reference_account']=account_address
-        live_memo_tx['unique_key']=live_memo_tx['reference_account']+'__'+live_memo_tx['hash']
-        def try_get_pft_absolute_amount(x):
-            try:
-                return x['DeliverMax']['value']
-            except:
-                return 0
-        def try_get_memo_info(x,info):
-            try:
-                return x[info]
-            except:
-                return ''
-        live_memo_tx['pft_absolute_amount']=live_memo_tx['tx_json'].apply(lambda x: try_get_pft_absolute_amount(x)).astype(float)
-        live_memo_tx['memo_format']=live_memo_tx['converted_memos'].apply(lambda x: try_get_memo_info(x,"MemoFormat"))
-        live_memo_tx['memo_type']= live_memo_tx['converted_memos'].apply(lambda x: try_get_memo_info(x,"MemoType"))
-        live_memo_tx['memo_data']=live_memo_tx['converted_memos'].apply(lambda x: try_get_memo_info(x,"MemoData"))
-        live_memo_tx['pft_sign']= np.where(live_memo_tx['direction'] =='INCOMING',1,-1)
-        live_memo_tx['directional_pft'] = live_memo_tx['pft_sign']*live_memo_tx['pft_absolute_amount']
-        live_memo_tx['simple_date']=pd.to_datetime(live_memo_tx['datetime'].apply(lambda x: x.strftime('%Y-%m-%d')))
-        return live_memo_tx
-
-    def convert_memo_detail_df_into_essential_caching_details(self, memo_details_df):
-        # TODO: Consider deprecating. This is not used anywhere
-        """ 
-        Takes a memo detail df and converts it into a raw detail df to be cached to a local db
+        Args:
+            account_address: XRPL account address to get history for
+            pft_only: If True, only return PFT transactions. Defaults to True.
+            
+        Returns:
+            DataFrame containing transaction history with memo details
         """
-        full_memo_detail = memo_details_df
-        full_memo_detail['pft_absolute_amount']=full_memo_detail['tx'].apply(lambda x: x['Amount']['value']).astype(float)
-        full_memo_detail['memo_format']=full_memo_detail['converted_memos'].apply(lambda x: x['MemoFormat'])
-        full_memo_detail['memo_type']= full_memo_detail['converted_memos'].apply(lambda x: x['MemoType'])
-        full_memo_detail['memo_data']=full_memo_detail['converted_memos'].apply(lambda x: x['MemoData'])
-        full_memo_detail['pft_sign']= np.where(full_memo_detail['direction'] =='INCOMING',1,-1)
-        full_memo_detail['directional_pft'] = full_memo_detail['pft_sign']*full_memo_detail['pft_absolute_amount']
+        dbconnx = self.db_connection_manager.spawn_sqlalchemy_db_connection_for_user(username = self.node_name)
 
-        return full_memo_detail
+        query = """
+        SELECT 
+            *,
+            CASE
+                WHEN destination = %s THEN 'INCOMING'
+                ELSE 'OUTGOING'
+            END as direction,
+            CASE
+                WHEN destination = %s THEN pft_absolute_amount
+                ELSE -pft_absolute_amount
+            END as directional_pft,
+            CASE
+                WHEN account = %s THEN destination
+                ELSE account
+            END as user_account,
+            destination || '__' || hash as unique_key
+        FROM memo_detail_view
+        WHERE account = %s OR destination = %s
+        """
+
+        if pft_only:
+            query += " AND tx_json_parsed::text LIKE %s"
+            params = (account_address, account_address, account_address, account_address, 
+                    account_address, f"%{self.pft_issuer}%")
+        else:
+            params = (account_address, account_address, account_address, account_address, 
+                    account_address)
+
+        df = pd.read_sql(query, dbconnx, params=params, parse_dates=['simple_date'])
+
+        if df.empty:
+            return pd.DataFrame()
+        
+        # Handle remaining transformations that must stay in Python
+        df['converted_memos'] = df['main_memo_data'].apply(self.convert_memo_dict__generic)
+        df['memo_format'] = df['converted_memos'].apply(lambda x: x.get('MemoFormat', ''))
+        df['memo_type'] = df['converted_memos'].apply(lambda x: x.get('MemoType', ''))
+        df['memo_data'] = df['converted_memos'].apply(lambda x: x.get('MemoData', ''))
+
+        return df
+
+    # # TODO: Deprecate this
+    # @PerformanceMonitor.measure('get_memo_detail_df_for_account')
+    # def get_memo_detail_df_for_account(self, account_address, pft_only=True):
+    #     full_transaction_history = self.get_all_cached_transactions_related_to_account(account_address=account_address)
+    #     if full_transaction_history.empty:
+    #         return pd.DataFrame()
+
+    #     validated_tx=full_transaction_history
+
+    #     # Extract transaction result from meta
+    #     validated_tx['transaction_result'] = validated_tx['meta'].apply(lambda x: x.get('TransactionResult', ''))
+
+    #     validated_tx['has_memos'] = validated_tx['tx_json'].apply(lambda x: 'Memos' in x.keys())
+    #     live_memo_tx = validated_tx[validated_tx['has_memos'] == True].copy()
+    #     live_memo_tx['main_memo_data']=live_memo_tx['tx_json'].apply(lambda x: x['Memos'][0]['Memo'])
+    #     live_memo_tx['converted_memos']=live_memo_tx['main_memo_data'].apply(lambda x: 
+    #                                                                          self.convert_memo_dict__generic(x))
+    #     live_memo_tx['direction']=np.where(live_memo_tx['destination']==account_address, 'INCOMING','OUTGOING')
+    #     live_memo_tx['user_account']= live_memo_tx[['destination','account']].sum(1).apply(
+    #         lambda x: str(x).replace(account_address,'')
+    #     )
+    #     live_memo_tx['datetime'] = pd.to_datetime(live_memo_tx['close_time_iso']).dt.tz_localize(None)
+    #     if pft_only:
+    #         live_memo_tx= live_memo_tx[live_memo_tx['tx_json'].apply(lambda x: self.pft_issuer in str(x))].copy()
+    #     live_memo_tx['reference_account']=account_address
+    #     live_memo_tx['unique_key']=live_memo_tx['reference_account']+'__'+live_memo_tx['hash']
+    #     def try_get_pft_absolute_amount(x):
+    #         try:
+    #             return x['DeliverMax']['value']
+    #         except:
+    #             return 0
+    #     def try_get_memo_info(x,info):
+    #         try:
+    #             return x[info]
+    #         except:
+    #             return ''
+    #     live_memo_tx['pft_absolute_amount']=live_memo_tx['tx_json'].apply(lambda x: try_get_pft_absolute_amount(x)).astype(float)
+    #     live_memo_tx['memo_format']=live_memo_tx['converted_memos'].apply(lambda x: try_get_memo_info(x,"MemoFormat"))
+    #     live_memo_tx['memo_type']= live_memo_tx['converted_memos'].apply(lambda x: try_get_memo_info(x,"MemoType"))
+    #     live_memo_tx['memo_data']=live_memo_tx['converted_memos'].apply(lambda x: try_get_memo_info(x,"MemoData"))
+    #     live_memo_tx['pft_sign']= np.where(live_memo_tx['direction'] =='INCOMING',1,-1)
+    #     live_memo_tx['directional_pft'] = live_memo_tx['pft_sign']*live_memo_tx['pft_absolute_amount']
+    #     live_memo_tx['simple_date']=pd.to_datetime(live_memo_tx['datetime'].apply(lambda x: x.strftime('%Y-%m-%d')))
+    #     return live_memo_tx
+
+    # def convert_memo_detail_df_into_essential_caching_details(self, memo_details_df):
+    #     # TODO: Consider deprecating. This is not used anywhere
+    #     """ 
+    #     Takes a memo detail df and converts it into a raw detail df to be cached to a local db
+    #     """
+    #     full_memo_detail = memo_details_df
+    #     full_memo_detail['pft_absolute_amount']=full_memo_detail['tx'].apply(lambda x: x['Amount']['value']).astype(float)
+    #     full_memo_detail['memo_format']=full_memo_detail['converted_memos'].apply(lambda x: x['MemoFormat'])
+    #     full_memo_detail['memo_type']= full_memo_detail['converted_memos'].apply(lambda x: x['MemoType'])
+    #     full_memo_detail['memo_data']=full_memo_detail['converted_memos'].apply(lambda x: x['MemoData'])
+    #     full_memo_detail['pft_sign']= np.where(full_memo_detail['direction'] =='INCOMING',1,-1)
+    #     full_memo_detail['directional_pft'] = full_memo_detail['pft_sign']*full_memo_detail['pft_absolute_amount']
+
+    #     return full_memo_detail
 
     def send_PFT_chunk_message__seed_based(self, wallet_seed, user_name, full_text, destination_address):
         # TODO: Consider deprecating, not used anywhere
@@ -725,7 +782,7 @@ class GenericPFTUtilities:
             self.sync_pft_transaction_history()
 
             # Get latest transactions
-            latest_txns = self.get_memo_detail_df_for_account(
+            latest_txns = self.get_account_memo_history(
                 account_address=self.node_address,
                 pft_only=False
             )
@@ -737,7 +794,7 @@ class GenericPFTUtilities:
 
                 # Apply the verification predicate
                 if verification_predicate(latest_txns, user_account, memo_type, request_time):
-                    print(f"Verified {memo_type} for {user_account} after {attempt} attempts")
+                    print(f"GenericPFTUtilities._verify_transactions: Verified {memo_type} for {user_account} after {attempt} attempts")
                     verified_items.add((user_account, memo_type, request_time))
 
             # Remove verified items from the set
@@ -813,7 +870,7 @@ class GenericPFTUtilities:
         print(f"GenericPFTUtilities.get_handshake_for_address: Checking handshake status between {wallet.address} and {destination}")
 
         # Get wallet's memo history
-        account_memo_detail_df = self.get_memo_detail_df_for_account(account_address=wallet.address)
+        account_memo_detail_df = self.get_account_memo_history(account_address=wallet.address)
 
         # Filter for handshakes
         handshakes = account_memo_detail_df[account_memo_detail_df['memo_type'] == constants.SystemMemoType.HANDSHAKE.value]
@@ -1083,7 +1140,7 @@ class GenericPFTUtilities:
         return last_response
 
     def get_all_account_compressed_messages(self, account_address):
-        all_account_memos = self.get_memo_detail_df_for_account(account_address=account_address, pft_only=True)
+        all_account_memos = self.get_account_memo_history(account_address=account_address, pft_only=True)
         def try_fix_compressed_string(compressed_string):
             """
             Attempts to fix common issues with compressed strings
@@ -1140,7 +1197,7 @@ class GenericPFTUtilities:
                 print('failed')
                 pass
             return decompressed_string
-        all_account_memos = self.get_memo_detail_df_for_account(account_address=account_address, pft_only=True)
+        all_account_memos = self.get_account_memo_history(account_address=account_address, pft_only=True)
         all_chunk_messages = all_account_memos[(all_account_memos['converted_memos'].apply(lambda x: 'chunk_' in x['MemoData']))].copy()
         all_chunk_messages['memo_data_raw']= all_chunk_messages['converted_memos'].apply(lambda x: x['MemoData']).astype(str)
         all_chunk_messages['message_id']=all_chunk_messages['converted_memos'].apply(lambda x: x['MemoType'])
@@ -1382,7 +1439,7 @@ class GenericPFTUtilities:
         return refusal_pairs
 
     def establish_post_fiat_tx_cache_as_hash_unique(self):
-        dbconnx = self.db_connection_manager.spawn_sqlalchemy_db_connection_for_user(user_name=self.node_name)
+        dbconnx = self.db_connection_manager.spawn_sqlalchemy_db_connection_for_user(username=self.node_name)
         
         with dbconnx.connect() as connection:
             # Check if the table exists
@@ -1478,7 +1535,7 @@ class GenericPFTUtilities:
     def sync_pft_transaction_history_for_account(self, account_address):
         # Fetch transaction history and prepare DataFrame
         tx_hist = self.generate_postgres_writable_df_for_address(account_address=account_address)
-        dbconnx = self.db_connection_manager.spawn_sqlalchemy_db_connection_for_user(user_name=self.node_name)
+        dbconnx = self.db_connection_manager.spawn_sqlalchemy_db_connection_for_user(username=self.node_name)
         
         if tx_hist is not None:
             try:
@@ -1564,7 +1621,7 @@ class GenericPFTUtilities:
         update_thread.start()
 
     def get_all_cached_transactions_related_to_account(self, account_address):
-        dbconnx = self.db_connection_manager.spawn_sqlalchemy_db_connection_for_user(user_name=self.node_name)
+        dbconnx = self.db_connection_manager.spawn_sqlalchemy_db_connection_for_user(username=self.node_name)
         query = f"""
         SELECT * FROM postfiat_tx_cache
         WHERE account = '{account_address}' OR destination = '{account_address}'
@@ -1584,7 +1641,7 @@ class GenericPFTUtilities:
         
         # Create database connection
         dbconnx = self.db_connection_manager.spawn_sqlalchemy_db_connection_for_user(
-            user_name=self.node_name
+            username=self.node_name
         )
         
         # Format the wallet addresses for the IN clause
@@ -1778,7 +1835,7 @@ class GenericPFTUtilities:
             str or None: Most recent Google Doc link or None if not found
         """
         try:
-            memo_df = self.get_memo_detail_df_for_account(
+            memo_df = self.get_account_memo_history(
                 account_address=wallet.classic_address,
                 pft_only=False
             )
@@ -2037,7 +2094,7 @@ class GenericPFTUtilities:
         MAX_CHUNK_MESSAGES_IN_CONTEXT = constants.MAX_CHUNK_MESSAGES_IN_CONTEXT
 
         # Get base account info dataframe
-        all_account_info = self.get_memo_detail_df_for_account(account_address=account_address).sort_values('datetime')
+        all_account_info = self.get_account_memo_history(account_address=account_address).sort_values('datetime')
         all_account_info['simple_date']= all_account_info['datetime'].apply(lambda x: pd.to_datetime(x.date()))
 
         # Initialize core elements
@@ -2163,7 +2220,7 @@ THIS MESSAGE WILL AUTO DELETE IN 60 SECONDS
 
     def generate_basic_balance_info_string_for_account_address(self, account_address = 'r3UHe45BzAVB3ENd21X9LeQngr4ofRJo5n'):
         try:
-            all_account_info =self.get_memo_detail_df_for_account(account_address=account_address)
+            all_account_info =self.get_account_memo_history(account_address=account_address)
         except:
             pass
         monthly_pft_reward_avg=0
@@ -2328,7 +2385,7 @@ PFT WEEKLY AVG:   {weekly_pft_reward_avg}
         This takes in an account address and outputs the current state of its outstanding tasks.
         Returns empty string for accounts with no PFT-related transactions.
         """ 
-        all_memos = self.get_memo_detail_df_for_account(
+        all_memos = self.get_account_memo_history(
             account_address=account_address,
             pft_only=True
         )
@@ -2557,7 +2614,7 @@ PFT WEEKLY AVG:   {weekly_pft_reward_avg}
             return False
         
         try: 
-            memo_detail = self.get_memo_detail_df_for_account(
+            memo_detail = self.get_account_memo_history(
                 account_address=wallet.classic_address, 
                 pft_only=False
             )
@@ -2613,7 +2670,7 @@ PFT WEEKLY AVG:   {weekly_pft_reward_avg}
         outgoing_message = ''
         try:
 
-            all_wallet_transactions = self.get_memo_detail_df_for_account(wallet_address).copy().sort_values('datetime')
+            all_wallet_transactions = self.get_account_memo_history(wallet_address).copy().sort_values('datetime')
             incoming_message = all_wallet_transactions[all_wallet_transactions['direction']=='INCOMING'].tail(1).transpose()
             outgoing_message = all_wallet_transactions[all_wallet_transactions['direction']=='OUTGOING'].tail(1).transpose()
             def format_transaction_message(transaction):
@@ -3092,7 +3149,7 @@ PFT WEEKLY AVG:   {weekly_pft_reward_avg}
     # TODO: Consider deprecating, not used anywhere
     def get_full_google_text_and_verification_stub_for_account(self,address_to_work = 'rwmzXrN3Meykp8pBd3Boj1h34k8QGweUaZ'):
 
-        all_account_memos = self.get_memo_detail_df_for_account(account_address=address_to_work)
+        all_account_memos = self.get_account_memo_history(account_address=address_to_work)
         google_acount = self.get_most_recent_google_doc_for_user(account_memo_detail_df
                                                                                 =all_account_memos, 
                                                                                 address=address_to_work)

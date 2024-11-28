@@ -64,14 +64,14 @@ class OpenAIRequestTool:
         '''Query chat completion and write result to database'''
         writable_df = self.create_writable_df_for_chat_completion(api_args=api_args)
         writable_df = writable_df[[i for i in writable_df.columns if 'choices' != i]].copy()
-        dbconnx = self.db_connection_manager.spawn_sqlalchemy_db_connection_for_user(user_name='collective')
+        dbconnx = self.db_connection_manager.spawn_sqlalchemy_db_connection_for_user(username='collective')
         writable_df.to_sql('openai_chat_completions', dbconnx, if_exists='append', index=False)
         dbconnx.dispose()
         return writable_df
 
     def output_all_openai_chat_completions(self):
         '''Output all chat completions from the database'''
-        dbconnx = self.db_connection_manager.spawn_sqlalchemy_db_connection_for_user(user_name='collective')
+        dbconnx = self.db_connection_manager.spawn_sqlalchemy_db_connection_for_user(username='collective')
         all_completions = pd.read_sql('openai_chat_completions', dbconnx)
         return all_completions
 
@@ -160,7 +160,7 @@ class OpenAIRequestTool:
     def query_chat_completion_async_and_write_to_db(self, arg_async_map):
         '''Query chat completion asynchronously and write result to database'''
         async_write_df = self.create_writable_df_for_async_chat_completion(arg_async_map=arg_async_map)
-        dbconnx = self.db_connection_manager.spawn_sqlalchemy_db_connection_for_user(user_name='collective')
+        dbconnx = self.db_connection_manager.spawn_sqlalchemy_db_connection_for_user(username='collective')
         async_write_df = async_write_df[[i for i in async_write_df.columns if 'choices' != i]].copy()
         async_write_df.to_sql('openai_chat_completions', dbconnx, if_exists='append', index=False)
         dbconnx.dispose()

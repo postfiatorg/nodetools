@@ -8,6 +8,7 @@ from nodetools.utilities.generic_pft_utilities import *
 from nodetools.utilities.task_management import PostFiatTaskGenerationSystem
 from nodetools.utilities.generic_pft_utilities import GenericPFTUtilities
 from nodetools.chatbots.personas.odv import odv_system_prompt
+from nodetools.performance.monitor import PerformanceMonitor
 import asyncio
 from datetime import datetime, time
 import pytz
@@ -110,7 +111,7 @@ class MyClient(discord.Client):
             print(f"MyClient.pf_accept_menu: Spawning wallet to fetch tasks for {interaction.user.name}")
             wallet = generic_pft_utilities.spawn_wallet_from_seed(seed=seed)
             classic_address = wallet.classic_address
-            all_node_memo_transactions = generic_pft_utilities.get_memo_detail_df_for_account(account_address=classic_address, pft_only=False).copy()
+            all_node_memo_transactions = generic_pft_utilities.get_account_memo_history(account_address=classic_address, pft_only=False).copy()
             pf_df = generic_pft_utilities.get_proposal_acceptance_pairs(
                 account_memo_detail_df=all_node_memo_transactions, 
                 include_pending=True
@@ -213,7 +214,7 @@ class MyClient(discord.Client):
             print(f"MyClient.pf_refuse_menu: Spawning wallet to fetch tasks for {interaction.user.name}")
             wallet = generic_pft_utilities.spawn_wallet_from_seed(seed=seed)
             classic_address = wallet.classic_address
-            all_node_memo_transactions = generic_pft_utilities.get_memo_detail_df_for_account(account_address=classic_address, pft_only=False).copy()
+            all_node_memo_transactions = generic_pft_utilities.get_account_memo_history(account_address=classic_address, pft_only=False).copy()
             pf_df = generic_pft_utilities.get_proposal_refusal_pairs(
                 account_memo_detail_df=all_node_memo_transactions, 
                 exclude_refused=True
@@ -687,7 +688,7 @@ class MyClient(discord.Client):
                 wallet = generic_pft_utilities.spawn_wallet_from_seed(seed)
 
                 # Check for existing initiation
-                all_txns = generic_pft_utilities.get_memo_detail_df_for_account(
+                all_txns = generic_pft_utilities.get_account_memo_history(
                     wallet.classic_address,
                     pft_only=False
                 )
@@ -796,7 +797,7 @@ class MyClient(discord.Client):
             print(f"MyClient.pf_initial_verification: Spawning wallet to fetch tasks for {interaction.user.name}")
             wallet = generic_pft_utilities.spawn_wallet_from_seed(seed=seed)
             wallet_address = wallet.classic_address
-            all_wallet_transactions = generic_pft_utilities.get_memo_detail_df_for_account(wallet_address).copy()
+            all_wallet_transactions = generic_pft_utilities.get_account_memo_history(wallet_address).copy()
             pf_df = generic_pft_utilities.get_proposal_acceptance_pairs(account_memo_detail_df=all_wallet_transactions)
             # Filter for accepted tasks that have not been completed yet
             accepted_tasks = pf_df[
@@ -1083,7 +1084,7 @@ Note: XRP wallets need 15 XRP to transact.
             await interaction.response.defer(ephemeral=True)
 
             try:
-                all_wallet_transactions = generic_pft_utilities.get_memo_detail_df_for_account(wallet_address).copy().sort_values('datetime')
+                all_wallet_transactions = generic_pft_utilities.get_account_memo_history(wallet_address).copy().sort_values('datetime')
                 reward_summary_map = generic_pft_utilities.get_reward_data(all_account_info=all_wallet_transactions)
                 recent_rewards = generic_pft_utilities.format_reward_summary(reward_summary_map['reward_summaries'].tail(10))
 
@@ -1128,7 +1129,7 @@ Note: XRP wallets need 15 XRP to transact.
             print(f"MyClient.pf_final_verification: Spawning wallet to fetch tasks for {interaction.user.name}")
             wallet = generic_pft_utilities.spawn_wallet_from_seed(seed=seed)
             wallet_address = wallet.classic_address
-            all_wallet_transactions = generic_pft_utilities.get_memo_detail_df_for_account(wallet_address).copy()
+            all_wallet_transactions = generic_pft_utilities.get_account_memo_history(wallet_address).copy()
             outstanding_verification = generic_pft_utilities.get_verification_df(account_memo_detail_df=all_wallet_transactions)
             
             # If there are no tasks in the verification queue, notify the user
@@ -1700,7 +1701,7 @@ My specific question/request is: {user_query}"""
                 await message.reply(f"You must fund your wallet with at least {constants.MIN_XRP_BALANCE} XRP before initiating.", mention_author=True)
                 return
 
-            full_memo_detail = generic_pft_utilities.get_memo_detail_df_for_account(account_address=wallet_address,pft_only=False)
+            full_memo_detail = generic_pft_utilities.get_account_memo_history(account_address=wallet_address,pft_only=False)
             if len(full_memo_detail[full_memo_detail['memo_type']=="INITIATION_RITE"]) > 0:
                 await message.reply("You have already performed an initiation rite with this wallet.", mention_author=True)
                 return
@@ -1740,6 +1741,10 @@ if __name__ == "__main__":
     # Initialize credential manager
     password = getpass.getpass("Enter your password: ")
     cred_manager = CredentialManager(password)
+
+    # Initialize performance monitor
+    monitor = PerformanceMonitor()
+    monitor.start()
     
     # Network selection with more context
     print(f"Network Configuration: ")

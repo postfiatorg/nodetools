@@ -21,9 +21,9 @@ class DBConnectionManager:
             self.__class__._initialized = True
             print("---Initialized DBConnectionManager---")
 
-    def spawn_sqlalchemy_db_connection_for_user(self, user_name):
+    def spawn_sqlalchemy_db_connection_for_user(self, username):
         """Create a SQLAlchemy engine for the specified user"""
-        db_connstring = self.credential_manager.get_credential(f'{user_name}_postgresconnstring')
+        db_connstring = self.credential_manager.get_credential(f'{username}_postgresconnstring')
         engine = sqlalchemy.create_engine(db_connstring)
         return engine
     

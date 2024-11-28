@@ -25,6 +25,7 @@ import matplotlib.ticker as ticker
 import nodetools.utilities.constants as constants
 from nodetools.utilities.credentials import CredentialManager, SecretType
 from nodetools.utilities.exceptions import *
+from nodetools.performance.monitor import PerformanceMonitor
 
 class PostFiatTaskGenerationSystem:
     _instance = None
@@ -56,6 +57,7 @@ class PostFiatTaskGenerationSystem:
             )
 
             # Initialize other components
+            self.monitor = PerformanceMonitor()
             self.stop_threads = False
             self.__class__._initialized = True
             self.default_model = constants.DEFAULT_OPEN_AI_MODEL
@@ -258,7 +260,7 @@ class PostFiatTaskGenerationSystem:
 
         try:
             # Get all transactions
-            all_node_memo_transactions = self.generic_pft_utilities.get_memo_detail_df_for_account(
+            all_node_memo_transactions = self.generic_pft_utilities.get_account_memo_history(
                 account_address=self.node_address,
                 pft_only=False
             )
@@ -329,10 +331,10 @@ class PostFiatTaskGenerationSystem:
             # Define verification predicate for initiation rewards
             def verify_reward(txns, user_account, memo_type, request_time):
                 reward_txns = txns[
-                    (txns['memo_data'].str.contains(constants.SystemMemoType.INITIATION_REWARD.value, na=False)) &
-                    (txns['user_account'] == user_account) &
-                    (txns['memo_type'] == memo_type) & 
-                    (txns['datetime'] > request_time)
+                    (txns['memo_data'].str.contains(constants.SystemMemoType.INITIATION_REWARD.value, na=False))
+                    & (txns['user_account'] == user_account)
+                    & (txns['memo_type'] == memo_type)
+                    # & (txns['datetime'] > request_time)
                 ]
                 return not reward_txns.empty and reward_txns['datetime'].max() > request_time
             
@@ -408,7 +410,7 @@ class PostFiatTaskGenerationSystem:
         print(f"PostFiatTaskGenerationSystem.discord__task_acceptance: User {user_name} ({wallet_address}) has accepted task {task_id_to_accept}: {acceptance_string}")
 
         # Get all transactions and filter for pending proposals
-        all_wallet_transactions = self.generic_pft_utilities.get_memo_detail_df_for_account(wallet_address).copy()
+        all_wallet_transactions = self.generic_pft_utilities.get_account_memo_history(wallet_address).copy()
         pf_df = self.generic_pft_utilities.get_proposal_acceptance_pairs(
             account_memo_detail_df=all_wallet_transactions,
             include_pending=True
@@ -458,7 +460,7 @@ class PostFiatTaskGenerationSystem:
         print(f"PostFiatTaskGenerationSystem.discord__task_refusal: User {user_name} ({wallet_address}) has refused task {task_id_to_refuse}: {refusal_string}")
 
         # Get all transactions and filter for pending proposals
-        all_wallet_transactions = self.generic_pft_utilities.get_memo_detail_df_for_account(wallet_address).copy()
+        all_wallet_transactions = self.generic_pft_utilities.get_account_memo_history(wallet_address).copy()
         pf_df = self.generic_pft_utilities.get_proposal_refusal_pairs(
             account_memo_detail_df=all_wallet_transactions,
             exclude_refused=True
@@ -498,7 +500,7 @@ class PostFiatTaskGenerationSystem:
         wallet= self.generic_pft_utilities.spawn_wallet_from_seed(seed=seed_to_work)
         wallet_address = wallet.classic_address
         print(f'PostFiatTaskManagement.discord__initial_submission: User {user_name} ({wallet_address}) is submitting initial completion for task {task_id_to_accept}: {initial_completion_string}')
-        all_wallet_transactions = self.generic_pft_utilities.get_memo_detail_df_for_account(wallet_address).copy()
+        all_wallet_transactions = self.generic_pft_utilities.get_account_memo_history(wallet_address).copy()
         pf_df = self.generic_pft_utilities.get_proposal_acceptance_pairs(account_memo_detail_df=all_wallet_transactions)
 
         valid_task_ids_to_submit_for_completion = list(pf_df[pf_df['acceptance']!=''].index)
@@ -527,7 +529,7 @@ class PostFiatTaskGenerationSystem:
         ''' 
         wallet= self.generic_pft_utilities.spawn_wallet_from_seed(seed=seed_to_work)
         wallet_address = wallet.classic_address
-        all_wallet_transactions = self.generic_pft_utilities.get_memo_detail_df_for_account(wallet_address).copy()
+        all_wallet_transactions = self.generic_pft_utilities.get_account_memo_history(wallet_address).copy()
         print(f'PostFiatTaskManagement.discord__final_submission: User {user_name} ({wallet_address}) is submitting final verification for task {task_id_to_submit}: {justification_string}')
         outstanding_verification = self.generic_pft_utilities.get_verification_df(account_memo_detail_df=all_wallet_transactions)
         valid_task_ids_to_submit_for_completion = list(outstanding_verification['memo_type'].unique())
@@ -886,7 +888,7 @@ class PostFiatTaskGenerationSystem:
 
         try:
             # Get transaction data
-            all_node_memo_transactions = self.generic_pft_utilities.get_memo_detail_df_for_account(
+            all_node_memo_transactions = self.generic_pft_utilities.get_account_memo_history(
                 account_address=self.node_address, 
                 pft_only=False
             )
@@ -1087,10 +1089,10 @@ class PostFiatTaskGenerationSystem:
             # Define verification predicate for tasks
             def verify_task(txn_df, user_account, memo_type, request_time):
                 task_txns = txn_df[
-                    (txn_df['memo_data'].str.contains(constants.TaskType.PROPOSAL.value, na=False)) &
-                    (txn_df['user_account'] == user_account) &
-                    (txn_df['memo_type'] == memo_type) &
-                    (txn_df['datetime'] > request_time)
+                    (txn_df['memo_data'].str.contains(constants.TaskType.PROPOSAL.value, na=False))
+                    & (txn_df['user_account'] == user_account)
+                    & (txn_df['memo_type'] == memo_type)
+                    # & (txn_df['datetime'] > request_time)
                 ]
                 return not task_txns.empty and task_txns['datetime'].max() > request_time
             
@@ -1144,7 +1146,7 @@ class PostFiatTaskGenerationSystem:
         """
         try:
             # Get all node transactions
-            all_node_memo_transactions = self.generic_pft_utilities.get_memo_detail_df_for_account(
+            all_node_memo_transactions = self.generic_pft_utilities.get_account_memo_history(
                 account_address=self.node_address, 
                 pft_only=False
             ).copy().sort_values('datetime')
@@ -1268,10 +1270,10 @@ class PostFiatTaskGenerationSystem:
             # Define verification predicate
             def verify_prompt(txn_df, user_account, memo_type, request_time):
                 prompt_txns = txn_df[
-                    (txn_df['memo_data'].str.contains(constants.TaskType.VERIFICATION_PROMPT.value, na=False)) &
-                    (txn_df['user_account'] == user_account) &
-                    (txn_df['memo_type'] == memo_type) &
-                    (txn_df['datetime'] > request_time)
+                    (txn_df['memo_data'].str.contains(constants.TaskType.VERIFICATION_PROMPT.value, na=False))
+                    & (txn_df['user_account'] == user_account)
+                    & (txn_df['memo_type'] == memo_type)
+                    # & (txn_df['datetime'] > request_time)
                 ]
                 return not prompt_txns.empty and prompt_txns['datetime'].max() > request_time
             
@@ -1389,10 +1391,10 @@ class PostFiatTaskGenerationSystem:
         """
         try:
             # Get all node transactions
-            all_node_memo_transactions = self.generic_pft_utilities.get_memo_detail_df_for_account(
+            all_node_memo_transactions = self.generic_pft_utilities.get_account_memo_history(
                 account_address=self.node_address, 
                 pft_only=False
-            ).copy().sort_values('datetime')
+            ).sort_values('datetime')
 
             # Filter for verification response messages
             all_completions = all_node_memo_transactions[
@@ -1589,10 +1591,10 @@ class PostFiatTaskGenerationSystem:
                 # Define verification predicate
                 def verify_reward(txn_df, user_account, memo_type, request_time):
                     reward_txns = txn_df[
-                        (txn_df['memo_data'].str.contains(constants.TaskType.REWARD.value, na=False)) &
-                        (txn_df['account'] == user_account) &
-                        (txn_df['memo_type'] == memo_type) &
-                        (txn_df['datetime'] >= request_time)
+                        (txn_df['memo_data'].str.contains(constants.TaskType.REWARD.value, na=False))
+                        & (txn_df['account'] == user_account)
+                        & (txn_df['memo_type'] == memo_type)
+                        # & (txn_df['datetime'] >= request_time)
                     ]
                     return not reward_txns.empty and reward_txns['datetime'].max() > request_time
 
@@ -1611,7 +1613,7 @@ class PostFiatTaskGenerationSystem:
         """Process pending handshakes and respond with remembrancer's public key"""
         try:
             # Get all transactions for the node
-            all_remembrancer_transactions = self.generic_pft_utilities.get_memo_detail_df_for_account(
+            all_remembrancer_transactions = self.generic_pft_utilities.get_account_memo_history(
                 account_address=self.remembrancer_address,
                 pft_only=False
             )
@@ -1664,10 +1666,10 @@ class PostFiatTaskGenerationSystem:
             # Define verification predicate
             def verify_handshake(txn_df, user_account, memo_type, request_time):
                 handshake_txns = txn_df[
-                    (txn_df['memo_type'] == constants.SystemMemoType.HANDSHAKE.value) &
-                    (txn_df['account'] == self.node_address) &
-                    (txn_df['destination'] == user_account) &
-                    (txn_df['datetime'] >= request_time)
+                    (txn_df['memo_type'] == constants.SystemMemoType.HANDSHAKE.value)
+                    & (txn_df['account'] == self.node_address)
+                    & (txn_df['destination'] == user_account)
+                    # & (txn_df['datetime'] >= request_time)
                 ]
                 return not handshake_txns.empty and handshake_txns['datetime'].max() > request_time
 
@@ -1681,6 +1683,7 @@ class PostFiatTaskGenerationSystem:
         except Exception as e:
             print(f"PostFiatTaskManagement.process_handshake_queue: Error processing handshake queue: {e}")
     
+    # TODO: Consider officially expanding the scope of this to process other tasks unrelated to the Task generation system
     def run_queue_processing(self):
         """
         Runs queue processing tasks sequentially in a single thread.
@@ -1737,7 +1740,7 @@ class PostFiatTaskGenerationSystem:
 
     def write_full_initial_discord_chat_history(self):
         """ Write the full transaction set """ 
-        simplified_message_df =self.generic_pft_utilities.get_memo_detail_df_for_account(account_address
+        simplified_message_df =self.generic_pft_utilities.get_account_memo_history(account_address
                                                                 =self.generic_pft_utilities.node_address).sort_values('datetime')
         url_mask = self.network_config.explorer_tx_url_mask
         simplified_message_df['url']=simplified_message_df['hash'].apply(lambda x: url_mask.format(hash=x))
@@ -1765,7 +1768,7 @@ class PostFiatTaskGenerationSystem:
         full_history = simplified_message_df[['datetime','account','memo_format',
                             'memo_type','memo_data','directional_pft','url','hash','formatted_message']].copy()
         full_history['displayed']=True
-        dbconnx = self.db_connection_manager.spawn_sqlalchemy_db_connection_for_user(user_name=self.generic_pft_utilities.node_name)
+        dbconnx = self.db_connection_manager.spawn_sqlalchemy_db_connection_for_user(username=self.generic_pft_utilities.node_name)
         full_history.to_sql('foundation_discord', dbconnx, if_exists='replace')
 
     def sync_and_format_new_transactions(self):
@@ -1778,7 +1781,7 @@ class PostFiatTaskGenerationSystem:
         try:
             # Get existing transaction hashes from database
             dbconnx = self.db_connection_manager.spawn_sqlalchemy_db_connection_for_user(
-                user_name=self.generic_pft_utilities.node_name
+                username=self.generic_pft_utilities.node_name
             )
             try:
                 existing_hashes = set(pd.read_sql('select hash from foundation_discord', dbconnx)['hash'])
@@ -1786,7 +1789,7 @@ class PostFiatTaskGenerationSystem:
                 dbconnx.dispose()
 
             # Get all transactions for the node's address
-            all_transactions_df = self.generic_pft_utilities.get_memo_detail_df_for_account(
+            all_transactions_df = self.generic_pft_utilities.get_account_memo_history(
                 account_address=self.generic_pft_utilities.node_address
             ).sort_values('datetime')
 
@@ -1822,7 +1825,7 @@ class PostFiatTaskGenerationSystem:
                 ]
                 
                 dbconnx = self.db_connection_manager.spawn_sqlalchemy_db_connection_for_user(
-                    user_name=self.generic_pft_utilities.node_name
+                    username=self.generic_pft_utilities.node_name
                 )
                 try:
                     writer_df[columns_to_save].to_sql(
@@ -1843,7 +1846,7 @@ class PostFiatTaskGenerationSystem:
 
     def generate_coaching_string_for_account(self, account_to_work = 'r3UHe45BzAVB3ENd21X9LeQngr4ofRJo5n'):
         
-        all_account_info = self.generic_pft_utilities.get_memo_detail_df_for_account(account_address=account_to_work,pft_only=True)
+        all_account_info = self.generic_pft_utilities.get_account_memo_history(account_address=account_to_work,pft_only=True)
         full_context = self.generic_pft_utilities.get_full_user_context_string(account_address=account_to_work)
         simplified_rewards=all_account_info[all_account_info['memo_data'].apply(lambda x: 'reward' in x)].copy()
         simplified_rewards['simple_date']=pd.to_datetime(simplified_rewards['datetime'].apply(lambda x: x.strftime('%Y-%m-%d')))
@@ -1910,7 +1913,7 @@ _________________________________
         # Format the date and time to your preferred format
         formatted_date = now_eastern.strftime('%A, %B %d, %Y, %-I:%M %p')
         #formatted_date = 'Saturday, October 05, 2024, 10:02 AM'
-        all_account_info = self.generic_pft_utilities.get_memo_detail_df_for_account(account_address=account_to_work,pft_only=True)
+        all_account_info = self.generic_pft_utilities.get_account_memo_history(account_address=account_to_work,pft_only=True)
         full_context = self.generic_pft_utilities.get_full_user_context_string(account_address=account_to_work)
         simplified_rewards=all_account_info[all_account_info['memo_data'].apply(lambda x: 'reward' in x)].copy()
         simplified_rewards['simple_date']=pd.to_datetime(simplified_rewards['datetime'].apply(lambda x: x.strftime('%Y-%m-%d')))
@@ -2005,7 +2008,7 @@ _________________________________
         # Format the date and time to your preferred format
         formatted_date = now_eastern.strftime('%A, %B %d, %Y, %-I:%M %p')
         #formatted_date = 'Saturday, October 05, 2024, 10:02 AM'
-        all_account_info = self.generic_pft_utilities.get_memo_detail_df_for_account(account_address=account_to_work,pft_only=True)
+        all_account_info = self.generic_pft_utilities.get_account_memo_history(account_address=account_to_work,pft_only=True)
         full_context = self.generic_pft_utilities.get_full_user_context_string(account_address=account_to_work)
         simplified_rewards=all_account_info[all_account_info['memo_data'].apply(lambda x: 'reward' in x)].copy()
         simplified_rewards['simple_date']=pd.to_datetime(simplified_rewards['datetime'].apply(lambda x: x.strftime('%Y-%m-%d')))
@@ -2102,7 +2105,7 @@ _________________________________
         # Format the date and time to your preferred format
         formatted_date = now_eastern.strftime('%A, %B %d, %Y, %-I:%M %p')
         #formatted_date = 'Saturday, October 05, 2024, 10:02 AM'
-        all_account_info = self.generic_pft_utilities.get_memo_detail_df_for_account(account_address=account_to_work,pft_only=True)
+        all_account_info = self.generic_pft_utilities.get_account_memo_history(account_address=account_to_work,pft_only=True)
         full_context = self.generic_pft_utilities.get_full_user_context_string(account_address=account_to_work)
         simplified_rewards=all_account_info[all_account_info['memo_data'].apply(lambda x: 'reward' in x)].copy()
         simplified_rewards['simple_date']=pd.to_datetime(simplified_rewards['datetime'].apply(lambda x: x.strftime('%Y-%m-%d')))
@@ -2176,7 +2179,7 @@ _________________________________
 
     def output_pft_KPI_graph_for_address(self,user_wallet = 'r3UHe45BzAVB3ENd21X9LeQngr4ofRJo5n'):
         
-        account_hist = self.generic_pft_utilities.get_memo_detail_df_for_account(account_address=user_wallet)
+        account_hist = self.generic_pft_utilities.get_account_memo_history(account_address=user_wallet)
         full_pft_history= account_hist[account_hist['memo_data'].apply(lambda x: 'REWARD' in x)][['datetime','pft_absolute_amount']].set_index('datetime').resample('H').sum()#.rolling(24).mean().plot()
         
         hourly_append = pd.DataFrame(pd.date_range(list(full_pft_history.tail(1).index)[0], datetime.datetime.now(),freq='H'))
