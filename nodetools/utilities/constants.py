@@ -1,6 +1,7 @@
 from dataclasses import dataclass
 from typing import Optional, List
 from enum import Enum
+from decimal import Decimal
 
 # Runtime configuration
 USE_TESTNET = True      
@@ -9,12 +10,30 @@ HAS_LOCAL_NODE = False
 # TESTNET ONLY
 ENABLE_REINITIATIONS = False
 
+class AddressType(Enum):
+    """Types of special addresses"""
+    NODE = "Node"   # Each node has an address
+    REMEMBRANCER = "Remembrancer"  # Each node may have a separate address for its remembrancer
+    ISSUER = "Issuer"  # There's only one PFT issuer per L1 network
+    OTHER = "Other"  # Any other address type, including users
+
+# PFT requirements by address type
+# TODO: Make this dynamic based on operation
+PFT_REQUIREMENTS = {
+    AddressType.NODE: 1,
+    AddressType.REMEMBRANCER: 1,
+    AddressType.ISSUER: 0,
+    AddressType.OTHER: 0
+}
+
+# TODO: Move this out of constants.py
 @dataclass
 class NetworkConfig:
     """Configuration for an XRPL network (mainnet or testnet)"""
     name: str
     node_name: str
     node_address: str
+    remembrancer_name: str
     remembrancer_address: str
     issuer_address: str
     websockets: List[str]
@@ -24,12 +43,28 @@ class NetworkConfig:
     explorer_tx_url_mask: str
     local_rpc_url: Optional[str] = None
 
+    def get_address_type(self, address: str) -> AddressType:
+        """Get the type of address"""
+        if address == self.node_address:
+            return AddressType.NODE
+        elif address == self.remembrancer_address:
+            return AddressType.REMEMBRANCER
+        elif address == self.issuer_address:
+            return AddressType.ISSUER
+        else:
+            return AddressType.OTHER
+        
+    def get_pft_requirement(self, address: str) -> Decimal:
+        """Get the PFT requirement for an address"""
+        return Decimal(PFT_REQUIREMENTS[self.get_address_type(address)])
+
 # Network configurations
 
 XRPL_MAINNET = NetworkConfig(
     name="mainnet",
     node_name="postfiatfoundation",
     node_address="r4yc85M1hwsegVGZ1pawpZPwj65SVs8PzD",
+    remembrancer_name="postfiatfoundation_remembrancer",
     remembrancer_address="rJ1mBMhEBKack5uTQvM8vWoAntbufyG9Yn",
     issuer_address="rnQUEEg8yyjrwk9FhyXpKavHyCRJM9BDMW",
     websockets=[
@@ -49,6 +84,7 @@ XRPL_TESTNET = NetworkConfig(
     name="testnet",
     node_name="postfiatfoundation_testnet",
     node_address="rUWuJJLLSH5TUdajVqsHx7M59Vj3P7giQV",
+    remembrancer_name="postfiatfoundation_testnet_remembrancer",
     remembrancer_address="rN2oaXBhFE9urGN5hXup937XpoFVkrnUhu",
     issuer_address="rLX2tgumpiUE6kjr757Ao8HWiJzC8uuBSN",
     websockets=[
@@ -83,8 +119,11 @@ def get_network_config(network: Network = Network.XRPL_TESTNET if USE_TESTNET el
 DEFAULT_OPEN_AI_MODEL = 'chatgpt-4o-latest'
 DEFAULT_ANTHROPIC_MODEL = 'claude-3-5-sonnet-20241022'
 
-# Minimum XRP balance to be able to send a task
-MIN_XRP_BALANCE = 12
+MIN_XRP_PER_TRANSACTION = 0.00001  # Minimum XRP amount per transaction
+MIN_XRP_BALANCE = 12  # Minimum XRP balance to be able to perform a transaction
+
+# Maximum chunk size for a memo
+MAX_MEMO_CHUNK_SIZE = 760
  
 # Maximum history length
 MAX_HISTORY = 15  # TODO: rename this to something more descriptive

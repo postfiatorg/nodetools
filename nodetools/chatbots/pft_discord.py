@@ -317,7 +317,7 @@ class MyClient(discord.Client):
                 await interaction.response.send_message(f"An error occurred: {str(e)}", ephemeral=True)
 
         @self.tree.command(name="pf_log", description="Send a long message to the remembrancer wallet")
-        async def pf_remembrancer(interaction: discord.Interaction, message: str):
+        async def pf_remembrancer(interaction: discord.Interaction, message: str, encrypt: bool = False):
             user_id = interaction.user.id
             
             # Check if the user has a stored seed
@@ -335,24 +335,90 @@ class MyClient(discord.Client):
             await interaction.response.defer(ephemeral=True)
 
             try:
-                # Call the send_PFT_chunk_message__seed_based function
-                ### RETURN TO wallet_seed, user_name, destination,memo, compress
-                response = generic_pft_utilities.send_pft_compressed_message_based_on_wallet_seed(wallet_seed=seed, 
-                                                                                                  user_name=user_name, 
-                                                                                                  destination=self.remembrancer,
-                                                                                                  memo = message, message_id=None,
-                                                                                                  compress=True)
-                
+                responses = generic_pft_utilities.send_memo(
+                    wallet_seed=seed,
+                    user_name=user_name,
+                    destination=self.remembrancer,
+                    memo=message,
+                    compress=True,
+                    encrypt=encrypt
+                )
 
-                # Extract transaction information
-                transaction_info = generic_pft_utilities.extract_transaction_info_from_response_object(response=response)
+                transaction_info = generic_pft_utilities.extract_transaction_info_from_response_object(response=responses[-1])
                 clean_string = transaction_info['clean_string']
 
-                # Prepare the response message
-                response_message = f"Message sent to remembrancer successfully. Last chunk details:\n{clean_string}"
+                mode = "Encrypted message" if encrypt else "Message"
+                await interaction.followup.send(
+                    f"{mode} sent to remembrancer successfully. Last chunk details:\n{clean_string}", 
+                    ephemeral=True
+                )
 
-                # Send the response
-                await interaction.followup.send(response_message, ephemeral=True)
+            except HandshakeRequiredException:
+                try:
+                    # Initiate handshake protocol
+                    print(f"MyClient.pf_log_encrypted: Handshake required for {interaction.user.name}. Initiating handshake protocol.")
+                    
+                    handshake_response = generic_pft_utilities.send_handshake(
+                        wallet_seed=seed,
+                        user_name=user_name,
+                        destination=self.remembrancer
+                    )
+
+                    await interaction.followup.send(
+                        "Encryption handshake initiated. Please wait a few moments for the handshake to be processed.",
+                        ephemeral=True
+                    )
+
+                    # Verification loop
+                    handshake_verified = False
+                    print(f"MyClient.pf_remembrancer: Attempting to verify handshake receipt from remembrancer ({self.remembrancer}) for {interaction.user.name}...")
+                    for attempt in range(constants.TRANSACTION_VERIFICATION_ATTEMPTS):
+                        print(f"MyClient.pf_remembrancer: Attempt {attempt+1} of {constants.TRANSACTION_VERIFICATION_ATTEMPTS}...")
+
+                        # Check for remembrancer's handshake response
+                        _, received_key = self.generic_pft_utilities.get_handshake_for_address(
+                            wallet=self.generic_pft_utilities.spawn_wallet_from_seed(seed=seed),
+                            destination=self.remembrancer
+                        )
+
+                        if received_key:
+                            handshake_verified = True
+                            print(f"MyClient.pf_remembrancer: Handshake verified after {attempt+1} attempts, proceeding with message send...")
+                            break
+                        
+                        await asyncio.sleep(constants.TRANSACTION_VERIFICATION_WAIT_TIME)
+
+                    if handshake_verified:
+                        await interaction.followup.send(
+                            "Handshake verification timed out. Please try sending your message again.",
+                            ephemeral=True
+                        )
+                        return
+
+                    response = generic_pft_utilities.send_memo(
+                        wallet_seed=seed,
+                        user_name=user_name,
+                        destination=self.remembrancer,
+                        memo=message,
+                        compress=True,
+                        encrypt=encrypt
+                    )
+
+                    transaction_info = generic_pft_utilities.extract_transaction_info_from_response_object(response=response)
+                    clean_string = transaction_info['clean_string']
+
+                    mode = "Encrypted message" if encrypt else "Message"
+                    await interaction.followup.send(
+                        f"{mode} sent to remembrancer successfully. Last chunk details:\n{clean_string}", 
+                        ephemeral=True
+                    )
+
+                except Exception as e:
+                    await interaction.followup.send(
+                        f"An error occurred while initiating the encryption handshake protocol: {str(e)}", 
+                        ephemeral=True
+                    )
+
             except Exception as e:
                 await interaction.followup.send(f"An error occurred while sending the message: {str(e)}", ephemeral=True)
         
@@ -594,6 +660,7 @@ class MyClient(discord.Client):
             # Pass the client instance to the modal
             await interaction.response.send_modal(SeedModal(client=self))
             print(f"Seed storage command executed by {interaction.user.name}")
+
         # Sync the commands to the guild
         await self.tree.sync(guild=guild)
         print(f"MyClient.setup_hook: Slash commands synced to guild ID: {guild_id}")
@@ -906,7 +973,8 @@ class MyClient(discord.Client):
 ### Transaction
 1. /xrp_send: Send XRP to a destination address with a memo.
 2. /pf_send: Open a transaction form to send PFT tokens with a memo.
-3. /pf_log: take notes re your workflows 
+3. /pf_log: take notes re your workflows
+4. /pf_log_encrypted: take encrypted notes re your workflows
 
 ## Post Fiat operates on a Google Document.
 1. Place your Funded Wallet Address at the top of the Google Document 

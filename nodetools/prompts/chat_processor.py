@@ -24,9 +24,9 @@ class ChatProcessor:
         #valid_cue = full_message_cue[full_message_cue['account'].apply(lambda x: x in top_accounts)].copy()
         #valid_cue#['cleaned_message'[.apply(lambda x: 
         incoming_messages= full_message_cue[(full_message_cue['account'].apply(lambda x: x in top_accounts)) 
-        & (full_message_cue['message_type'].apply(lambda x: x =="INCOMING"))]
+        & (full_message_cue['direction'].apply(lambda x: x =="INCOMING"))]
         messages_to_work = incoming_messages[incoming_messages['cleaned_message'].apply(lambda x: 'ODV' in x)].copy()
-        responses = full_message_cue[full_message_cue['message_type']=='OUTGOING'].copy()
+        responses = full_message_cue[full_message_cue['direction']=='OUTGOING'].copy()
         responses['memo_type']=responses['memo_type'].apply(lambda x: x.replace('_response',''))
         responses['sent']=1
         response_map= responses.groupby('memo_type').last()

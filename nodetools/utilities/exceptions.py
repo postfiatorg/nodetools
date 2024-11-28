@@ -43,3 +43,11 @@ class InsufficientXrpBalanceException(Exception):
     def __init__(self, xrp_address):
         self.xrp_address = xrp_address
         super().__init__(f"Insufficient XRP balance: {xrp_address}")
+
+# MEMO EXCEPTIONS
+
+class HandshakeRequiredException(Exception):
+    """ This exception is raised when a handshake is required for an encrypted memo to be sent"""
+    def __init__(self, destination):
+        self.destination = destination
+        super().__init__(f"Cannot encrypt message: no handshake received from {destination}")

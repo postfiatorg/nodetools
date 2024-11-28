@@ -35,7 +35,7 @@ class SecretType(Enum):
     def get_secret_key(cls, secret_type):
         """Maps secret type to credential key"""
         mapping = {
-            cls.REMEMBRANCER: f'{NETWORK_CONFIG.remembrancer_address}__v1xrpsecret',
+            cls.REMEMBRANCER: f'{NETWORK_CONFIG.remembrancer_name}__v1xrpsecret',
             cls.NODE: f'{NETWORK_CONFIG.node_name}__v1xrpsecret'
         }
         return mapping[secret_type]

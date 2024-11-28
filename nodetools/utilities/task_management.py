@@ -23,7 +23,7 @@ import matplotlib.pyplot as plt
 from matplotlib.dates import DateFormatter
 import matplotlib.ticker as ticker
 import nodetools.utilities.constants as constants
-from nodetools.utilities.credentials import CredentialManager
+from nodetools.utilities.credentials import CredentialManager, SecretType
 from nodetools.utilities.exceptions import *
 
 class PostFiatTaskGenerationSystem:
@@ -48,6 +48,7 @@ class PostFiatTaskGenerationSystem:
 
             # Use network-specific node address
             self.node_address = self.network_config.node_address
+            self.remembrancer_address = self.network_config.remembrancer_address
 
             # Initialize node wallet
             self.node_wallet = self.generic_pft_utilities.spawn_wallet_from_seed(
@@ -161,108 +162,6 @@ class PostFiatTaskGenerationSystem:
         result = pd.concat(copies, ignore_index=True)
         result['unique_index'] = range(len(result))
         return result 
-
-    def _send_and_track_transaction(
-            self,
-            wallet: Wallet,
-            memo: str,
-            destination: str,
-            amount: int,
-            tracking_set: set,
-            tracking_tuple: tuple
-        ) -> bool:
-        """Send transaction and track for verification if successful.
-        
-        Args:
-            wallet: XRPL wallet instance to send from
-            memo: Formatted memo object for the transaction
-            destination: Destination address for transaction
-            amount: Amount of PFT to send
-            tracking_set: Set to add tracking tuple to if successful
-            tracking_tuple: Tuple of (user_account, memo_type, datetime) for verification
-            
-        Returns:
-            bool: True if transaction was sent and verified, False otherwise
-        """
-        try:
-            # Send transaction
-            response = self.generic_pft_utilities.send_PFT_with_info(
-                sending_wallet=wallet,
-                amount=amount,
-                memo=memo,
-                destination_address=destination
-            )
-
-            # Track for verification if successful
-            if self.generic_pft_utilities.verify_transaction_response(response):
-                tracking_set.add(tracking_tuple)
-                return True
-            else:
-                print(f"PostFiatTaskGenerationSystem._send_and_track_transactions: Failed to verify transaction to {destination}")
-                return False
-            
-        except Exception as e:
-            print(f"PostFiatTaskGenerationSystem._send_and_track_transactions: Error sending transaction to {destination}: {e}")
-            return False
-
-    def _verify_transactions(
-            self, 
-            items_to_verify: set, 
-            transaction_type: str, 
-            verification_predicate: callable
-        ) -> pd.DataFrame:
-        """Generic verification loop for transactions.
-        
-        Args:
-            items_to_verify: Set of (user_account, memo_type, datetime) tuples
-            transaction_type: String description for logging
-            verification_predicate: Function that takes (txn, user, memo_type, time) 
-                                and returns bool
-        
-        Returns:
-            Set of items that couldn't be verified
-        """
-        if not items_to_verify:
-            return items_to_verify
-        
-        print(f"PostFiatTaskGenerationSystem._verify_transactions: Verifying {len(items_to_verify)} {transaction_type}")
-        max_attempts = constants.TRANSACTION_VERIFICATION_ATTEMPTS
-        attempt = 0
-
-        while attempt < max_attempts and items_to_verify:
-            attempt += 1
-            print(f"PostFiatTaskGenerationSystem._verify_transactions: Verification attempt {attempt} of {max_attempts}")
-
-            time.sleep(constants.TRANSACTION_VERIFICATION_WAIT_TIME)
-
-            # Force sync of database
-            self.generic_pft_utilities.sync_pft_transaction_history()
-
-            # Get latest transactions
-            latest_txns = self.generic_pft_utilities.get_memo_detail_df_for_account(
-                account_address=self.node_address,
-                pft_only=False
-            )
-
-            # Check all pending items
-            verified_items = set()
-            for user_account, memo_type, request_time in items_to_verify:
-                print(f"PostFiatTaskGenerationSystem._verify_transactions: Checking for task {memo_type} for {user_account} at {request_time}")
-
-                # Apply the verification predicate
-                if verification_predicate(latest_txns, user_account, memo_type, request_time):
-                    print(f"Verified {memo_type} for {user_account} after {attempt} attempts")
-                    verified_items.add((user_account, memo_type, request_time))
-
-            # Remove verified items from the set
-            items_to_verify -= verified_items
-
-        if items_to_verify:
-            print(f"PostFiatTaskGenerationSystem._verify_transactions: WARNING: Could not verify {len(items_to_verify)} {transaction_type} after {max_attempts} attempts")
-            for user_account, memo_type, _ in items_to_verify:
-                print(f"PostFiatTaskGenerationSystem._verify_transactions: - User: {user_account}, Task: {memo_type}")
-
-        return items_to_verify  
 
     def discord__initiation_rite(
             self, 
@@ -414,7 +313,7 @@ class PostFiatTaskGenerationSystem:
 
                     # Send and track reward
                     # tracking tuple is (user_account, memo_type, datetime)
-                    _ = self._send_and_track_transaction(
+                    _ = self.generic_pft_utilities.send_and_track_transaction(
                         wallet=node_wallet,
                         memo=memo,
                         destination=row['user_account'],
@@ -438,7 +337,7 @@ class PostFiatTaskGenerationSystem:
                 return not reward_txns.empty and reward_txns['datetime'].max() > request_time
             
             # Use generic verification loop
-            self._verify_transactions(
+            self.generic_pft_utilities.verify_transactions(
                 items_to_verify=rewards_to_verify,
                 transaction_type='initiation reward',
                 verification_predicate=verify_reward
@@ -1172,7 +1071,7 @@ class PostFiatTaskGenerationSystem:
                         memo_to_send = row['memo_to_send']
 
                     # Send and track task
-                    _ = self._send_and_track_transaction(
+                    _ = self.generic_pft_utilities.send_and_track_transaction(
                         wallet=node_wallet,
                         memo=memo_to_send,
                         destination=row['user_account'],
@@ -1196,7 +1095,7 @@ class PostFiatTaskGenerationSystem:
                 return not task_txns.empty and task_txns['datetime'].max() > request_time
             
             # Use generic verification loop
-            _ = self._verify_transactions(
+            _ = self.generic_pft_utilities.verify_transactions(
                 items_to_verify=tasks_to_verify,
                 transaction_type='task proposals',
                 verification_predicate=verify_task
@@ -1357,7 +1256,7 @@ class PostFiatTaskGenerationSystem:
                     continue
 
                 # Send and track verification prompt
-                _ = self._send_and_track_transaction(
+                _ = self.generic_pft_utilities.send_and_track_transaction(
                     wallet=node_wallet,
                     memo=row['memo_to_send'],
                     destination=row['user_account'],
@@ -1377,7 +1276,7 @@ class PostFiatTaskGenerationSystem:
                 return not prompt_txns.empty and prompt_txns['datetime'].max() > request_time
             
             # Use generic verification loop
-            _ = self._verify_transactions(
+            _ = self.generic_pft_utilities.verify_transactions(
                 items_to_verify=prompts_to_verify,
                 transaction_type='verification prompt',
                 verification_predicate=verify_prompt
@@ -1678,7 +1577,7 @@ class PostFiatTaskGenerationSystem:
                     reward_to_dispatch = int(np.max([reward_to_dispatch,constants.MIN_REWARD_AMOUNT]))
 
                     # Send and track reward
-                    _ = self._send_and_track_transaction(
+                    _ = self.generic_pft_utilities.send_and_track_transaction(
                         wallet=node_wallet,
                         memo=memo_to_send,
                         destination=destination_address,
@@ -1698,7 +1597,7 @@ class PostFiatTaskGenerationSystem:
                     return not reward_txns.empty and reward_txns['datetime'].max() > request_time
 
                 # Use generic verification loop
-                _ = self._verify_transactions(
+                _ = self.generic_pft_utilities.verify_transactions(
                     items_to_verify=rewards_to_verify,
                     transaction_type='reward response',
                     verification_predicate=verify_reward
@@ -1706,6 +1605,81 @@ class PostFiatTaskGenerationSystem:
 
         except Exception as e:
             print(f"PostFiatTaskManagement.process_reward_queue: Error processing reward queue: {e}")
+
+    # TODO: This is somewhat outside of the scope of the Task generation system, but it works for now
+    def process_handshake_queue(self):
+        """Process pending handshakes and respond with remembrancer's public key"""
+        try:
+            # Get all transactions for the node
+            all_remembrancer_transactions = self.generic_pft_utilities.get_memo_detail_df_for_account(
+                account_address=self.remembrancer_address,
+                pft_only=False
+            )
+
+            # Filter for handshake requests that have not been responded to
+            handshake_requests = all_remembrancer_transactions[
+                (all_remembrancer_transactions['memo_type'] == constants.SystemMemoType.HANDSHAKE.value) &
+                (all_remembrancer_transactions['destination'] == self.remembrancer_address) &
+                ~all_remembrancer_transactions['account'].isin(  # Exclude accounts that have received responses
+                    all_remembrancer_transactions[
+                        (all_remembrancer_transactions['memo_type'] == constants.SystemMemoType.HANDSHAKE.value) &
+                        (all_remembrancer_transactions['account'] == self.remembrancer_address)
+                    ]['destination'].unique()
+                )
+            ]
+
+            if handshake_requests.empty:
+                return
+            
+            # Get remembrancer wallet for sending responses
+            print(f"PostFiatTaskManagement.process_handshake_queue: Spawning remembrancer wallet for sending handshake responses")
+            remembrancer_wallet = self.generic_pft_utilities.spawn_wallet_from_seed(
+                self.cred_manager.get_credential(f'{self.network_config.remembrancer_name}__v1xrpsecret')
+            )
+
+            handshakes_to_verify = set()
+
+            # Process each handshake request
+            for _, request in handshake_requests.iterrows():
+                sender_address = request['account']
+
+                print(f"PostFiatTaskManagement.process_handshake_queue: Processing handshake for sender: {sender_address}")
+                ecdh_key = self.cred_manager.get_ecdh_public_key(SecretType.REMEMBRANCER)
+
+                handshake_memo = self.generic_pft_utilities.construct_handshake_memo(
+                    user=sender_address,
+                    ecdh_public_key=ecdh_key
+                )
+
+                # Send and track handshake
+                _ = self.generic_pft_utilities.send_and_track_transaction(
+                    wallet=remembrancer_wallet,
+                    memo=handshake_memo,
+                    destination=sender_address,
+                    amount=1,
+                    tracking_set=handshakes_to_verify,
+                    tracking_tuple=(sender_address, constants.SystemMemoType.HANDSHAKE.value, request['datetime'])
+                )
+
+            # Define verification predicate
+            def verify_handshake(txn_df, user_account, memo_type, request_time):
+                handshake_txns = txn_df[
+                    (txn_df['memo_type'] == constants.SystemMemoType.HANDSHAKE.value) &
+                    (txn_df['account'] == self.node_address) &
+                    (txn_df['destination'] == user_account) &
+                    (txn_df['datetime'] >= request_time)
+                ]
+                return not handshake_txns.empty and handshake_txns['datetime'].max() > request_time
+
+            # Use generic verification loop
+            _ = self.generic_pft_utilities.verify_transactions(
+                items_to_verify=handshakes_to_verify,
+                transaction_type='handshake response',
+                verification_predicate=verify_handshake
+            )
+
+        except Exception as e:
+            print(f"PostFiatTaskManagement.process_handshake_queue: Error processing handshake queue: {e}")
     
     def run_queue_processing(self):
         """
@@ -1739,6 +1713,13 @@ class PostFiatTaskGenerationSystem:
                     self.process_verification_queue()
                 except Exception as e:
                     print(f"PostFiatTaskManagement.run_queue_processing: Error processing verification queue: {e}")
+
+                # Process handshakes
+                try:
+                    # TODO: This is somewhat outside of the scope of the Task generation system, but it works for now
+                    self.process_handshake_queue()
+                except Exception as e:
+                    print(f"PostFiatTaskManagement.run_queue_processing: Error processing handshake queue: {e}")
 
                 time.sleep(1)  # 1 second delay
 
