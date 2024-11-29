@@ -34,6 +34,7 @@ from xrpl.core.keypairs.ed25519 import ED25519
 from cryptography.fernet import Fernet
 from nodetools.security.hash_tools import derive_shared_secret
 from nodetools.performance.monitor import PerformanceMonitor
+import inspect
 
 # TODO: Add loguru as dependency and use it for all logging
 
@@ -74,7 +75,7 @@ class GenericPFTUtilities:
             self.open_ai_request_tool = OpenAIRequestTool()
             self.monitor = PerformanceMonitor()
             self.__class__._initialized = True
-            print("---Initialized GenericPFTUtilities---")
+            # print("--------------------------------Initialized GenericPFTUtilities--------------------------------\n")
 
     @staticmethod
     def convert_ripple_timestamp_to_datetime(ripple_timestamp = 768602652):
@@ -578,7 +579,7 @@ class GenericPFTUtilities:
             
         Returns:
             DataFrame containing transaction history with memo details
-        """
+        """    
         dbconnx = self.db_connection_manager.spawn_sqlalchemy_db_connection_for_user(username = self.node_name)
 
         query = """
@@ -782,10 +783,7 @@ class GenericPFTUtilities:
             self.sync_pft_transaction_history()
 
             # Get latest transactions
-            latest_txns = self.get_account_memo_history(
-                account_address=self.node_address,
-                pft_only=False
-            )
+            memo_history = self.get_account_memo_history(account_address=self.node_address, pft_only=False)
 
             # Check all pending items
             verified_items = set()
@@ -793,7 +791,7 @@ class GenericPFTUtilities:
                 print(f"GenericPFTUtilities._verify_transactions: Checking for task {memo_type} for {user_account} at {request_time}")
 
                 # Apply the verification predicate
-                if verification_predicate(latest_txns, user_account, memo_type, request_time):
+                if verification_predicate(memo_history, user_account, memo_type, request_time):
                     print(f"GenericPFTUtilities._verify_transactions: Verified {memo_type} for {user_account} after {attempt} attempts")
                     verified_items.add((user_account, memo_type, request_time))
 
@@ -870,10 +868,10 @@ class GenericPFTUtilities:
         print(f"GenericPFTUtilities.get_handshake_for_address: Checking handshake status between {wallet.address} and {destination}")
 
         # Get wallet's memo history
-        account_memo_detail_df = self.get_account_memo_history(account_address=wallet.address)
+        memo_history = self.get_account_memo_history(account_address=wallet.address)
 
         # Filter for handshakes
-        handshakes = account_memo_detail_df[account_memo_detail_df['memo_type'] == constants.SystemMemoType.HANDSHAKE.value]
+        handshakes = memo_history[memo_history['memo_type'] == constants.SystemMemoType.HANDSHAKE.value]
 
         if handshakes.empty:
             print(f"GenericPFTUtilities.get_handshake_for_address: No handshakes found for {wallet.address}")
@@ -1140,7 +1138,7 @@ class GenericPFTUtilities:
         return last_response
 
     def get_all_account_compressed_messages(self, account_address):
-        all_account_memos = self.get_account_memo_history(account_address=account_address, pft_only=True)
+        memo_history = self.get_account_memo_history(account_address=account_address, pft_only=True)
         def try_fix_compressed_string(compressed_string):
             """
             Attempts to fix common issues with compressed strings
@@ -1197,8 +1195,8 @@ class GenericPFTUtilities:
                 print('failed')
                 pass
             return decompressed_string
-        all_account_memos = self.get_account_memo_history(account_address=account_address, pft_only=True)
-        all_chunk_messages = all_account_memos[(all_account_memos['converted_memos'].apply(lambda x: 'chunk_' in x['MemoData']))].copy()
+        memo_history = self.get_account_memo_history(account_address=account_address, pft_only=True)
+        all_chunk_messages = memo_history[(memo_history['converted_memos'].apply(lambda x: 'chunk_' in x['MemoData']))].copy()
         all_chunk_messages['memo_data_raw']= all_chunk_messages['converted_memos'].apply(lambda x: x['MemoData']).astype(str)
         all_chunk_messages['message_id']=all_chunk_messages['converted_memos'].apply(lambda x: x['MemoType'])
         decompression_df = all_chunk_messages[['memo_type','memo_data_raw']].copy()
@@ -1620,16 +1618,16 @@ class GenericPFTUtilities:
         update_thread.daemon = True
         update_thread.start()
 
-    def get_all_cached_transactions_related_to_account(self, account_address):
-        dbconnx = self.db_connection_manager.spawn_sqlalchemy_db_connection_for_user(username=self.node_name)
-        query = f"""
-        SELECT * FROM postfiat_tx_cache
-        WHERE account = '{account_address}' OR destination = '{account_address}'
-        """
-        full_transaction_history = pd.read_sql(query, dbconnx)
-        full_transaction_history['meta']= full_transaction_history['meta'].apply(lambda x: json.loads(x))
-        full_transaction_history['tx_json']= full_transaction_history['tx_json'].apply(lambda x: json.loads(x))
-        return full_transaction_history
+    # def get_all_cached_transactions_related_to_account(self, account_address):
+    #     dbconnx = self.db_connection_manager.spawn_sqlalchemy_db_connection_for_user(username=self.node_name)
+    #     query = f"""
+    #     SELECT * FROM postfiat_tx_cache
+    #     WHERE account = '{account_address}' OR destination = '{account_address}'
+    #     """
+    #     full_transaction_history = pd.read_sql(query, dbconnx)
+    #     full_transaction_history['meta']= full_transaction_history['meta'].apply(lambda x: json.loads(x))
+    #     full_transaction_history['tx_json']= full_transaction_history['tx_json'].apply(lambda x: json.loads(x))
+    #     return full_transaction_history
 
     def get_all_transactions_for_active_wallets(self):
         """ This gets all the transactions for active post fiat wallets""" 
@@ -1835,14 +1833,12 @@ class GenericPFTUtilities:
             str or None: Most recent Google Doc link or None if not found
         """
         try:
-            memo_df = self.get_account_memo_history(
-                account_address=wallet.classic_address,
-                pft_only=False
-            )
-            context_docs = memo_df[
-                (memo_df['memo_type'].apply(lambda x: constants.SystemMemoType.GOOGLE_DOC_CONTEXT_LINK.value in str(x))) &
-                (memo_df['account'] == wallet.classic_address) &
-                (memo_df['transaction_result'] == "tesSUCCESS")
+            memo_history = self.get_account_memo_history(account_address=wallet.classic_address, pft_only=False)
+
+            context_docs = memo_history[
+                (memo_history['memo_type'].apply(lambda x: constants.SystemMemoType.GOOGLE_DOC_CONTEXT_LINK.value in str(x))) &
+                (memo_history['account'] == wallet.classic_address) &
+                (memo_history['transaction_result'] == "tesSUCCESS")
             ]
             
             if len(context_docs) > 0:
@@ -2083,7 +2079,7 @@ class GenericPFTUtilities:
             print(f"Failed to get recent user memos for account {account_address}: {e}")
             return json.dumps({})
 
-    def get_full_user_context_string(self, account_address):
+    def get_full_user_context_string(self, account_address: str, memo_history: pd.DataFrame):
         """Get all core elements of a user's post fiat interactions.
         Returns a context string even if some elements fail to generate.
         Logs specific failures for debugging while allowing the function to continue.
@@ -2093,9 +2089,7 @@ class GenericPFTUtilities:
         MAX_REWARDS_IN_CONTEXT = constants.MAX_REWARDS_IN_CONTEXT
         MAX_CHUNK_MESSAGES_IN_CONTEXT = constants.MAX_CHUNK_MESSAGES_IN_CONTEXT
 
-        # Get base account info dataframe
-        all_account_info = self.get_account_memo_history(account_address=account_address).sort_values('datetime')
-        all_account_info['simple_date']= all_account_info['datetime'].apply(lambda x: pd.to_datetime(x.date()))
+        memo_history = memo_history.sort_values('datetime')
 
         # Initialize core elements
         core_element_outstanding_tasks = ''
@@ -2107,7 +2101,7 @@ class GenericPFTUtilities:
 
         try:
             # Retrieve outstanding task frame
-            proposal_acceptance_pairs_df = self.get_proposal_acceptance_pairs(account_memo_detail_df=all_account_info).tail(MAX_ACCEPTANCES_IN_CONTEXT)
+            proposal_acceptance_pairs_df = self.get_proposal_acceptance_pairs(account_memo_detail_df=memo_history).tail(MAX_ACCEPTANCES_IN_CONTEXT)
             if proposal_acceptance_pairs_df.empty:
                 print(f'GenericPFTUtilities.get_full_user_context_string: No proposals or acceptances found for {account_address}')
                 core_element_outstanding_tasks = "No proposals or acceptances found."
@@ -2119,7 +2113,7 @@ class GenericPFTUtilities:
 
         try:
             # Retrieve refusal frame
-            proposal_refusal_pairs_df = self.get_proposal_refusal_pairs(account_memo_detail_df=all_account_info).tail(MAX_REFUSALS_IN_CONTEXT)
+            proposal_refusal_pairs_df = self.get_proposal_refusal_pairs(account_memo_detail_df=memo_history).tail(MAX_REFUSALS_IN_CONTEXT)
             if proposal_refusal_pairs_df.empty:
                 print(f'GenericPFTUtilities.get_full_user_context_string: No proposals or refusals found for {account_address}')
                 core_element__refusal_frame = "No proposals or refusals found."
@@ -2131,7 +2125,7 @@ class GenericPFTUtilities:
 
         try:
             # Retrieve rewards
-            reward_map = self.get_reward_data(all_account_info=all_account_info)
+            reward_map = self.get_reward_data(all_account_info=memo_history)
             weekly_totals, reward_summaries = reward_map['reward_ts'], reward_map['reward_summaries']
 
             if reward_summaries.empty:
@@ -2151,7 +2145,7 @@ class GenericPFTUtilities:
 
         try:
             # Retrieve google doc text
-            google_url = list(all_account_info[all_account_info['memo_type'].apply(
+            google_url = list(memo_history[memo_history['memo_type'].apply(
                 lambda x: constants.SystemMemoType.GOOGLE_DOC_CONTEXT_LINK.value in x
             )]['memo_data'])[0]
             core_element__google_doc_text= self.get_google_doc_text(google_url)
@@ -2220,25 +2214,25 @@ THIS MESSAGE WILL AUTO DELETE IN 60 SECONDS
 
     def generate_basic_balance_info_string_for_account_address(self, account_address = 'r3UHe45BzAVB3ENd21X9LeQngr4ofRJo5n'):
         try:
-            all_account_info =self.get_account_memo_history(account_address=account_address)
+            memo_history =self.get_account_memo_history(account_address=account_address)
         except:
             pass
         monthly_pft_reward_avg=0
         weekly_pft_reward_avg=0
         try:
-            reward_ts = self.get_reward_data(all_account_info=all_account_info)
+            reward_ts = self.get_reward_data(all_account_info=memo_history)
             monthly_pft_reward_avg = list(reward_ts['reward_ts'].tail(4).mean())[0]
             weekly_pft_reward_avg = list(reward_ts['reward_ts'].tail(1).mean())[0]
         except:
             pass
         number_of_transactions =0
         try:
-            number_of_transactions = len(all_account_info['memo_type'])
+            number_of_transactions = len(memo_history['memo_type'])
         except:
             pass
         user_name=''
         try:
-            user_name = list(all_account_info[all_account_info['direction']=='OUTGOING']['memo_format'].mode())[0]
+            user_name = list(memo_history[memo_history['direction']=='OUTGOING']['memo_format'].mode())[0]
         except:
             pass
         
@@ -2385,21 +2379,18 @@ PFT WEEKLY AVG:   {weekly_pft_reward_avg}
         This takes in an account address and outputs the current state of its outstanding tasks.
         Returns empty string for accounts with no PFT-related transactions.
         """ 
-        all_memos = self.get_account_memo_history(
-            account_address=account_address,
-            pft_only=True
-        )
-        if all_memos.empty:
+        memo_history = self.get_account_memo_history(account_address=account_address, pft_only=True)
+        if memo_history.empty:
             return ""
         
-        all_memos.sort_values('datetime', inplace=True)
+        memo_history.sort_values('datetime', inplace=True)
         outstanding_task_df = self.get_proposal_acceptance_pairs(
-            account_memo_detail_df=all_memos, 
+            account_memo_detail_df=memo_history, 
             include_pending=True,
             include_rewarded=False
         )
         task_string = self.format_outstanding_tasks(outstanding_task_df)
-        verification_df = self.get_verification_df(account_memo_detail_df=all_memos)
+        verification_df = self.get_verification_df(account_memo_detail_df=memo_history)
         verification_string = self.format_outstanding_verification_df(verification_requirements=verification_df)
         full_postfiat_outstanding_string=f"{task_string}\n{verification_string}"
         return full_postfiat_outstanding_string
@@ -2614,13 +2605,10 @@ PFT WEEKLY AVG:   {weekly_pft_reward_avg}
             return False
         
         try: 
-            memo_detail = self.get_account_memo_history(
-                account_address=wallet.classic_address, 
-                pft_only=False
-            )
-            successful_initiations = memo_detail[
-                (memo_detail['memo_type'] == constants.SystemMemoType.INITIATION_RITE.value) & 
-                (memo_detail['transaction_result'] == "tesSUCCESS")
+            memo_history = self.get_account_memo_history(account_address=wallet.classic_address, pft_only=False)
+            successful_initiations = memo_history[
+                (memo_history['memo_type'] == constants.SystemMemoType.INITIATION_RITE.value) & 
+                (memo_history['transaction_result'] == "tesSUCCESS")
             ]
             return len(successful_initiations) > 0
         except Exception as e:
@@ -2670,9 +2658,9 @@ PFT WEEKLY AVG:   {weekly_pft_reward_avg}
         outgoing_message = ''
         try:
 
-            all_wallet_transactions = self.get_account_memo_history(wallet_address).copy().sort_values('datetime')
-            incoming_message = all_wallet_transactions[all_wallet_transactions['direction']=='INCOMING'].tail(1).transpose()
-            outgoing_message = all_wallet_transactions[all_wallet_transactions['direction']=='OUTGOING'].tail(1).transpose()
+            memo_history = self.get_account_memo_history(wallet_address).copy().sort_values('datetime')
+            incoming_message = memo_history[memo_history['direction']=='INCOMING'].tail(1).transpose()
+            outgoing_message = memo_history[memo_history['direction']=='OUTGOING'].tail(1).transpose()
             def format_transaction_message(transaction):
                 """
                 Format a transaction message with specified elements.
@@ -2691,10 +2679,10 @@ PFT WEEKLY AVG:   {weekly_pft_reward_avg}
                         f"XRPL Explorer: {url_mask.format(hash=transaction['hash'])}")
             
             # Format incoming message
-            incoming_message = format_transaction_message(all_wallet_transactions[all_wallet_transactions['direction']=='INCOMING'].tail(1).iloc[0])
+            incoming_message = format_transaction_message(memo_history[memo_history['direction']=='INCOMING'].tail(1).iloc[0])
             
             # Format outgoing message
-            outgoing_message = format_transaction_message(all_wallet_transactions[all_wallet_transactions['direction']=='OUTGOING'].tail(1).iloc[0])
+            outgoing_message = format_transaction_message(memo_history[memo_history['direction']=='OUTGOING'].tail(1).iloc[0])
         except:
             pass
         # Create a dictionary with the formatted messages
@@ -2866,7 +2854,8 @@ PFT WEEKLY AVG:   {weekly_pft_reward_avg}
         top_score_frame['account_name']=account_name_map
         user_account_map = {}
         for x in list(top_score_frame.index):
-            user_account_string = self.get_full_user_context_string(account_address=x)
+            memo_history = self.get_account_memo_history(account_address=x)
+            user_account_string = self.get_full_user_context_string(account_address=x, memo_history=memo_history)
             print(x)
             user_account_map[x]= user_account_string
         agency_system_prompt = """ You are the Post Fiat Agency Score calculator.
@@ -3149,9 +3138,9 @@ PFT WEEKLY AVG:   {weekly_pft_reward_avg}
     # TODO: Consider deprecating, not used anywhere
     def get_full_google_text_and_verification_stub_for_account(self,address_to_work = 'rwmzXrN3Meykp8pBd3Boj1h34k8QGweUaZ'):
 
-        all_account_memos = self.get_account_memo_history(account_address=address_to_work)
+        memo_history = self.get_account_memo_history(account_address=address_to_work)
         google_acount = self.get_most_recent_google_doc_for_user(account_memo_detail_df
-                                                                                =all_account_memos, 
+                                                                                =memo_history, 
                                                                                 address=address_to_work)
         user_full_google_acccount = self.generic_pft_utilities.get_google_doc_text(share_link=google_acount)
         #verification #= user_full_google_acccount.split('VERIFICATION SECTION START')[-1:][0].split('VERIFICATION SECTION END')[0]

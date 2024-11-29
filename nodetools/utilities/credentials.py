@@ -59,6 +59,7 @@ class CredentialManager:
             self.encryption_key = self._derive_encryption_key(password)
             self._key_expiry = time.time() + KEY_EXPIRY if KEY_EXPIRY >= 0 else float('inf')
             self._initialize_database()
+            # print("---------------------------------Initialized CredentialManager---------------------------------\n")
             self.__class__._initialized = True
 
     def _check_key_expiry(self):

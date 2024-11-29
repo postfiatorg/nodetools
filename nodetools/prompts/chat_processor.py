@@ -51,7 +51,8 @@ class ChatProcessor:
         accounts_to_map = list(message_cue['account'].unique())
         account_context_map={}
         for xaccount in accounts_to_map:
-            account_context_map[xaccount]=self.generic_pft_utilities.get_full_user_context_string(xaccount)
+            memo_history = self.generic_pft_utilities.get_account_memo_history(account_address=xaccount)
+            account_context_map[xaccount]=self.generic_pft_utilities.get_full_user_context_string(xaccount, memo_history=memo_history)
         message_cue['user_context']=message_cue['account'].map(account_context_map)
         message_cue.set_index('memo_type',inplace=True)
         messages_to_work = list(message_cue.index)

@@ -25,7 +25,7 @@ class OpenAIRequestTool:
             self.async_client = AsyncOpenAI(api_key=cred_manager.get_credential('openai'))
             self.db_connection_manager = DBConnectionManager()
             self.__class__._initialized = True
-            print(f"---Initialized OpenAIRequestTool---")
+            # print(f"---------------------------------Initialized OpenAIRequestTool---------------------------------\n")
             print(f"The primary model for OpenAI is currently {constants.DEFAULT_OPEN_AI_MODEL}")
 
     def run_chat_completion_demo(self):

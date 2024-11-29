@@ -88,10 +88,9 @@ class AggregatedMeasurement:
                 print(f"AggregatedMeasurement.end_track: Unsupported metric type: {metric_type}")
                 return None
             
-        self.count += 1
         self.data.update({
             'type': metric_type.type_name,
-            'value': self.total / self.count,  # Average value
+            'value': self.total / self.count if self.count > 0 else 0,  # Average value
             'unit': metric_type.unit
         })
         return None # Indicate no immediate logging needed
@@ -132,7 +131,7 @@ class AggregatedMeasurement:
             }
         
         return {
-            'avg': self.total / self.count,
+            'avg': self.total / self.count if self.count > 0 else 0,
             'count': self.count,
             'min': self.min_value if self.min_value != float('inf') else 0,
             'max': self.max_value if self.max_value != float('-inf') else 0
@@ -147,13 +146,16 @@ class PerformanceMonitor:
             cls._instance = super().__new__(cls)
         return cls._instance
 
-    def __init__(self, output_dir: Optional[Path] = None, time_window: Optional[int] = None):
+    def __init__(self, output_dir: Optional[Path] = None, time_window: Optional[int] = None, save_log: bool = False):
         if not self.__class__._initialized:
             self.output_dir = output_dir or Path.cwd() / "performance_logs"
-            self.output_dir.mkdir(parents=True, exist_ok=True)
             self.measurements: Dict[str, PerfMeasurement] = {}
             self.aggregated_measurements: Dict[str, AggregatedMeasurement] = {}
             self.time_window = time_window or 10  # Default to 10 seconds
+            self.save_log = save_log
+            if save_log:
+                self.output_dir.mkdir(parents=True, exist_ok=True)
+            print("---------------------------------Initialized PerformanceMonitor--------------------------------")
             self.__class__._initialized = True
 
     def log_measurement(self, process: str, metric_type: str, stats: dict, unit: str):
@@ -167,9 +169,10 @@ class PerformanceMonitor:
             "unit": unit
         }
 
-        log_file = self.output_dir / f"performance_log_{datetime.now().strftime('%Y%m%d')}.jsonl"
-        with open(log_file, "a") as f:
-            f.write(json.dumps(log_entry) + "\n")
+        if self.save_log:
+            log_file = self.output_dir / f"performance_log_{datetime.now().strftime('%Y%m%d')}.jsonl"
+            with open(log_file, "a") as f:
+                f.write(json.dumps(log_entry) + "\n")
 
         print(
             f"PerformanceMonitor.log_measurement: {timestamp} - {process}: "
@@ -257,7 +260,12 @@ class PerformanceMonitor:
     def start(self):
         """Start the performance monitor"""
         PerformanceMonitor._instance = self
-        print(f"Performance monitoring started. Logs will be written to {self.output_dir}")
+        message = f"Performance monitoring started. "
+        if self.save_log:
+            message += f"Performance logs will be written to {self.output_dir}"
+        else:
+            message += "Performance log saving is currently disabled."
+        print(message)
 
     def stop(self):
         """Stop the performance monitor"""
