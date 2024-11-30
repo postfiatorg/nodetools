@@ -123,6 +123,20 @@ class CredentialManager:
             if row:
                 return self._decrypt_value(row[0])
         return None
+    
+    def list_credentials(self) -> list[str]:
+        """List all credential keys stored in the database.
+
+        Returns:
+            list[str]: List of credential keys
+        """
+        self._check_key_expiry()
+
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT key FROM credentials;")
+            rows = cursor.fetchall()
+            return [row[0] for row in rows]
 
     @staticmethod
     def _derive_encryption_key(password):

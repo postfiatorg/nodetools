@@ -1771,4 +1771,5 @@ if __name__ == "__main__":
 
     # Initialize and run the bot
     client = init_bot()
-    client.run(cred_manager.get_credential('discordbot_secret'))
+    discord_credential_key = "discordbot_testnet_secret" if constants.USE_TESTNET else "discordbot_secret"
+    client.run(cred_manager.get_credential(discord_credential_key))
