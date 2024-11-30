@@ -5,12 +5,9 @@ from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
 from cryptography.hazmat.primitives.hashes import SHA256
 from cryptography.fernet import Fernet
 import time
-import shutil
-from xrpl.core import addresscodec
-from xrpl.core.keypairs.ed25519 import ED25519
-from nodetools.security.hash_tools import derive_shared_secret
 from enum import Enum
 import nodetools.utilities.constants as constants
+from nodetools.utilities.encryption import MessageEncryption
 
 CREDENTIALS_DB = "credentials.sqlite"
 BACKUP_SUFFIX = ".sqlite_backup"
@@ -158,23 +155,12 @@ class CredentialManager:
             cursor.execute("SELECT key, encrypted_value FROM credentials;")
             rows = cursor.fetchall()
         return {key: self._decrypt_value(value) for key, value in rows}
-
-    def _get_raw_entropy(self, secret_type: SecretType):
-        """Returns the raw entropy bytes from the specified wallet secret"""
-        secret_key = SecretType.get_secret_key(secret_type)
-        wallet_secret = self.get_credential(secret_key)
-        decoded_seed = addresscodec.decode_seed(wallet_secret)
-        return decoded_seed[0]
-    
-    def _derive_ecdh_public_key(self, secret_type: SecretType):
-        """Derives ECDH public key from wallet secret"""
-        raw_entropy = self._get_raw_entropy(secret_type)
-        public_key, _ = ED25519.derive_keypair(raw_entropy, is_validator=False)
-        return public_key
     
     def get_ecdh_public_key(self, secret_type: SecretType):
         """Returns ECDH public key as hex string"""
-        return self._derive_ecdh_public_key(secret_type)
+        secret_key = SecretType.get_secret_key(secret_type)
+        wallet_secret = self.get_credential(secret_key)
+        return MessageEncryption.get_ecdh_public_key_from_seed(wallet_secret)
 
     def get_shared_secret(self, received_key: str, secret_type: SecretType) -> bytes: 
         """
@@ -191,8 +177,9 @@ class CredentialManager:
             ValueError: if received_key is invalid or secret not found
         """
         try:
-            raw_entropy = self._get_raw_entropy(secret_type)
-            return derive_shared_secret(public_key_hex=received_key, seed_bytes=raw_entropy)
+            secret_key = SecretType.get_secret_key(secret_type)
+            wallet_secret = self.get_credential(secret_key)
+            return MessageEncryption.get_shared_secret(received_key, wallet_secret)
         except Exception as e:
             raise ValueError(f"Failed to derive shared secret: {e}") from e
     

@@ -26,6 +26,7 @@ import nodetools.utilities.constants as constants
 from nodetools.utilities.credentials import CredentialManager, SecretType
 from nodetools.utilities.exceptions import *
 from nodetools.performance.monitor import PerformanceMonitor
+from nodetools.prompts.chat_processor import ChatProcessor
 
 class PostFiatTaskGenerationSystem:
     _instance = None
@@ -46,6 +47,7 @@ class PostFiatTaskGenerationSystem:
             self.openai_request_tool= OpenAIRequestTool()
             self.generic_pft_utilities = GenericPFTUtilities()
             self.db_connection_manager = DBConnectionManager()
+            self.chat_processor = ChatProcessor()
 
             # Use network-specific node address
             self.node_address = self.network_config.node_address
@@ -154,20 +156,6 @@ class PostFiatTaskGenerationSystem:
     #         required_post_fiat_generation_cue['google_doc']= required_post_fiat_generation_cue.apply(lambda x: self.get_most_recent_google_doc_for_user(user_account=x['user_account'],
     #                                                                                                 all_account_info=all_account_info),axis=1)
     #     return required_post_fiat_generation_cue 
-    
-    def create_multiple_copies_of_df(self, df, n_copies):
-        """
-        Create multiple copies of a dataframe and add a unique index column.
-        Args:
-        df (pd.DataFrame): Input dataframe
-        n_copies (int): Number of copies to create
-        Returns:
-        pd.DataFrame: Concatenated dataframe with unique index column
-        """
-        copies = [df.copy() for _ in range(n_copies)]
-        result = pd.concat(copies, ignore_index=True)
-        result['unique_index'] = range(len(result))
-        return result 
 
     def discord__initiation_rite(
             self, 
@@ -616,7 +604,7 @@ class PostFiatTaskGenerationSystem:
             ~postfiat_request_queue['memo_type'].map(has_proposal)
         ]
 
-    def phase_1_a__initial_task_generation_api_args(
+    def _phase_1_a__initial_task_generation_api_args(
             self,
             user_context: str,
             user_request: str = 'I want something related to the Post Fiat Network'
@@ -642,7 +630,7 @@ class PostFiatTaskGenerationSystem:
                     - User prompt from phase_1_a__user with context inserted
         
         Example:
-            >>> args = phase_1_a__initial_task_generation_api_args(
+            >>> args = _phase_1_a__initial_task_generation_api_args(
             ...     user_context="User history and preferences...",
             ...     user_request="REQUEST_POST_FIAT ___ Create a data analysis task"
             ... )
@@ -678,7 +666,22 @@ class PostFiatTaskGenerationSystem:
             ]}
         return api_args
     
-    def phase_1_a__n_post_fiat_task_generator(
+    @staticmethod
+    def _create_multiple_copies_of_df(df, n_copies):
+        """
+        Create multiple copies of a dataframe and add a unique index column.
+        Args:
+        df (pd.DataFrame): Input dataframe
+        n_copies (int): Number of copies to create
+        Returns:
+        pd.DataFrame: Concatenated dataframe with unique index column
+        """
+        copies = [df.copy() for _ in range(n_copies)]
+        result = pd.concat(copies, ignore_index=True)
+        result['unique_index'] = range(len(result))
+        return result 
+    
+    def _phase_1_a__n_post_fiat_task_generator(
             self, 
             user_context: str,
             user_request: str = 'I want something related to the Post Fiat Network',
@@ -718,7 +721,7 @@ class PostFiatTaskGenerationSystem:
             "Analyze Bitcoin price data .. 50\nCreate ML model .. 75\nVisualize trends .. 60"
         """
         # Generate API arguments for task creation
-        user_api_arg = self.phase_1_a__initial_task_generation_api_args(
+        user_api_arg = self._phase_1_a__initial_task_generation_api_args(
             user_context=user_context,
             user_request=user_request
         )
@@ -726,7 +729,7 @@ class PostFiatTaskGenerationSystem:
         # Prepare DataFrame for parallel processing
         copy_frame = pd.DataFrame([[user_api_arg]])
         copy_frame.columns=['api_args']
-        full_copy_df = self.create_multiple_copies_of_df(df=copy_frame, n_copies= n_copies)
+        full_copy_df = self._create_multiple_copies_of_df(df=copy_frame, n_copies= n_copies)
 
         # Make parallel API calls
         async_dict_to_work = full_copy_df.set_index('unique_index')['api_args'].to_dict()
@@ -768,7 +771,7 @@ class PostFiatTaskGenerationSystem:
             dict: Task generation results or pd.NA if generation fails
         """
         try:
-            result = self.phase_1_a__n_post_fiat_task_generator(
+            result = self._phase_1_a__n_post_fiat_task_generator(
                 user_context=user_context,
                 user_request=user_request,
                 n_copies=n_copies
@@ -785,7 +788,7 @@ class PostFiatTaskGenerationSystem:
             print(f"PostFiatTaskManagement._generate_task_safely: Task generation failed for {account}: {e}")
             return pd.NA 
         
-    def phase_1_b__task_selection_api_args(
+    def _phase_1_b__task_selection_api_args(
             self,
             task_string: str,
             user_context: str
@@ -936,7 +939,7 @@ class PostFiatTaskGenerationSystem:
 
             # Prepare API args for selection
             unprocessed_pf_requests['final_api_arg'] = unprocessed_pf_requests.apply(
-                lambda row: self.phase_1_b__task_selection_api_args(
+                lambda row: self._phase_1_b__task_selection_api_args(
                     task_string=row['task_string'],
                     user_context=row['full_user_context']
                 ),
@@ -1707,7 +1710,14 @@ class PostFiatTaskGenerationSystem:
                 except Exception as e:
                     print(f"PostFiatTaskManagement.run_queue_processing: Error processing handshake queue: {e}")
 
-                time.sleep(1)  # 1 second delay
+                # Process chat queue
+                try:
+                    # TODO: This is somewhat outside of the scope of the Task generation system, but it works for now
+                    self.chat_processor.process_chat_queue()
+                except Exception as e:
+                    print(f"PostFiatTaskManagement.run_queue_processing: Error processing chat queue: {e}")
+
+                time.sleep(constants.TRANSACTION_HISTORY_SLEEP_TIME) 
 
         self.processing_thread = threading.Thread(target=process_all_tasks)
         self.processing_thread.daemon = True

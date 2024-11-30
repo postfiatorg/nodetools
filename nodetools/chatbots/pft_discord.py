@@ -9,6 +9,7 @@ from nodetools.utilities.task_management import PostFiatTaskGenerationSystem
 from nodetools.utilities.generic_pft_utilities import GenericPFTUtilities
 from nodetools.chatbots.personas.odv import odv_system_prompt
 from nodetools.performance.monitor import PerformanceMonitor
+from nodetools.prompts.chat_processor import ChatProcessor
 import asyncio
 from datetime import datetime, time
 import pytz
@@ -374,7 +375,7 @@ class MyClient(discord.Client):
 
                         # Check for remembrancer's handshake response
                         _, received_key = self.generic_pft_utilities.get_handshake_for_address(
-                            wallet=self.generic_pft_utilities.spawn_wallet_from_seed(seed=seed),
+                            wallet_address=self.generic_pft_utilities.spawn_wallet_from_seed(seed=seed).address,
                             destination=self.remembrancer
                         )
 

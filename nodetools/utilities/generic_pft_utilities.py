@@ -29,10 +29,9 @@ from decimal import Decimal
 import traceback
 from nodetools.utilities.exceptions import *
 from typing import Optional
-from xrpl.core import addresscodec
-from xrpl.core.keypairs.ed25519 import ED25519
+
 from cryptography.fernet import Fernet
-from nodetools.security.hash_tools import derive_shared_secret
+from nodetools.utilities.encryption import MessageEncryption
 from nodetools.performance.monitor import PerformanceMonitor
 import inspect
 
@@ -71,7 +70,8 @@ class GenericPFTUtilities:
             self.db_connection_manager = DBConnectionManager()
             self.credential_manager = CredentialManager()
             self.establish_post_fiat_tx_cache_as_hash_unique()
-            self.post_fiat_holder_df = self.output_post_fiat_holder_df()  # TODO: This isn't being used
+            self._holder_df_lock = threading.Lock()
+            self._post_fiat_holder_df = None
             self.open_ai_request_tool = OpenAIRequestTool()
             self.monitor = PerformanceMonitor()
             self.__class__._initialized = True
@@ -102,7 +102,7 @@ class GenericPFTUtilities:
         except UnicodeDecodeError:
             return bytes_object  # Return the raw bytes if it cannot decode as utf-8
 
-    def output_post_fiat_holder_df(self):
+    def output_post_fiat_holder_df(self) -> pd.DataFrame:
         """ This function outputs a detail of all accounts holding PFT tokens
         with a float of their balances as pft_holdings. note this is from
         the view of the issuer account so balances appear negative so the pft_holdings 
@@ -534,40 +534,6 @@ class GenericPFTUtilities:
                     break
 
         return all_transactions
-
-    # TODO: Consider deprecating, not used anywhere
-    def get_account_transactions__retry_version(self, account_address='r3UHe45BzAVB3ENd21X9LeQngr4ofRJo5n',
-                                ledger_index_min=-1,
-                                ledger_index_max=-1,
-                                max_attempts=3,
-                                retry_delay=.2,
-                                num_runs=5):
-        
-        longest_transactions = []
-        
-        for i in range(num_runs):
-            print(f"Run {i+1}/{num_runs}")
-            
-            transactions = self.get_account_transactions__exhaustive(
-                account_address=account_address,
-                ledger_index_min=ledger_index_min,
-                ledger_index_max=ledger_index_max,
-                max_attempts=max_attempts,
-                retry_delay=retry_delay
-            )
-            
-            num_transactions = len(transactions)
-            print(f"Number of transactions: {num_transactions}")
-            
-            if num_transactions > len(longest_transactions):
-                longest_transactions = transactions
-            
-            if i < num_runs - 1:
-                print(f"Waiting for {retry_delay} seconds before the next run...")
-                time.sleep(retry_delay)
-        
-        print(f"Longest list of transactions: {len(longest_transactions)} transactions")
-        return longest_transactions
     
     @PerformanceMonitor.measure('get_account_memo_history')
     def get_account_memo_history(self, account_address: str, pft_only: bool = True) -> pd.DataFrame:
@@ -622,89 +588,6 @@ class GenericPFTUtilities:
         df['memo_data'] = df['converted_memos'].apply(lambda x: x.get('MemoData', ''))
 
         return df
-
-    # # TODO: Deprecate this
-    # @PerformanceMonitor.measure('get_memo_detail_df_for_account')
-    # def get_memo_detail_df_for_account(self, account_address, pft_only=True):
-    #     full_transaction_history = self.get_all_cached_transactions_related_to_account(account_address=account_address)
-    #     if full_transaction_history.empty:
-    #         return pd.DataFrame()
-
-    #     validated_tx=full_transaction_history
-
-    #     # Extract transaction result from meta
-    #     validated_tx['transaction_result'] = validated_tx['meta'].apply(lambda x: x.get('TransactionResult', ''))
-
-    #     validated_tx['has_memos'] = validated_tx['tx_json'].apply(lambda x: 'Memos' in x.keys())
-    #     live_memo_tx = validated_tx[validated_tx['has_memos'] == True].copy()
-    #     live_memo_tx['main_memo_data']=live_memo_tx['tx_json'].apply(lambda x: x['Memos'][0]['Memo'])
-    #     live_memo_tx['converted_memos']=live_memo_tx['main_memo_data'].apply(lambda x: 
-    #                                                                          self.convert_memo_dict__generic(x))
-    #     live_memo_tx['direction']=np.where(live_memo_tx['destination']==account_address, 'INCOMING','OUTGOING')
-    #     live_memo_tx['user_account']= live_memo_tx[['destination','account']].sum(1).apply(
-    #         lambda x: str(x).replace(account_address,'')
-    #     )
-    #     live_memo_tx['datetime'] = pd.to_datetime(live_memo_tx['close_time_iso']).dt.tz_localize(None)
-    #     if pft_only:
-    #         live_memo_tx= live_memo_tx[live_memo_tx['tx_json'].apply(lambda x: self.pft_issuer in str(x))].copy()
-    #     live_memo_tx['reference_account']=account_address
-    #     live_memo_tx['unique_key']=live_memo_tx['reference_account']+'__'+live_memo_tx['hash']
-    #     def try_get_pft_absolute_amount(x):
-    #         try:
-    #             return x['DeliverMax']['value']
-    #         except:
-    #             return 0
-    #     def try_get_memo_info(x,info):
-    #         try:
-    #             return x[info]
-    #         except:
-    #             return ''
-    #     live_memo_tx['pft_absolute_amount']=live_memo_tx['tx_json'].apply(lambda x: try_get_pft_absolute_amount(x)).astype(float)
-    #     live_memo_tx['memo_format']=live_memo_tx['converted_memos'].apply(lambda x: try_get_memo_info(x,"MemoFormat"))
-    #     live_memo_tx['memo_type']= live_memo_tx['converted_memos'].apply(lambda x: try_get_memo_info(x,"MemoType"))
-    #     live_memo_tx['memo_data']=live_memo_tx['converted_memos'].apply(lambda x: try_get_memo_info(x,"MemoData"))
-    #     live_memo_tx['pft_sign']= np.where(live_memo_tx['direction'] =='INCOMING',1,-1)
-    #     live_memo_tx['directional_pft'] = live_memo_tx['pft_sign']*live_memo_tx['pft_absolute_amount']
-    #     live_memo_tx['simple_date']=pd.to_datetime(live_memo_tx['datetime'].apply(lambda x: x.strftime('%Y-%m-%d')))
-    #     return live_memo_tx
-
-    # def convert_memo_detail_df_into_essential_caching_details(self, memo_details_df):
-    #     # TODO: Consider deprecating. This is not used anywhere
-    #     """ 
-    #     Takes a memo detail df and converts it into a raw detail df to be cached to a local db
-    #     """
-    #     full_memo_detail = memo_details_df
-    #     full_memo_detail['pft_absolute_amount']=full_memo_detail['tx'].apply(lambda x: x['Amount']['value']).astype(float)
-    #     full_memo_detail['memo_format']=full_memo_detail['converted_memos'].apply(lambda x: x['MemoFormat'])
-    #     full_memo_detail['memo_type']= full_memo_detail['converted_memos'].apply(lambda x: x['MemoType'])
-    #     full_memo_detail['memo_data']=full_memo_detail['converted_memos'].apply(lambda x: x['MemoData'])
-    #     full_memo_detail['pft_sign']= np.where(full_memo_detail['direction'] =='INCOMING',1,-1)
-    #     full_memo_detail['directional_pft'] = full_memo_detail['pft_sign']*full_memo_detail['pft_absolute_amount']
-
-    #     return full_memo_detail
-
-    def send_PFT_chunk_message__seed_based(self, wallet_seed, user_name, full_text, destination_address):
-        # TODO: Consider deprecating, not used anywhere
-        """ This takes a large message compresses the strings and sends it in hex to another address.
-        Is based on a user spawned wallet and sends 1 PFT per chunk
-        user_name = 'spm_typhus',full_text = big_string, destination_address='rKZDcpzRE5hxPUvTQ9S3y2aLBUUTECr1vN'"""     
-        
-        wallet = self.spawn_wallet_from_seed(wallet_seed)
-        task_id = 'chunkm__'+self.generate_random_utf8_friendly_hash(6)
-        
-        all_chunks = self.split_text_into_chunks(full_text)
-        send_memo_map = {}
-        for xchunk in all_chunks:
-            chunk_num = int(xchunk.split('chunk_')[1].split('__')[0])
-            send_memo_map[chunk_num] = self.construct_basic_postfiat_memo(user=user_name, task_id=task_id, 
-                                        full_output=self.compress_string(xchunk))
-        yarr=[]
-        for xkey in send_memo_map.keys():
-            xresp = self.send_PFT_with_info(sending_wallet=wallet, amount=1, memo=send_memo_map[xkey], 
-                                destination_address=destination_address, url=None)
-            yarr.append(xresp)
-        final_response = yarr[-1] if yarr else None
-        return final_response
     
     def send_and_track_transaction(
             self,
@@ -804,77 +687,20 @@ class GenericPFTUtilities:
                 print(f"GenericPFTUtilities._verify_transactions: - User: {user_account}, Task: {memo_type}")
 
         return items_to_verify  
-    
-    # # TODO: Consider deprecating, not used anywhere
-    # def send_PFT_chunk_message(self,user_name,full_text, destination_address):
-    #     """
-    #     This takes a large message compresses the strings and sends it in hex to another address.
-    #     Is based on a user spawned wallet and sends 1 PFT per chunk
-    #     user_name = 'spm_typhus',full_text = big_string, destination_address='rKZDcpzRE5hxPUvTQ9S3y2aLBUUTECr1vN'"""     
-        
-    #     wallet = self.spawn_user_wallet_based_on_name(user_name)
-    #     task_id = 'chunkm__'+self.generate_random_utf8_friendly_hash(6)
-        
-    #     all_chunks = self.split_text_into_chunks(full_text)
-    #     send_memo_map = {}
-    #     for xchunk in all_chunks:
-    #         chunk_num = int(xchunk.split('chunk_')[1].split('__')[0])
-    #         send_memo_map[chunk_num] = self.construct_basic_postfiat_memo(user=user_name, task_id=task_id, 
-    #                                     full_output=self.compress_string(xchunk))
-    #     yarr=[]
-    #     for xkey in send_memo_map.keys():
-    #         xresp = self.send_PFT_with_info(sending_wallet=wallet, amount=1, memo=send_memo_map[xkey], 
-    #                             destination_address=destination_address, url=None)
-    #         yarr.append(xresp)
-    #     final_response = yarr[-1] if yarr else None
-    #     return final_response
-    
-    # # TODO: Consider deprecating, not used anywhere
-    # def get_all_account_chunk_messages(self,account_address='rKZDcpzRE5hxPUvTQ9S3y2aLBUUTECr1vN'):
-    #     """ This pulls in all the chunk messages an account has received and cleans and aggregates
-    #     the messages for easy digestion - implementing sorts, and displays some information associated with the messages """ 
-    #     all_account_memos = self.get_memo_detail_df_for_account(account_address=account_address, pft_only=True)
-    #     all_chunk_messages = all_account_memos[all_account_memos['converted_memos'].apply(lambda x: 
-    #                                                                     'chunkm__' in x['MemoType'])].copy()
-        
-    #     all_chunk_messages['memo_data_raw']= all_chunk_messages['converted_memos'].apply(lambda x: x['MemoData']).astype(str)
-    #     all_chunk_messages['message_id']=all_chunk_messages['converted_memos'].apply(lambda x: x['MemoType'])
-    #     all_chunk_messages['decompressed_strings']=all_chunk_messages['memo_data_raw'].apply(lambda x: self.decompress_string(x))
-    #     all_chunk_messages['chunk_num']=all_chunk_messages['decompressed_strings'].apply(lambda x: x.split('chunk_')[1].split('__')[0]).astype(int)
-    #     all_chunk_messages.sort_values(['message_id','chunk_num'], inplace=True)
-    #     grouped_memo_data = all_chunk_messages[['decompressed_strings','message_id']].groupby('message_id').sum().copy()
-    #     def remove_chunks(text):
-    #         # Use regular expression to remove all occurrences of chunk_1__, chunk_2__, etc.
-    #         cleaned_text = re.sub(r'chunk_\d+__', '', text)
-    #         return cleaned_text
-    #     grouped_memo_data['cleaned_message']=grouped_memo_data['decompressed_strings'].apply(lambda x: remove_chunks(x))
-    #     grouped_pft_value = all_chunk_messages[['message_id','directional_pft']].groupby('message_id').sum()['directional_pft']
-        
-    #     grouped_memo_data['PFT']=grouped_pft_value
-    #     last_slice = all_chunk_messages.groupby('message_id').last().copy()
-        
-    #     grouped_memo_data['datetime']=last_slice['datetime']
-    #     grouped_memo_data['hash']=last_slice['hash']
-    #     grouped_memo_data['message_type']= last_slice['message_type']
-    #     grouped_memo_data['destination']= last_slice['destination']
-    #     grouped_memo_data['account']= last_slice['account']
-    #     return grouped_memo_data
 
-    def get_handshake_for_address(self, wallet: Wallet, destination: str) -> tuple[bool, Optional[str]]:
+    def get_handshake_for_address(self, wallet_address: str, destination: str) -> tuple[bool, Optional[str]]:
         """Returns (handshake_sent, their_public_key) tuple where:
         - handshake_sent: Whether we've already sent our public key
         - received_key: Their ECDH public key if they've sent it, None otherwise
         """
-        print(f"GenericPFTUtilities.get_handshake_for_address: Checking handshake status between {wallet.address} and {destination}")
-
         # Get wallet's memo history
-        memo_history = self.get_account_memo_history(account_address=wallet.address)
+        memo_history = self.get_account_memo_history(account_address=wallet_address)
 
         # Filter for handshakes
         handshakes = memo_history[memo_history['memo_type'] == constants.SystemMemoType.HANDSHAKE.value]
 
         if handshakes.empty:
-            print(f"GenericPFTUtilities.get_handshake_for_address: No handshakes found for {wallet.address}")
+            print(f"GenericPFTUtilities.get_handshake_for_address: No handshakes found for {wallet_address}")
             return False, None
         
         # Get handshakes sent FROM the user TO this address
@@ -892,78 +718,20 @@ class GenericPFTUtilities:
    
         received_key = None
         if not received_handshakes.empty:
-            print(f"GenericPFTUtilities.get_handshake_for_address: Found {len(received_handshakes)} received handshakes from {destination}")
             latest_received_handshake = received_handshakes.sort_values('datetime').iloc[-1]
             received_key = latest_received_handshake['memo_data']
-            print(f"GenericPFTUtilities.get_handshake_for_address: Most recent received handshake: {received_key[:8]}...")
 
         return handshake_sent, received_key
-    
-    @staticmethod
-    def _get_raw_entropy(wallet_seed: str) -> bytes:
-        """Returns the raw entropy bytes from the specified wallet secret"""
-        decoded_seed = addresscodec.decode_seed(wallet_seed)
-        return decoded_seed[0]
-
-    @staticmethod
-    def _get_ecdh_public_key(wallet: Wallet):
-        raw_entropy = GenericPFTUtilities._get_raw_entropy(wallet.seed)
-        ecdh_public_key, _ = ED25519.derive_keypair(raw_entropy, is_validator=False)
-        return ecdh_public_key
     
     def send_handshake(self, wallet_seed: str, user_name: str, destination: str):
         """Sends a handshake memo to establish encrypted communication"""
         print(f"GenericPFTUtilities.send_handshake: Spawning wallet for {user_name} to send handshake to {destination}")
         wallet = self.spawn_wallet_from_seed(wallet_seed)
-        ecdh_public_key = self._get_ecdh_public_key(wallet)
+        ecdh_public_key = MessageEncryption._get_ecdh_public_key(wallet_seed)
         print(f"GenericPFTUtilities.send_handshake: Sending handshake from {wallet.address} to {destination}: {ecdh_public_key[:8]}...")
         handshake = self.construct_handshake_memo(user=user_name, ecdh_public_key=ecdh_public_key)
         response = self.send_memo_single(wallet=wallet, destination=destination, memo=handshake)
         return response
-    
-    @staticmethod
-    def get_shared_secret(received_key: str, wallet_seed: str) -> bytes:
-        """
-        Derive a shared secret using ECDH
-        
-        Args:
-            received_key: public key received from another party
-            wallet_seed: Seed for the wallet to derive the shared secret
-
-        Returns:
-            bytes: The derived shared secret
-
-        Raises:
-            ValueError: if received_key is invalid or wallet_seed is invalid
-        """
-        try:
-            raw_entropy = GenericPFTUtilities._get_raw_entropy(wallet_seed)
-            return derive_shared_secret(public_key_hex=received_key, seed_bytes=raw_entropy)
-        except Exception as e:
-            raise ValueError(f"Failed to derive shared secret: {e}") from e
-
-    @staticmethod
-    def encrypt_memo(memo: str, shared_secret: str) -> str:
-        """ Encrypts a memo using a shared secret """
-        # Convert shared_secret to bytes if it isn't already
-        if isinstance(shared_secret, str):
-            shared_secret = shared_secret.encode()
-
-        # Generate the Fernet key from shared secret
-        key = base64.urlsafe_b64encode(hashlib.sha256(shared_secret).digest())
-        fernet = Fernet(key)
-
-        # Ensure memo is str before encoding to bytes
-        if isinstance(memo, str):
-            memo = memo.encode()
-        elif isinstance(memo, bytes):
-            pass
-        else:
-            raise ValueError(f"Memo must be string or bytes, not {type(memo)}")
-        
-        # Encrypt and return as string
-        encrypted_bytes = fernet.encrypt(memo)
-        return encrypted_bytes.decode()
 
     def send_memo(self, 
             wallet_seed: str, 
@@ -997,15 +765,14 @@ class GenericPFTUtilities:
         if encrypt:
             print(f"GenericPFTUtilities.send_memo: {user_name} requested encryption. Checking handshake status.")
             # Check handshake status
-            _, received_key = self.get_handshake_for_address(wallet, destination)
+            _, received_key = self.get_handshake_for_address(wallet_seed, destination)
 
             if not received_key:
                 raise HandshakeRequiredException(destination)
             
             # Derive shared secret and encrypt 
-            print(f"GenericPFTUtilities.send_memo: Deriving shared secret and encrypting memo.")
-            shared_secret = self.get_shared_secret(received_key, wallet.seed)
-            encrypted_memo = self.encrypt_memo(memo, shared_secret)
+            shared_secret = MessageEncryption.get_shared_secret(received_key, wallet_seed)
+            encrypted_memo = MessageEncryption.encrypt_memo(memo, shared_secret)
             memo = "WHISPER__" + encrypted_memo
 
         # Handle compression if requested
@@ -1138,7 +905,7 @@ class GenericPFTUtilities:
         return last_response
 
     def get_all_account_compressed_messages(self, account_address):
-        memo_history = self.get_account_memo_history(account_address=account_address, pft_only=True)
+
         def try_fix_compressed_string(compressed_string):
             """
             Attempts to fix common issues with compressed strings
@@ -1192,55 +959,51 @@ class GenericPFTUtilities:
                 # Convert the decompressed bytes to a string
                 decompressed_string = decompressed_data.decode('utf-8')
             except:
-                print('failed')
                 pass
             return decompressed_string
+            
         memo_history = self.get_account_memo_history(account_address=account_address, pft_only=True)
+
         all_chunk_messages = memo_history[(memo_history['converted_memos'].apply(lambda x: 'chunk_' in x['MemoData']))].copy()
+
+        if all_chunk_messages.empty:
+            return pd.DataFrame()
+        
+        # Extract raw memo data and message IDs
         all_chunk_messages['memo_data_raw']= all_chunk_messages['converted_memos'].apply(lambda x: x['MemoData']).astype(str)
         all_chunk_messages['message_id']=all_chunk_messages['converted_memos'].apply(lambda x: x['MemoType'])
+
+        # Create decompression dataframe
         decompression_df = all_chunk_messages[['memo_type','memo_data_raw']].copy()
-        #decompression_df['unchunked']=decompression_df['memo_data_raw'].apply(lambda x: x.split('__')[-1:][0])
+
+        # Extract chunk number
         decompression_df['chunk_number']=decompression_df['memo_data_raw'].apply(lambda x: x.split('__')[0])
-        import re
+
+        # Clean chunk header and prepare for decompression
         def clean_chunk_header(text):
             return re.sub(r'^chunk_\d+__(?:COMPRESSED__)?', '', text)
+        
         decompression_df['memo_data_unchunked']= decompression_df['memo_data_raw'].apply(lambda x: clean_chunk_header(x))
         decompression_df['fixed_string']=decompression_df['memo_data_unchunked'].apply(lambda x: try_fix_compressed_string(x))
+
+        # Group and reconstruct messages
         reconstituted = decompression_df[['memo_data_unchunked','memo_type']].groupby('memo_type').sum()
         reconstituted['cleaned_message']=reconstituted['memo_data_unchunked'].apply(lambda x: decompress_string(x))
-        output_df = reconstituted.reset_index()
-        #datetime, hash, direction, destination, account, PFT 
+
+        # Get metadata from last chunk of each message
         memo_last = all_chunk_messages.groupby('memo_type').last()[['datetime','hash','direction','account','destination']]
+
+        # Combine message content with metadata
         full_memo_df = pd.concat([reconstituted,memo_last],axis=1)
+
+        # Add PFT value
         pf_memo = all_chunk_messages[['directional_pft','memo_type']].groupby('memo_type').sum()['directional_pft']
         full_memo_df['PFT']=pf_memo
-        new_log_memo_df = full_memo_df.reset_index()
-        return new_log_memo_df
 
-    # TODO: Consider deprecating, not used anywhere
-    def process_memo_detail_df_to_daily_summary_df(self, memo_detail_df):
-        """_summary_
-        
-        Example Code to feed this 
-        all_memo_detail = self.get_memo_detail_df_for_account(account_address='r3UHe45BzAVB3ENd21X9LeQngr4ofRJo5n', pft_only=True)
-        """
-        all_memo_detail = memo_detail_df
-        ## THIS EXCLUDES CHUNK MESSAGES FROM THE DAILY SUMMARY
-        ### I THINK THIS IS LOGICAL BC CHUNK MESSAGES ARE INHERENTLY DUPLICATED
-        all_memo_detail = all_memo_detail[all_memo_detail['converted_memos'].apply(lambda x: 'chunkm__' not in str(x))].copy()
-        all_memo_detail['pft_absolute_value']=all_memo_detail['tx'].apply(lambda x: x['Amount']['value']).astype(float)
-        all_memo_detail['incoming_sign']=np.where(all_memo_detail['direction']=='INCOMING',1,-1)
-        all_memo_detail['pft_directional_value'] = all_memo_detail['incoming_sign'] * all_memo_detail['pft_absolute_value']
-        all_memo_detail['pft_transaction']=np.where(all_memo_detail['pft_absolute_value']>0,1,np.nan)
-        all_memo_detail['combined_memo_type_and_data']= all_memo_detail['converted_memos'].apply(lambda x: x['MemoType']+'  '+x['MemoData'])
-        output_frame = all_memo_detail[['datetime','pft_transaction','pft_directional_value',
-                                        'combined_memo_type_and_data','pft_absolute_value']].groupby('datetime').first()
-        output_frame.reset_index(inplace=True)
-        output_frame['raw_date']=pd.to_datetime(output_frame['datetime'].apply(lambda x: x.date()))
-        daily_grouped_output_frame = output_frame[['pft_transaction','pft_directional_value',
-                    'combined_memo_type_and_data','pft_absolute_value','raw_date']].groupby('raw_date').sum()
-        return {'daily_grouped_summary':daily_grouped_output_frame, 'raw_summary':output_frame}
+        # Return final dataframe
+        new_log_memo_df = full_memo_df.reset_index()
+    
+        return new_log_memo_df
     
     # TODO: Replace with get_latest_outgoing_context_doc_link (reference pftpyclient/task_manager/basic_tasks.py)
     def get_most_recent_google_doc_for_user(self, account_memo_detail_df, address):
@@ -1583,10 +1346,17 @@ class GenericPFTUtilities:
 
     def sync_pft_transaction_history(self):
         """ Syncs transaction history for all post fiat holders """
-        accounts_df = self.output_post_fiat_holder_df()
-        all_accounts = list(accounts_df['account'].unique())
+        with self._holder_df_lock:
+            self._post_fiat_holder_df = self.output_post_fiat_holder_df()
+            all_accounts = list(self._post_fiat_holder_df['account'].unique())
+
         for account in all_accounts:
             self.sync_pft_transaction_history_for_account(account_address=account)
+
+    def get_post_fiat_holder_df(self):
+        """Thread-safe getter for post_fiat_holder_df"""
+        with self._holder_df_lock:
+            return self._post_fiat_holder_df.copy()
 
     def run_transaction_history_updates(self):
         """
@@ -1631,7 +1401,7 @@ class GenericPFTUtilities:
 
     def get_all_transactions_for_active_wallets(self):
         """ This gets all the transactions for active post fiat wallets""" 
-        full_balance_df = self.output_post_fiat_holder_df()
+        full_balance_df = self.get_post_fiat_holder_df()
         all_active_foundation_users = full_balance_df[full_balance_df['balance'].astype(float)<=-2000].copy()
         
         # Get unique wallet addresses from the dataframe
