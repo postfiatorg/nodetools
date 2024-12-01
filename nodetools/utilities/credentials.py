@@ -7,13 +7,12 @@ from cryptography.fernet import Fernet
 import time
 from enum import Enum
 import nodetools.utilities.constants as constants
+import nodetools.utilities.configuration as config
 from nodetools.utilities.encryption import MessageEncryption
 
-CREDENTIALS_DB = "credentials.sqlite"
+CREDENTIALS_DB_FILENAME = "credentials.sqlite"
 BACKUP_SUFFIX = ".sqlite_backup"
 KEY_EXPIRY = -1  # No expiration by default
-
-NETWORK_CONFIG = constants.get_network_config()
 
 def get_credentials_directory():
     """Returns the path to the credentials directory, creating it if it doesn't exist"""
@@ -22,7 +21,7 @@ def get_credentials_directory():
     return creds_dir
 
 def get_database_path():
-    return get_credentials_directory() / CREDENTIALS_DB
+    return get_credentials_directory() / CREDENTIALS_DB_FILENAME
 
 class SecretType(Enum):
     REMEMBRANCER = "remembancer"
@@ -32,8 +31,8 @@ class SecretType(Enum):
     def get_secret_key(cls, secret_type):
         """Maps secret type to credential key"""
         mapping = {
-            cls.REMEMBRANCER: f'{NETWORK_CONFIG.remembrancer_name}__v1xrpsecret',
-            cls.NODE: f'{NETWORK_CONFIG.node_name}__v1xrpsecret'
+            cls.REMEMBRANCER: f'{config.get_node_config().remembrancer_name}__v1xrpsecret',
+            cls.NODE: f'{config.get_node_config().node_name}__v1xrpsecret'
         }
         return mapping[secret_type]
 
@@ -56,7 +55,7 @@ class CredentialManager:
             self.encryption_key = self._derive_encryption_key(password)
             self._key_expiry = time.time() + KEY_EXPIRY if KEY_EXPIRY >= 0 else float('inf')
             self._initialize_database()
-            # print("---------------------------------Initialized CredentialManager---------------------------------\n")
+            self.message_encryption = MessageEncryption.get_instance()
             self.__class__._initialized = True
 
     def _check_key_expiry(self):

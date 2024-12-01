@@ -1,3 +1,5 @@
+from decimal import Decimal
+from typing import Optional
 import binascii
 import datetime 
 import random
@@ -9,7 +11,6 @@ import numpy as np
 import re
 import json
 import threading
-nest_asyncio.apply()
 import requests
 import base64
 import brotli
@@ -21,23 +22,22 @@ from xrpl.models.transactions import Memo
 from xrpl.wallet import Wallet
 from xrpl.clients import JsonRpcClient
 from xrpl.models.requests import AccountInfo, AccountLines, AccountTx
+from nodetools.utilities.encryption import MessageEncryption
+from nodetools.performance.monitor import PerformanceMonitor
+from nodetools.utilities.address_service import AddressService
 from nodetools.ai.openai import OpenAIRequestTool
 from nodetools.utilities.db_manager import DBConnectionManager
 from nodetools.utilities.credentials import CredentialManager
 import nodetools.utilities.constants as constants
-from decimal import Decimal
-import traceback
+import nodetools.utilities.configuration as config
+from nodetools.utilities.base import BaseUtilities
 from nodetools.utilities.exceptions import *
-from typing import Optional
+from loguru import logger
 
-from cryptography.fernet import Fernet
-from nodetools.utilities.encryption import MessageEncryption
-from nodetools.performance.monitor import PerformanceMonitor
-import inspect
+nest_asyncio.apply()
 
-# TODO: Add loguru as dependency and use it for all logging
-
-class GenericPFTUtilities:
+class GenericPFTUtilities(BaseUtilities):
+    """Handles general PFT utilities and operations"""
     _instance = None
     _initialized = False
 
@@ -46,36 +46,40 @@ class GenericPFTUtilities:
             cls._instance = super().__new__(cls)
         return cls._instance
 
-    def __init__(self, node_name:str=None):
+    def __init__(self):
         if not self.__class__._initialized:
-            # Get network configuration
-            self.network_config = constants.get_network_config()
-
-            # Use network-specific node name or override
-            self.node_name = node_name or self.network_config.node_name
+            super().__init__()
+            # Get network and node configurations
+            self.network_config = config.get_network_config()
+            self.node_config = config.get_node_config()
+            self.pft_issuer = self.network_config.issuer_address
+            self.node_address = self.node_config.node_address
+            self.address_service = AddressService(self.network_config, self.node_config)
+            self.node_name = self.node_config.node_name
 
             # Determine endpoint with fallback logic
             self.primary_endpoint = (
-                self.network_config.local_node_url 
-                if constants.HAS_LOCAL_NODE and self.network_config.local_node_url is not None
+                self.network_config.local_rpc_url 
+                if config.RuntimeConfig.HAS_LOCAL_NODE and self.network_config.local_rpc_url is not None
                 else self.network_config.public_rpc_url
             )
-            print(f"Using primary endpoint: {self.primary_endpoint}")
-
-            # Set other network-specific attributes
-            self.pft_issuer = self.network_config.issuer_address
-            self.node_address = self.network_config.node_address
-
+            logger.debug(f"Using primary endpoint: {self.primary_endpoint}")
             # Initialize other components
             self.db_connection_manager = DBConnectionManager()
             self.credential_manager = CredentialManager()
-            self.establish_post_fiat_tx_cache_as_hash_unique()
-            self._holder_df_lock = threading.Lock()
-            self._post_fiat_holder_df = None
             self.open_ai_request_tool = OpenAIRequestTool()
             self.monitor = PerformanceMonitor()
+            self.message_encryption = MessageEncryption.get_instance(pft_utilities=self)
+            self.establish_post_fiat_tx_cache_as_hash_unique()  # TODO: Examine this
+            self._holder_df_lock = threading.Lock()
+            self._post_fiat_holder_df = None
+
+            # Register auto-handshake addresses from node config
+            for address in self.node_config.auto_handshake_addresses:
+                self.message_encryption.register_auto_handshake_wallet(address)
+                logger.debug(f"Registered auto-handshake address: {address}")
+
             self.__class__._initialized = True
-            # print("--------------------------------Initialized GenericPFTUtilities--------------------------------\n")
 
     @staticmethod
     def convert_ripple_timestamp_to_datetime(ripple_timestamp = 768602652):
@@ -212,7 +216,7 @@ class GenericPFTUtilities:
                 result.get('meta', {}).get('TransactionResult', '') == 'tesSUCCESS'
             )
         except Exception as e:
-            print(f"Error verifying transaction response: {e}")
+            logger.error(f"Error verifying transaction response: {e}")
             return False
 
     def verify_transaction_hash(self, tx_hash: str) -> bool:
@@ -237,7 +241,7 @@ class GenericPFTUtilities:
             return self.verify_transaction_response(tx_result)
         
         except Exception as e:
-            print(f"Error verifying transaction hash {tx_hash}: {e}")
+            logger.error(f"Error verifying transaction hash {tx_hash}: {e}")
             return False
 
     @staticmethod
@@ -400,49 +404,8 @@ class GenericPFTUtilities:
     def spawn_wallet_from_seed(seed):
         """ outputs wallet initialized from seed"""
         wallet = xrpl.wallet.Wallet.from_seed(seed)
-        print(f'-- Spawned wallet with address {wallet.address}')
+        logger.debug(f'-- Spawned wallet with address {wallet.address}')
         return wallet
-    
-    # TODO: self.mainnet_urls doesn't exist anymore. Also this method isn't used anywhere 
-    # def test_url_reliability(self, user_wallet, destination_address):
-    #     """_summary_
-    #     EXAMPLE
-    #     user_wallet = self.spawn_user_wallet_based_on_name(user_name='goodalexander')
-    #     url_reliability_df = self.test_url_reliability(user_wallet=user_wallet,destination_address='rKZDcpzRE5hxPUvTQ9S3y2aLBUUTECr1vN')
-    #     """
-    #     results = []
-
-    #     for url in self.mainnet_urls:
-    #         for i in range(7):
-    #             memo = self.construct_basic_postfiat_memo(
-    #                 user='test_tx', 
-    #                 task_id=f'999_{i}', 
-    #                 full_output=f'NETWORK FUNCTION __ {url}'
-    #             )
-    #             start_time = time.time()
-    #             try:
-    #                 self.send_PFT_with_info(
-    #                     sending_wallet=user_wallet, 
-    #                     amount=1, 
-    #                     memo=memo, 
-    #                     destination_address=destination_address, 
-    #                     url=url
-    #                 )
-    #                 success = True
-    #             except Exception as e:
-    #                 success = False
-    #                 print(f"Error: {e}")
-    #             end_time = time.time()
-    #             elapsed_time = end_time - start_time
-    #             results.append({
-    #                 'URL': url,
-    #                 'Test Number': i + 1,
-    #                 'Elapsed Time (s)': elapsed_time,
-    #                 'Success': success
-    #             })
-
-    #     df = pd.DataFrame(results)
-    #     return df
 
     def get_account_transactions(self, account_address='r3UHe45BzAVB3ENd21X9LeQngr4ofRJo5n',
                                  ledger_index_min=-1,
@@ -459,8 +422,8 @@ class GenericPFTUtilities:
 
         while max_iterations > 0:
             iteration_count += 1
-            print(f"Iteration: {iteration_count}")
-            print(f"Current Marker: {marker}")
+            logger.debug(f"GenericPFTUtilities.get_account_transactions: Iteration: {iteration_count}")
+            logger.debug(f"GenericPFTUtilities.get_account_transactions: Current Marker: {marker}")
 
             request = AccountTx(
                 account=account_address,
@@ -473,24 +436,24 @@ class GenericPFTUtilities:
 
             response = client.request(request)
             transactions = response.result.get("transactions", [])
-            print(f"Transactions fetched this batch: {len(transactions)}")
+            logger.debug(f"GenericPFTUtilities.get_account_transactions: Transactions fetched this batch: {len(transactions)}")
             all_transactions.extend(transactions)  # Add fetched transactions to the list
 
             if "marker" in response.result:  # Check if a marker is present for pagination
                 if response.result["marker"] == previous_marker:
-                    print("Pagination seems stuck, stopping the loop.")
+                    logger.warning("GenericPFTUtilities.get_account_transactions: Pagination seems stuck, stopping the loop.")
                     break  # Break the loop if the marker does not change
                 previous_marker = marker
                 marker = response.result["marker"]  # Update marker for the next batch
-                print("More transactions available. Fetching next batch...")
+                logger.debug("GenericPFTUtilities.get_account_transactions: More transactions available. Fetching next batch...")
             else:
-                print("No more transactions available.")
+                logger.debug("GenericPFTUtilities.get_account_transactions: No more transactions available.")
                 break  # Exit loop if no more transactions
 
             max_iterations -= 1  # Decrement the iteration counter
 
         if max_iterations == 0:
-            print("Reached the safety limit for iterations. Stopping the loop.")
+            logger.warning("GenericPFTUtilities.get_account_transactions: Reached the safety limit for iterations. Stopping the loop.")
 
         return all_transactions
     
@@ -524,13 +487,13 @@ class GenericPFTUtilities:
                 marker = response.result["marker"]
 
             except Exception as e:
-                print(f"Error occurred while fetching transactions (attempt {attempt + 1}): {str(e)}")
+                logger.error(f"GenericPFTUtilities.get_account_transactions: Error occurred while fetching transactions (attempt {attempt + 1}): {str(e)}")
                 attempt += 1
                 if attempt < max_attempts:
-                    print(f"Retrying in {retry_delay} seconds...")
+                    logger.debug(f"GenericPFTUtilities.get_account_transactions: Retrying in {retry_delay} seconds...")
                     time.sleep(retry_delay)
                 else:
-                    print("Max attempts reached. Transactions may be incomplete.")
+                    logger.warning("GenericPFTUtilities.get_account_transactions: Max attempts reached. Transactions may be incomplete.")
                     break
 
         return all_transactions
@@ -625,11 +588,11 @@ class GenericPFTUtilities:
                 tracking_set.add(tracking_tuple)
                 return True
             else:
-                print(f"GenericPFTUtilities._send_and_track_transactions: Failed to verify transaction to {destination}")
+                logger.warning(f"GenericPFTUtilities._send_and_track_transactions: Failed to verify transaction to {destination}")
                 return False
             
         except Exception as e:
-            print(f"GenericPFTUtilities._send_and_track_transactions: Error sending transaction to {destination}: {e}")
+            logger.error(f"GenericPFTUtilities._send_and_track_transactions: Error sending transaction to {destination}: {e}")
             return False
 
     def verify_transactions(
@@ -652,13 +615,13 @@ class GenericPFTUtilities:
         if not items_to_verify:
             return items_to_verify
         
-        print(f"GenericPFTUtilities._verify_transactions: Verifying {len(items_to_verify)} {transaction_type}")
+        logger.debug(f"GenericPFTUtilities._verify_transactions: Verifying {len(items_to_verify)} {transaction_type}")
         max_attempts = constants.TRANSACTION_VERIFICATION_ATTEMPTS
         attempt = 0
 
         while attempt < max_attempts and items_to_verify:
             attempt += 1
-            print(f"GenericPFTUtilities._verify_transactions: Verification attempt {attempt} of {max_attempts}")
+            logger.debug(f"GenericPFTUtilities._verify_transactions: Verification attempt {attempt} of {max_attempts}")
 
             time.sleep(constants.TRANSACTION_VERIFICATION_WAIT_TIME)
 
@@ -671,67 +634,55 @@ class GenericPFTUtilities:
             # Check all pending items
             verified_items = set()
             for user_account, memo_type, request_time in items_to_verify:
-                print(f"GenericPFTUtilities._verify_transactions: Checking for task {memo_type} for {user_account} at {request_time}")
+                logger.debug(f"GenericPFTUtilities._verify_transactions: Checking for task {memo_type} for {user_account} at {request_time}")
 
                 # Apply the verification predicate
                 if verification_predicate(memo_history, user_account, memo_type, request_time):
-                    print(f"GenericPFTUtilities._verify_transactions: Verified {memo_type} for {user_account} after {attempt} attempts")
+                    logger.debug(f"GenericPFTUtilities._verify_transactions: Verified {memo_type} for {user_account} after {attempt} attempts")
                     verified_items.add((user_account, memo_type, request_time))
 
             # Remove verified items from the set
             items_to_verify -= verified_items
 
         if items_to_verify:
-            print(f"GenericPFTUtilities._verify_transactions: WARNING: Could not verify {len(items_to_verify)} {transaction_type} after {max_attempts} attempts")
+            logger.warning(f"GenericPFTUtilities._verify_transactions: Could not verify {len(items_to_verify)} {transaction_type} after {max_attempts} attempts")
             for user_account, memo_type, _ in items_to_verify:
-                print(f"GenericPFTUtilities._verify_transactions: - User: {user_account}, Task: {memo_type}")
+                logger.warning(f"GenericPFTUtilities._verify_transactions: - User: {user_account}, Task: {memo_type}")
 
-        return items_to_verify  
-
-    def get_handshake_for_address(self, wallet_address: str, destination: str) -> tuple[bool, Optional[str]]:
-        """Returns (handshake_sent, their_public_key) tuple where:
-        - handshake_sent: Whether we've already sent our public key
-        - received_key: Their ECDH public key if they've sent it, None otherwise
-        """
-        # Get wallet's memo history
-        memo_history = self.get_account_memo_history(account_address=wallet_address)
-
-        # Filter for handshakes
-        handshakes = memo_history[memo_history['memo_type'] == constants.SystemMemoType.HANDSHAKE.value]
-
-        if handshakes.empty:
-            print(f"GenericPFTUtilities.get_handshake_for_address: No handshakes found for {wallet_address}")
-            return False, None
-        
-        # Get handshakes sent FROM the user TO this address
-        sent_handshakes = handshakes[
-            (handshakes['user_account'] == destination) & 
-            (handshakes['direction'] == 'OUTGOING')
-        ]
-        handshake_sent = not sent_handshakes.empty
-
-        # Get handshakes received FROM this address TO the user
-        received_handshakes = handshakes[
-            (handshakes['user_account'] == destination) &
-            (handshakes['direction'] == 'INCOMING')
-        ]
-   
-        received_key = None
-        if not received_handshakes.empty:
-            latest_received_handshake = received_handshakes.sort_values('datetime').iloc[-1]
-            received_key = latest_received_handshake['memo_data']
-
-        return handshake_sent, received_key
+        return items_to_verify
+    
+    def is_encrypted(self, memo: str):
+        """Check if a memo is encrypted"""
+        return self.message_encryption.is_encrypted(memo)
     
     def send_handshake(self, wallet_seed: str, user_name: str, destination: str):
         """Sends a handshake memo to establish encrypted communication"""
-        print(f"GenericPFTUtilities.send_handshake: Spawning wallet for {user_name} to send handshake to {destination}")
-        wallet = self.spawn_wallet_from_seed(wallet_seed)
-        ecdh_public_key = MessageEncryption._get_ecdh_public_key(wallet_seed)
-        print(f"GenericPFTUtilities.send_handshake: Sending handshake from {wallet.address} to {destination}: {ecdh_public_key[:8]}...")
-        handshake = self.construct_handshake_memo(user=user_name, ecdh_public_key=ecdh_public_key)
-        response = self.send_memo_single(wallet=wallet, destination=destination, memo=handshake)
-        return response
+        return self.message_encryption.send_handshake(source_seed=wallet_seed, user_name=user_name, destination=destination)
+    
+    def register_auto_handshake_wallet(self, wallet_address: str):
+        """Register a wallet address for automatic handshake responses."""
+        self.message_encryption.register_auto_handshake_wallet(wallet_address)
+
+    def get_auto_handshake_addresses(self) -> set[str]:
+        """Get a list of registered auto-handshake addresses"""
+        return self.message_encryption.get_auto_handshake_addresses()
+    
+    def get_pending_handshakes(self, address: str):
+        """Get pending handshakes for a specific address"""
+        memo_history = self.get_account_memo_history(account_address=address, pft_only=False)
+        return self.message_encryption.get_pending_handshakes(memo_history=memo_history, destination_address=address)
+
+    def get_handshake_for_address(self, remembrancer_address: str, account_address: str):
+        """Get handshake for a specific address"""
+        return self.message_encryption.get_handshake_for_address(remembrancer_address, account_address)
+    
+    def get_shared_secret(self, received_key: str, wallet_seed: str):
+        """Get shared secret for a received key and wallet seed"""
+        return self.message_encryption.get_shared_secret(received_key, wallet_seed)
+    
+    def process_encrypted_message(self, message: str, shared_secret: str):
+        """Process an encrypted message"""
+        return self.message_encryption.process_encrypted_message(message, shared_secret)
 
     def send_memo(self, 
             wallet_seed: str, 
@@ -756,16 +707,16 @@ class GenericPFTUtilities:
         Returns:
             list[dict]: Responses from each chunk sent
         """
-        print(f"GenericPFTUtilities.send_memo: Spawning wallet for {user_name} to send memo to {destination}: {memo}...")
+        logger.debug(f"GenericPFTUtilities.send_memo: Spawning wallet for {user_name} to send memo to {destination}: {memo}...")
         wallet = self.spawn_wallet_from_seed(wallet_seed)
         message_id = self.generate_custom_id() if message_id is None else message_id
-        print(f"GenericPFTUtilities.send_memo: Generated message ID for {user_name}: {message_id}")
+        logger.debug(f"GenericPFTUtilities.send_memo: Generated message ID for {user_name}: {message_id}")
 
         # Handle encryption if requested
         if encrypt:
-            print(f"GenericPFTUtilities.send_memo: {user_name} requested encryption. Checking handshake status.")
+            logger.debug(f"GenericPFTUtilities.send_memo: {user_name} requested encryption. Checking handshake status.")
             # Check handshake status
-            _, received_key = self.get_handshake_for_address(wallet_seed, destination)
+            _, received_key = MessageEncryption.get_handshake_for_address(wallet_seed, destination)
 
             if not received_key:
                 raise HandshakeRequiredException(destination)
@@ -777,9 +728,9 @@ class GenericPFTUtilities:
 
         # Handle compression if requested
         if compress:
-            print(f"GenericPFTUtilities.send_memo: {user_name} requested compression. Compressing memo.")
+            logger.debug(f"GenericPFTUtilities.send_memo: {user_name} requested compression. Compressing memo.")
             compressed_data = self.compress_string(memo)
-            print(f"Compressed memo to length {len(compressed_data)}")
+            logger.debug(f"GenericPFTUtilities.send_memo: Compressed memo to length {len(compressed_data)}")
             memo = "COMPRESSED__" + compressed_data
 
         # Split into chunks
@@ -793,10 +744,10 @@ class GenericPFTUtilities:
                 try:
                     log_content = f"[compressed memo preview] {memo[:100]}..."
                 except Exception as e:
-                    print(f"Error previewing memo chunk: {e}")
+                    logger.error(f"GenericPFTUtilities.send_memo: Error previewing memo chunk: {e}")
                     log_content = "[compressed content]"
                 
-            print(f"Sending chunk {idx+1} of {len(memo_chunks)}: {log_content[:100]}...")
+            logger.debug(f"GenericPFTUtilities.send_memo: Sending chunk {idx+1} of {len(memo_chunks)}: {log_content[:100]}...")
 
             chunk_memo = self.construct_basic_postfiat_memo(
                 user=user_name, 
@@ -818,7 +769,7 @@ class GenericPFTUtilities:
         elif isinstance(memo, str):
             memos = [Memo(memo_data=self.to_hex(memo))]
         else:
-            print("GenericPFTUtilities._send_memo_single: Memo is not a string or a Memo object, raising ValueError")
+            logger.error("GenericPFTUtilities._send_memo_single: Memo is not a string or a Memo object, raising ValueError")
             raise ValueError("Memo must be either a string or a Memo object")
         
         payment_args = {
@@ -828,7 +779,7 @@ class GenericPFTUtilities:
         }
 
         # Get PFT requirement for destination
-        pft_amount = self.network_config.get_pft_requirement(destination)
+        pft_amount = self.address_service.get_pft_requirement(destination)
 
         if pft_amount > 0:
             payment_args["amount"] = xrpl.models.amounts.IssuedCurrencyAmount(
@@ -843,14 +794,14 @@ class GenericPFTUtilities:
         payment = xrpl.models.transactions.Payment(**payment_args)
 
         try:
-            print(f"GenericPFTUtilities._send_memo_single: Submitting transaction to send memo from {wallet.address} to {destination}")
+            logger.debug(f"GenericPFTUtilities._send_memo_single: Submitting transaction to send memo from {wallet.address} to {destination}")
             response = xrpl.transaction.submit_and_wait(payment, client, wallet)
         except xrpl.transaction.XRPLReliableSubmissionException as e:
             response = f"GenericPFTUtilities._send_memo_single: Transaction submission failed: {e}"
-            print(response)
+            logger.error(response)
         except Exception as e:
             response = f"GenericPFTUtilities._send_memo_single: Unexpected error: {e}"
-            print(response)
+            logger.error(response)
 
         return response
 
@@ -870,9 +821,9 @@ class GenericPFTUtilities:
         if message_id is None:
             message_id = self.generate_custom_id()
         if compress:
-            print(f"Compressing memo of length {len(memo)}")
+            logger.debug(f"GenericPFTUtilities.send_pft_compressed_message_based_on_wallet_seed: Compressing memo of length {len(memo)}")
             compressed_data = self.compress_string(memo)
-            print(f"Compressed to length {len(compressed_data)}")
+            logger.debug(f"GenericPFTUtilities.send_pft_compressed_message_based_on_wallet_seed: Compressed to length {len(compressed_data)}")
             memo = "COMPRESSED__" + compressed_data
         
         memo_chunks = self.split_text_into_chunks(memo)
@@ -884,10 +835,10 @@ class GenericPFTUtilities:
                 try:
                     log_content = f"[compressed memo preview] {memo[:100]}..."
                 except Exception as e:
-                    print(f"Error previewing memo chunk: {e}")
+                    logger.error(f"GenericPFTUtilities.send_pft_compressed_message_based_on_wallet_seed: Error previewing memo chunk: {e}")
                     log_content = "[compressed content]"
                 
-            print(f"Sending chunk {idx+1} of {len(memo_chunks)}: {log_content[:100]}...")
+            logger.debug(f"GenericPFTUtilities.send_pft_compressed_message_based_on_wallet_seed: Sending chunk {idx+1} of {len(memo_chunks)}: {log_content[:100]}...")
             
             chunk_memo = self.construct_basic_postfiat_memo(
                 user=user_name, 
@@ -1020,7 +971,7 @@ class GenericPFTUtilities:
             op=list(account_memo_detail_df[(account_memo_detail_df['converted_memos'].apply(lambda x: 'google_doc' in str(x))) & 
                     (account_memo_detail_df['account']==address)]['converted_memos'].tail(1))[0]['MemoData']
         except:
-            print('No Google Doc Associated with Address')
+            logger.warning('GenericPFTUtilities.get_most_recent_google_doc_for_user: No Google Doc Associated with Address')
             pass
         return op
     
@@ -1224,7 +1175,7 @@ class GenericPFTUtilities:
                         timestamp TIMESTAMP
                     );
                 """))
-                print("Table 'postfiat_tx_cache' created.")
+                logger.debug("GenericPFTUtilities.establish_post_fiat_tx_cache_as_hash_unique: Table 'postfiat_tx_cache' created.")
             
             # Add unique constraint on hash if it doesn't exist
             constraint_exists = connection.execute(sqlalchemy.text("""
@@ -1240,7 +1191,7 @@ class GenericPFTUtilities:
                     ALTER TABLE postfiat_tx_cache
                     ADD CONSTRAINT unique_hash UNIQUE (hash);
                 """))
-                print("Unique constraint added to 'hash' column.")
+                logger.debug("GenericPFTUtilities.establish_post_fiat_tx_cache_as_hash_unique: Unique constraint added to 'hash' column.")
             
             connection.commit()
 
@@ -1250,10 +1201,8 @@ class GenericPFTUtilities:
         # Fetch transaction history and prepare DataFrame
         tx_hist = self.get_account_transactions__exhaustive(account_address=account_address)
         if len(tx_hist)==0:
-            #print('no tx pulled')
-            #print()
-            2+2
-        if len(tx_hist)>0:
+            return pd.DataFrame()
+        else:
             full_transaction_history = pd.DataFrame(
                 tx_hist
             )
@@ -1325,24 +1274,24 @@ class GenericPFTUtilities:
                                 method='multi'
                             )
                             total_rows_inserted += rows_inserted
-                            print(f"GenericPFTUtilities.sync_pft_transaction_history_for_account: Inserted {rows_inserted} new rows into postfiat_tx_cache.")
+                            logger.debug(f"GenericPFTUtilities.sync_pft_transaction_history_for_account: Inserted {rows_inserted} new rows into postfiat_tx_cache.")
             
             except sqlalchemy.exc.InternalError as e:
                 if "current transaction is aborted" in str(e):
-                    print("Transaction aborted. Attempting to reset...")
+                    logger.warning("GenericPFTUtilities.sync_pft_transaction_history_for_account: Transaction aborted. Attempting to reset...")
                     with dbconnx.connect() as connection:
                         connection.execute(sqlalchemy.text("ROLLBACK"))
-                    print("Transaction reset. Please try the operation again.")
+                    logger.warning("GenericPFTUtilities.sync_pft_transaction_history_for_account: Transaction reset. Please try the operation again.")
                 else:
-                    print(f"An error occurred: {e}")
+                    logger.error(f"GenericPFTUtilities.sync_pft_transaction_history_for_account: An error occurred: {e}")
             
             except Exception as e:
-                print(f"An unexpected error occurred: {e}")
+                logger.error(f"GenericPFTUtilities.sync_pft_transaction_history_for_account: An unexpected error occurred: {e}")
             
             finally:
                 dbconnx.dispose()
         else:
-            print("No transaction history to write.")
+            logger.debug("GenericPFTUtilities.sync_pft_transaction_history_for_account: No transaction history to write.")
 
     def sync_pft_transaction_history(self):
         """ Syncs transaction history for all post fiat holders """
@@ -1375,12 +1324,12 @@ class GenericPFTUtilities:
                     with self._update_lock:
                         now = time.time()
                         if now - self._last_update >= TRANSACTION_HISTORY_UPDATE_INTERVAL:
-                            print("GenericPFTUtilities.run_transaction_history_updates.update_loop: Syncing PFT account holder transaction history...")
+                            logger.debug("GenericPFTUtilities.run_transaction_history_updates.update_loop: Syncing PFT account holder transaction history...")
                             self.sync_pft_transaction_history()
                             self._last_update = now
 
                 except Exception as e:
-                    print(f"Error in transaction history update loop: {e}")
+                    logger.error(f"GenericPFTUtilities.run_transaction_history_updates.update_loop: Error in transaction history update loop: {e}")
 
                 time.sleep(TRANSACTION_HISTORY_SLEEP_TIME)
 
@@ -1399,6 +1348,7 @@ class GenericPFTUtilities:
     #     full_transaction_history['tx_json']= full_transaction_history['tx_json'].apply(lambda x: json.loads(x))
     #     return full_transaction_history
 
+    # TODO: How is this different from get_account_memo_history? 
     def get_all_transactions_for_active_wallets(self):
         """ This gets all the transactions for active post fiat wallets""" 
         full_balance_df = self.get_post_fiat_holder_df()
@@ -1615,7 +1565,7 @@ class GenericPFTUtilities:
                 return context_docs.iloc[-1]['memo_data']
             return None
         except Exception as e:
-            print(f"GenericPFTUtilities.get_latest_outgoing_context_doc_link: Error getting latest context doc link: {e}")
+            logger.error(f"GenericPFTUtilities.get_latest_outgoing_context_doc_link: Error getting latest context doc link: {e}")
             return None   
     
     @staticmethod
@@ -1718,7 +1668,7 @@ class GenericPFTUtilities:
         Returns:
             bool: True if Google Doc has been sent
         """
-        print(f"GenericPFTUtilities.google_doc_sent: Checking if google doc has been sent for {wallet.classic_address}")
+        logger.debug(f"GenericPFTUtilities.google_doc_sent: Checking if google doc has been sent for {wallet.classic_address}")
         return self.get_latest_outgoing_context_doc_link(wallet) is not None
     
     def handle_google_doc(self, wallet: xrpl.wallet.Wallet, google_doc_link: str, username: str):
@@ -1736,18 +1686,18 @@ class GenericPFTUtilities:
                 - message (str): Description of what happened
                 - tx_hash (str, optional): Transaction hash if doc was sent
         """
-        print(f"GenericPFTUtilities.handle_google_doc: Handling google doc for {username} ({wallet.classic_address})")
+        logger.debug(f"GenericPFTUtilities.handle_google_doc: Handling google doc for {username} ({wallet.classic_address})")
         try:
             self.check_if_google_doc_is_valid(wallet, google_doc_link)
         except Exception as e:
-            print(f"GenericPFTUtilities.handle_google_doc: Error validating Google Doc: {e}")
+            logger.error(f"GenericPFTUtilities.handle_google_doc: Error validating Google Doc: {e}")
             raise
 
         if not self.google_doc_sent(wallet):
-            print(f"GenericPFTUtilities.handle_google_doc: Google doc not sent for {wallet.classic_address}, sending now...")
+            logger.debug(f"GenericPFTUtilities.handle_google_doc: Google doc not sent for {wallet.classic_address}, sending now...")
             return self.send_google_doc(wallet, google_doc_link, username)
         else:
-            print(f"GenericPFTUtilities.handle_google_doc: Google doc already sent for {wallet.classic_address}.")
+            logger.debug(f"GenericPFTUtilities.handle_google_doc: Google doc already sent for {wallet.classic_address}.")
 
     def send_google_doc(self, wallet: xrpl.wallet.Wallet, google_doc_link: str, username: str) -> dict:
         """Send Google Doc context link to the node.
@@ -1765,7 +1715,7 @@ class GenericPFTUtilities:
                 user=username,
                 google_doc_link=google_doc_link
             )
-            print(f"Sending Google Doc link transaction from {wallet.classic_address} to node {self.node_address}: {google_doc_link}")
+            logger.debug(f"GenericPFTUtilities.send_google_doc: Sending Google Doc link transaction from {wallet.classic_address} to node {self.node_address}: {google_doc_link}")
             response = self.send_PFT_with_info(
                 sending_wallet=wallet,
                 amount=1,
@@ -1846,7 +1796,7 @@ class GenericPFTUtilities:
             return recent_messages
 
         except Exception as e:
-            print(f"Failed to get recent user memos for account {account_address}: {e}")
+            logger.error(f"GenericPFTUtilities.get_recent_user_memos: Failed to get recent user memos for account {account_address}: {e}")
             return json.dumps({})
 
     def get_full_user_context_string(self, account_address: str, memo_history: pd.DataFrame):
@@ -1871,27 +1821,27 @@ class GenericPFTUtilities:
 
         try:
             # Retrieve outstanding task frame
-            proposal_acceptance_pairs_df = self.get_proposal_acceptance_pairs(account_memo_detail_df=memo_history).tail(MAX_ACCEPTANCES_IN_CONTEXT)
+            proposal_acceptance_pairs_df = self.get_proposal_acceptance_pairs(account_memo_detail_df=memo_history, include_pending=True).tail(MAX_ACCEPTANCES_IN_CONTEXT)
             if proposal_acceptance_pairs_df.empty:
-                print(f'GenericPFTUtilities.get_full_user_context_string: No proposals or acceptances found for {account_address}')
+                logger.debug(f'GenericPFTUtilities.get_full_user_context_string: No proposals or acceptances found for {account_address}')
                 core_element_outstanding_tasks = "No proposals or acceptances found."
             else:
                 core_element_outstanding_tasks = self.format_outstanding_tasks(outstanding_task_df=proposal_acceptance_pairs_df)
 
         except Exception as e:
-            print(f'GenericPFTUtilities.get_full_user_context_string: Exception for {account_address} while retrieving outstanding tasks: {e}')
+            logger.error(f'GenericPFTUtilities.get_full_user_context_string: Exception for {account_address} while retrieving outstanding tasks: {e}')
 
         try:
             # Retrieve refusal frame
             proposal_refusal_pairs_df = self.get_proposal_refusal_pairs(account_memo_detail_df=memo_history).tail(MAX_REFUSALS_IN_CONTEXT)
             if proposal_refusal_pairs_df.empty:
-                print(f'GenericPFTUtilities.get_full_user_context_string: No proposals or refusals found for {account_address}')
+                logger.debug(f'GenericPFTUtilities.get_full_user_context_string: No proposals or refusals found for {account_address}')
                 core_element__refusal_frame = "No proposals or refusals found."
             else:
                 core_element__refusal_frame = self.format_refusal_frame(refusal_frame_constructor=proposal_refusal_pairs_df)
 
         except Exception as e:
-            print(f'GenericPFTUtilities.get_full_user_context_string: Exception for {account_address} while retrieving refusal frame: {e}')
+            logger.error(f'GenericPFTUtilities.get_full_user_context_string: Exception for {account_address} while retrieving refusal frame: {e}')
 
         try:
             # Retrieve rewards
@@ -1899,19 +1849,19 @@ class GenericPFTUtilities:
             weekly_totals, reward_summaries = reward_map['reward_ts'], reward_map['reward_summaries']
 
             if reward_summaries.empty:
-                print(f'GenericPFTUtilities.get_full_user_context_string: No rewards found for {account_address}')
+                logger.debug(f'GenericPFTUtilities.get_full_user_context_string: No rewards found for {account_address}')
                 core_element__last_10_rewards = "No rewards found."
             else:
                 core_element__last_10_rewards = self.format_reward_summary(reward_summaries.tail(MAX_REWARDS_IN_CONTEXT))
             
             if weekly_totals.empty:
-                print(f'GenericPFTUtilities.get_full_user_context_string: No weekly totals found for {account_address}')
+                logger.debug(f'GenericPFTUtilities.get_full_user_context_string: No weekly totals found for {account_address}')
                 core_element_post_fiat_weekly_gen = "No weekly totals found."
             else:
                 core_element_post_fiat_weekly_gen = weekly_totals['weekly_total'].to_string()
 
         except Exception as e:
-            print(f'GenericPFTUtilities.get_full_user_context_string: Exception for {account_address} while retrieving rewards: {e}')
+            logger.error(f'GenericPFTUtilities.get_full_user_context_string: Exception for {account_address} while retrieving rewards: {e}')
 
         try:
             # Retrieve google doc text
@@ -1921,7 +1871,7 @@ class GenericPFTUtilities:
             core_element__google_doc_text= self.get_google_doc_text(google_url)
 
         except Exception as e:
-            print(f'GenericPFTUtilities.get_full_user_context_string: Exception for {account_address} while retrieving google doc text: {e}')
+            logger.error(f'GenericPFTUtilities.get_full_user_context_string: Exception for {account_address} while retrieving google doc text: {e}')
 
         try:
             # Retrieve chunk messages
@@ -1931,7 +1881,7 @@ class GenericPFTUtilities:
             )
 
         except Exception as e:
-            print(f'GenericPFTUtilities.get_full_user_context_string: Exception for {account_address} while retrieving chunk messages: {e}')
+            logger.error(f'GenericPFTUtilities.get_full_user_context_string: Exception for {account_address} while retrieving chunk messages: {e}')
 
         # Format final context string
         current_date = datetime.datetime.now().strftime('%Y-%m-%d')
@@ -2063,10 +2013,10 @@ PFT WEEKLY AVG:   {weekly_pft_reward_avg}
                 return float(response.result['account_data']['Balance']) / 1_000_000
             else:
                 if response.result.get('error') == 'actNotFound':
-                    print(f"XRP account not found: {address}. It may not be activated yet.")
+                    logger.warning(f"GenericPFTUtilities.get_xrp_balance: XRP account not found: {address}. It may not be activated yet.")
                     raise XRPAccountNotFoundException(address)
         except Exception as e:
-            print(f"Error getting XRP balance: {e}")
+            logger.error(f"GenericPFTUtilities.get_xrp_balance: Error getting XRP balance: {e}")
             raise Exception(f"Error getting XRP balance: {e}")
 
     def verify_xrp_balance(self, address: str, minimum_xrp_balance: int) -> bool:
@@ -2304,7 +2254,7 @@ PFT WEEKLY AVG:   {weekly_pft_reward_avg}
             pft_holders = self.get_pft_holder_df()
             return wallet.classic_address in list(pft_holders['account'])
         except Exception as e:
-            print(f"Error checking if user {wallet.classic_address} has a trust line: {e}")
+            logger.error(f"GenericPFTUtilities.has_trust_line: Error checking if user {wallet.classic_address} has a trust line: {e}")
             return False
         
     def handle_trust_line(self, wallet: xrpl.wallet.Wallet, username: str):
@@ -2318,14 +2268,14 @@ PFT WEEKLY AVG:   {weekly_pft_reward_avg}
         Raises:
             Exception: If there is an error creating the trust line
         """
-        print(f"Handling trust line for {username} ({wallet.classic_address})")
+        logger.debug(f"GenericPFTUtilities.handle_trust_line: Handling trust line for {username} ({wallet.classic_address})")
         if not self.has_trust_line(wallet):
-            print(f"Trust line does not exist for {username} ({wallet.classic_address}), creating now...")
+            logger.debug(f"GenericPFTUtilities.handle_trust_line: Trust line does not exist for {username} ({wallet.classic_address}), creating now...")
             response = self.generate_trust_line_to_pft_token(wallet)
             if not response.is_successful():
                 raise Exception(f"Error creating trust line: {response.result.get('error')}")
         else:
-            print(f"Trust line already exists for {wallet.classic_address}")
+            logger.debug(f"GenericPFTUtilities.handle_trust_line: Trust line already exists for {wallet.classic_address}")
 
     def generate_trust_line_to_pft_token(self, wallet: xrpl.wallet.Wallet):
         """
@@ -2349,7 +2299,7 @@ PFT WEEKLY AVG:   {weekly_pft_reward_avg}
                 value="100000000",
             )
         )
-        print(f"Establishing trust line transaction from {wallet.classic_address} to issuer {self.pft_issuer}...")
+        logger.debug(f"GenericPFTUtilities.generate_trust_line_to_pft_token: Establishing trust line transaction from {wallet.classic_address} to issuer {self.pft_issuer}...")
         try:
             response = xrpl.transaction.submit_and_wait(trust_set_tx, client, wallet)
         except xrpl.transaction.XRPLReliableSubmissionException as e:
@@ -2371,7 +2321,7 @@ PFT WEEKLY AVG:   {weekly_pft_reward_avg}
             Exception: If there is an error checking for the initiation rite
         """
         if allow_reinitiation and constants.USE_TESTNET:
-            print(f"Re-initiation allowed for {wallet.classic_address} (test mode)")
+            logger.debug(f"GenericPFTUtilities.has_initiation_rite: Re-initiation allowed for {wallet.classic_address} (test mode)")
             return False
         
         try: 
@@ -2382,7 +2332,7 @@ PFT WEEKLY AVG:   {weekly_pft_reward_avg}
             ]
             return len(successful_initiations) > 0
         except Exception as e:
-            print(f"Error checking if user {wallet.classic_address} has a successful initiation rite: {e}")
+            logger.error(f"GenericPFTUtilities.has_initiation_rite: Error checking if user {wallet.classic_address} has a successful initiation rite: {e}")
             return False
     
     def handle_initiation_rite(
@@ -2403,17 +2353,17 @@ PFT WEEKLY AVG:   {weekly_pft_reward_avg}
         Raises:
             Exception: If there is an error sending the initiation rite
         """
-        print(f"Handling initiation rite for {username} ({wallet.classic_address})")
+        logger.debug(f"GenericPFTUtilities.handle_initiation_rite: Handling initiation rite for {username} ({wallet.classic_address})")
 
         if self.has_initiation_rite(wallet, allow_reinitiation):
-            print(f"Initiation rite already exists for {username} ({wallet.classic_address})")
+            logger.debug(f"GenericPFTUtilities.handle_initiation_rite: Initiation rite already exists for {username} ({wallet.classic_address})")
         else:
             initiation_memo = self.construct_standardized_xrpl_memo(
                 memo_data=initiation_rite, 
                 memo_type=constants.SystemMemoType.INITIATION_RITE.value, 
                 memo_format=username
             )
-            print(f"Sending initiation rite transaction from {wallet.classic_address} to node {self.node_address}")
+            logger.debug(f"GenericPFTUtilities.handle_initiation_rite: Sending initiation rite transaction from {wallet.classic_address} to node {self.node_address}")
             response = self.send_PFT_with_info(
                 sending_wallet=wallet, 
                 amount=1, 
@@ -2626,7 +2576,7 @@ PFT WEEKLY AVG:   {weekly_pft_reward_avg}
         for x in list(top_score_frame.index):
             memo_history = self.get_account_memo_history(account_address=x)
             user_account_string = self.get_full_user_context_string(account_address=x, memo_history=memo_history)
-            print(x)
+            logger.debug(x)
             user_account_map[x]= user_account_string
         agency_system_prompt = """ You are the Post Fiat Agency Score calculator.
         
@@ -2895,7 +2845,7 @@ PFT WEEKLY AVG:   {weekly_pft_reward_avg}
             # Save as image with higher resolution
             fig.write_image(output_path, scale=2)
             
-            print(f"Leaderboard image saved to: {output_path}")
+            logger.debug(f"Leaderboard image saved to: {output_path}")
             
             try:
                 from IPython.display import Image
@@ -2934,7 +2884,7 @@ PFT WEEKLY AVG:   {weekly_pft_reward_avg}
                 match = re.search(pattern, content, re.DOTALL)
                 return match.group(1).strip() if match else ""
             except Exception as e:
-                print(f"Error extracting text: {e}")
+                logger.error(f"GenericPFTUtilities.extract_verification_text: Error extracting text: {e}")
                 return ""
         xstr =extract_verification_text(user_full_google_acccount)
         return {'verification_text': xstr, 'full_google_doc': user_full_google_acccount}
@@ -2964,5 +2914,5 @@ PFT WEEKLY AVG:   {weekly_pft_reward_avg}
                 return float(pft_lines[0]['balance'])
             return 0.0
         except Exception as e:
-            print(f"Error getting PFT balance for {account_address}: {str(e)}")
+            logger.error(f"GenericPFTUtilities.get_account_pft_balance: Error getting PFT balance for {account_address}: {str(e)}")
             return 0.0

@@ -460,7 +460,7 @@ class MyClient(discord.Client):
                 user_name = message.author.name
                 memo_to_send = generic_pft_utilities.construct_standardized_xrpl_memo(memo_data=message_to_send, memo_format = user_name, memo_type=task_id)
                 seed = self.user_seeds[user_id]
-                response = post_fiat_task_generation_system.discord__send_postfiat_request(user_request= message_to_send, user_name=user_name, seed=seed)
+                response = post_fiat_task_generation_system.discord__send_postfiat_request(user_request= message_to_send, user_name=user_name, user_seed=seed)
                 transaction_info = generic_pft_utilities.extract_transaction_info_from_response_object(response=response)
                 clean_string = transaction_info['clean_string']
                 await self.send_long_message(message, f"Task Requested with Details {clean_string}")

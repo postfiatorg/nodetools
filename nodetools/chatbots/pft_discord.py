@@ -9,24 +9,29 @@ from nodetools.utilities.task_management import PostFiatTaskGenerationSystem
 from nodetools.utilities.generic_pft_utilities import GenericPFTUtilities
 from nodetools.chatbots.personas.odv import odv_system_prompt
 from nodetools.performance.monitor import PerformanceMonitor
-from nodetools.prompts.chat_processor import ChatProcessor
+from nodetools.utilities.configuration import (NetworkConfig, NodeConfig, RuntimeConfig, get_network_config, get_node_config)
 import asyncio
 from datetime import datetime, time
 import pytz
 import datetime
 import nodetools.utilities.constants as constants
+import nodetools.utilities.configuration as config
 import getpass
+from loguru import logger
+from nodetools.utilities.configure_logger import configure_logger
+from pathlib import Path
     
 class MyClient(discord.Client):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         # Get network configuration and set network-specific attributes
-        self.network_config = constants.get_network_config()
-        self.remembrancer = self.network_config.remembrancer_address
+        self.network_config = config.get_network_config()
+        self.node_config = config.get_node_config()
+        self.remembrancer = self.node_config.remembrancer_address
 
         # Initialize components
         self.open_ai_request_tool = OpenAIRequestTool()
-        self.generic_pft_utilities = GenericPFTUtilities(node_name=self.network_config.node_name)
+        self.generic_pft_utilities = GenericPFTUtilities()
         self.post_fiat_task_generation_system = PostFiatTaskGenerationSystem()
 
         # Set network-specific attributes
@@ -37,7 +42,7 @@ class MyClient(discord.Client):
 
     async def setup_hook(self):
         """Sets up the slash commands for the bot and initiates background tasks."""
-        guild_id = self.network_config.discord_guild_id
+        guild_id = self.node_config.discord_guild_id
         guild = Object(id=guild_id)
         self.tree.copy_global_to(guild=guild)
         await self.tree.sync(guild=guild)
@@ -166,7 +171,7 @@ class MyClient(discord.Client):
                     
                     # Call the discord__task_acceptance function
                     output_string = post_fiat_task_generation_system.discord__task_acceptance(
-                        seed_to_work=self.seed,
+                        user_seed=self.seed,
                         user_name=self.user_name,
                         task_id_to_accept=self.task_id,
                         acceptance_string=acceptance_string
@@ -269,7 +274,7 @@ class MyClient(discord.Client):
                     
                     # Call the discord__task_refusal function
                     output_string = post_fiat_task_generation_system.discord__task_refusal(
-                        seed_to_work=self.seed,
+                        user_seed=self.seed,
                         user_name=self.user_name,
                         task_id_to_refuse=self.task_id,
                         refusal_string=refusal_string
@@ -716,7 +721,7 @@ class MyClient(discord.Client):
                         try:
                             # Attempt the initiation rite
                             post_fiat_task_generation_system.discord__initiation_rite(
-                                account_seed=seed, 
+                                user_seed=seed, 
                                 initiation_rite=self.commitment_sentence.value, 
                                 google_doc_link=self.google_doc_link.value, 
                                 username=interaction.user.name,
@@ -762,7 +767,7 @@ class MyClient(discord.Client):
                 response = post_fiat_task_generation_system.discord__send_postfiat_request(
                     user_request=task_request,
                     user_name=user_name,
-                    seed=seed
+                    user_seed=seed
                 )
                 
                 # Extract transaction information
@@ -848,7 +853,7 @@ class MyClient(discord.Client):
                     
                     # Call the discord__initial_submission function
                     output_string = post_fiat_task_generation_system.discord__initial_submission(
-                        seed_to_work=self.seed,
+                        user_seed=self.seed,
                         user_name=self.user_name,
                         task_id_to_accept=self.task_id,
                         initial_completion_string=completion_string
@@ -1173,7 +1178,7 @@ Note: XRP wallets need 15 XRP to transact.
                     
                     # Call the discord__final_submission function
                     output_string = post_fiat_task_generation_system.discord__final_submission(
-                        seed_to_work=self.seed,
+                        user_seed=self.seed,
                         user_name=self.user_name,
                         task_id_to_submit=self.task_id,
                         justification_string=justification_string
@@ -1318,7 +1323,7 @@ Note: XRP wallets need 15 XRP to transact.
         return sent_messages
 
     async def check_and_notify_new_transactions(self):
-        CHANNEL_ID = self.network_config.discord_activity_channel_id
+        CHANNEL_ID = self.node_config.discord_activity_channel_id
         channel = self.get_channel(CHANNEL_ID)
         
         if not channel:
@@ -1662,7 +1667,7 @@ My specific question/request is: {user_query}"""
                 user_name = message.author.name
                 memo_to_send = generic_pft_utilities.construct_standardized_xrpl_memo(memo_data=message_to_send, memo_format = user_name, memo_type=task_id)
                 seed = self.user_seeds[user_id]
-                response = post_fiat_task_generation_system.discord__send_postfiat_request(user_request= message_to_send, user_name=user_name, seed=seed)
+                response = post_fiat_task_generation_system.discord__send_postfiat_request(user_request= message_to_send, user_name=user_name, user_seed=seed)
                 transaction_info = generic_pft_utilities.extract_transaction_info_from_response_object(response=response)
                 clean_string = transaction_info['clean_string']
                 await self.send_long_message(message, f"Task Requested with Details {clean_string}")
@@ -1720,11 +1725,34 @@ def init_bot():
     intents.guild_messages = True
     return MyClient(intents=intents)
 
+def configure_runtime():
+    """Configure runtime settings based on user input"""
+
+    # Network selection
+    print(f"Network Configuration:\n1. Mainnet\n2. Testnet")
+    network_choice = input("Select network (1/2) [default=2]: ").strip() or "2"
+    RuntimeConfig.USE_TESTNET = network_choice == "2"
+    network_config = get_network_config()
+
+    # Local node configuration with network-specific context
+    if network_config.local_rpc_url:
+        print(f"\nLocal node configuration:")
+        print(f"Local {network_config.name} node URL: {network_config.local_rpc_url}")
+        use_local = input("Do you have a local node configured? (y/n) [default=n]: ").strip() or "n"
+        RuntimeConfig.HAS_LOCAL_NODE = use_local == "y"
+    else:
+        print(f"\nNo local node configuration available for {network_config.name}")
+        RuntimeConfig.HAS_LOCAL_NODE = False
+
+    logger.debug(f"\nInitializing services for {network_config.name}...")
+    logger.info(f"Using {'local' if RuntimeConfig.HAS_LOCAL_NODE else 'public'} endpoints...")
+    
+
 def init_services():
     """Initialize and return core services"""
     open_ai_request_tool = OpenAIRequestTool()
     post_fiat_task_generation_system = PostFiatTaskGenerationSystem()
-    generic_pft_utilities = GenericPFTUtilities(node_name=constants.get_network_config().node_name)
+    generic_pft_utilities = GenericPFTUtilities()
     generic_pft_utilities.run_transaction_history_updates()
 
     return (
@@ -1741,35 +1769,23 @@ if __name__ == "__main__":
     # Initialize performance monitor
     monitor = PerformanceMonitor(time_window=60)
     monitor.start()
-    
-    # Network selection with more context
-    print(f"Network Configuration: ")
-    for idx, network in enumerate(constants.Network):
-        print(f"{idx+1}. {network.value.name}")
-    network_choice = input("Select network (1/2) [default=2]: ").strip() or "2"
-    selected_network = constants.Network.XRPL_MAINNET if network_choice == "1" else constants.Network.XRPL_TESTNET
-    constants.USE_TESTNET = selected_network == constants.Network.XRPL_TESTNET
 
-    # Local node configuration with network-specific context
-    network_config = constants.get_network_config(network=selected_network)
-    if network_config.local_rpc_url:
-        print(f"\nLocal node configuration:")
-        print(f"Local {network_config.name} node URL: {network_config.local_rpc_url}")
-        use_local = input("Do you have a local node configured? (y/n) [default=n]: ").strip() or "n"
-        constants.HAS_LOCAL_NODE = use_local == "y"
-    else:
-        print(f"\nNo local node configuration available for {network_config.name}")
-        constants.HAS_LOCAL_NODE = False
-    
-    print(f"\nInitializing services for {network_config.name}...")
-    print(f"Using {'local' if constants.HAS_LOCAL_NODE else 'public'} endpoints...")
+    # Configure logger
+    configure_logger(
+        log_to_file=True,
+        output_directory=Path.cwd() / "nodetools",
+        log_filename="nodetools.log",
+        level="DEBUG"
+    )
+
+    configure_runtime()
 
     # Initialize services
     open_ai_request_tool, post_fiat_task_generation_system, generic_pft_utilities = init_services()
 
-    print("---Services initialized successfully!---")
+    logger.debug("---Services initialized successfully!---")
 
     # Initialize and run the bot
     client = init_bot()
-    discord_credential_key = "discordbot_testnet_secret" if constants.USE_TESTNET else "discordbot_secret"
+    discord_credential_key = "discordbot_testnet_secret" if RuntimeConfig.USE_TESTNET else "discordbot_secret"
     client.run(cred_manager.get_credential(discord_credential_key))

@@ -17,7 +17,8 @@ setup(
         'bs4',
         'plotly',
         'matplotlib',
-        'PyNaCl'
+        'PyNaCl',
+        'loguru'
     ],
     author='Alex Good',
     author_email='alex@agti.net',
