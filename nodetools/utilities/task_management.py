@@ -81,13 +81,13 @@ class PostFiatTaskGenerationSystem:
 
         # Filter successful initiation rewards
         initiation_rewards = memo_history[
-            (memo_history['memo_type'] == constants.SystemMemoType.INITIATION_REWARD.name) &
+            (memo_history['memo_type'] == constants.SystemMemoType.INITIATION_REWARD.value) &
             (memo_history['transaction_result'] == 'tesSUCCESS')
         ][['user_account', 'memo_data', 'memo_format', 'directional_pft', 'datetime']].groupby('user_account').last()
 
         # Filter successful initiation rites
         rites = memo_history[
-            (memo_history['memo_type'] == constants.SystemMemoType.INITIATION_RITE.name) &
+            (memo_history['memo_type'] == constants.SystemMemoType.INITIATION_RITE.value) &
             (memo_history['transaction_result'] == 'tesSUCCESS')
         ][['user_account', 'memo_data', 'datetime']].groupby('user_account').last()
 
@@ -149,7 +149,7 @@ class PostFiatTaskGenerationSystem:
     #         required_post_fiat_generation_cue['google_doc']= required_post_fiat_generation_cue.apply(lambda x: self.get_most_recent_google_doc_for_user(user_account=x['user_account'],
     #                                                                                                 all_account_info=all_account_info),axis=1)
     #     return required_post_fiat_generation_cue 
-
+    
     def discord__initiation_rite(
             self, 
             user_seed: str, 
@@ -160,6 +160,7 @@ class PostFiatTaskGenerationSystem:
         ) -> str:
         """
         Process an initiation rite for a new user. Will raise exceptions if there are any issues.
+        Immediately initiates handshake protocol with the node to enable encrypted memo communication.
         
         Args:
             user_seed (str): The user's wallet seed
@@ -206,12 +207,14 @@ class PostFiatTaskGenerationSystem:
             memo_type=constants.SystemMemoType.INITIATION_GRANT.value,
             memo_format=self.node_config.node_name
         )
+
         grant_response = self.generic_pft_utilities.send_PFT_with_info(
             sending_wallet=node_wallet,
             amount=10,
             memo=memo,
             destination_address=wallet.classic_address
         )
+
         if not self.generic_pft_utilities.verify_transaction_response(grant_response):
             raise Exception(f"Failed to send initial PFT grant: {grant_response}")
         
@@ -272,13 +275,18 @@ class PostFiatTaskGenerationSystem:
 
                 logger.debug(f"PostFiatTaskGenerationSystem.process_pending_initiation_rewards: Processing initiation rite for {row['user_account']}")
 
-                # Check if reward already exists  # TODO this might be redundant
+                # Check if reward already exists 
                 existing_rewards = memo_history[
-                    (memo_history['memo_data'].str.contains(constants.SystemMemoType.INITIATION_REWARD.value, na=False)) &
-                    (memo_history['user_account'] == row['user_account']) &
-                    (memo_history['memo_type'] == constants.SystemMemoType.INITIATION_REWARD.name) &
-                    ((memo_history['datetime'] > row['datetime']) if config.RuntimeConfig.ENABLE_REINITIATIONS else True)
+                    (memo_history['destination'] == row['user_account']) &
+                    (memo_history['memo_type'] == constants.SystemMemoType.INITIATION_REWARD.value)
                 ]
+
+                # If reinitiations are enabled, we need to check if this specific rite has been rewarded
+                if config.RuntimeConfig.ENABLE_REINITIATIONS:
+                    # Only consider rewards that came after this rite
+                    existing_rewards = existing_rewards[
+                        pd.to_datetime(existing_rewards['datetime']) > pd.to_datetime(row['rite_datetime'])
+                    ]
 
                 if not existing_rewards.empty:
                     logger.debug(f"PostFiatTaskGenerationSystem.process_pending_initiation_rewards: Initiation reward already exists for {row['user_account']}")
@@ -289,22 +297,28 @@ class PostFiatTaskGenerationSystem:
                     evaluation = self._evaluate_initiation_rite(row['initiation_rite'])
                     logger.debug(f"PostFiatTaskGenerationSystem.process_pending_initiation_rewards: Evaluation complete - Reward amount: {evaluation['reward']}")
 
+                    tracking_tuple = (
+                        row['user_account'],
+                        constants.SystemMemoType.INITIATION_REWARD.value,
+                        row['rite_datetime']
+                    )
+
                     # Construct reward memo
                     memo = self.generic_pft_utilities.construct_standardized_xrpl_memo(
-                        memo_data=constants.SystemMemoType.INITIATION_REWARD.value + evaluation['justification'],
-                        memo_type=constants.SystemMemoType.INITIATION_REWARD.name,
+                        memo_data=evaluation['justification'],
+                        memo_type=constants.SystemMemoType.INITIATION_REWARD.value,
                         memo_format=self.node_config.node_name
                     )
 
                     # Send and track reward
                     # tracking tuple is (user_account, memo_type, datetime)
-                    _ = self.generic_pft_utilities.send_and_track_transaction(
+                    _ = self.generic_pft_utilities.process_queue_transaction(
                         wallet=node_wallet,
                         memo=memo,
                         destination=row['user_account'],
-                        amount=evaluation['reward'],
+                        pft_amount=evaluation['reward'],
                         tracking_set=rewards_to_verify,
-                        tracking_tuple=(row['user_account'], constants.SystemMemoType.INITIATION_REWARD.name, row['datetime'])
+                        tracking_tuple=tracking_tuple
                     )
 
                 except Exception as e:
@@ -312,13 +326,12 @@ class PostFiatTaskGenerationSystem:
                     continue
 
             # Define verification predicate for initiation rewards
-            def verify_reward(txns, user_account, memo_type, request_time):
+            def verify_reward(txns, user_account, memo_type, rite_datetime):
                 reward_txns = txns[
-                    (txns['memo_data'].str.contains(constants.SystemMemoType.INITIATION_REWARD.value, na=False))
-                    & (txns['user_account'] == user_account)
-                    & (txns['memo_type'] == memo_type)
+                    (txns['user_account'] == user_account)
+                    & (txns['memo_type'] == constants.SystemMemoType.INITIATION_REWARD.value)
                 ]
-                return not reward_txns.empty and reward_txns['datetime'].max() > request_time
+                return not reward_txns.empty and pd.to_datetime(reward_txns['datetime'].max()) > pd.to_datetime(rite_datetime)
             
             # Use generic verification loop
             self.generic_pft_utilities.verify_transactions(
@@ -1149,14 +1162,16 @@ class PostFiatTaskGenerationSystem:
                     else:
                         memo_to_send = row['memo_to_send']
 
+                    tracking_tuple = (row['user_account'], row['memo_type'], row['datetime'])
+
                     # Send and track task
-                    _ = self.generic_pft_utilities.send_and_track_transaction(
+                    _ = self.generic_pft_utilities.process_queue_transaction(
                         wallet=node_wallet,
                         memo=memo_to_send,
                         destination=row['user_account'],
-                        amount=1,
+                        pft_amount=1,
                         tracking_set=tasks_to_verify,
-                        tracking_tuple=(row['user_account'], row['memo_type'], row['datetime'])
+                        tracking_tuple=tracking_tuple
                     )
 
                 except Exception as e:
@@ -1330,14 +1345,16 @@ class PostFiatTaskGenerationSystem:
                     logger.debug(f"PostFiatTaskManagement.process_verification_queue: Verification prompt already exists for task {row['memo_type']} for {row['user_account']}")
                     continue
 
+                tracking_tuple = (row['user_account'], row['memo_type'], row['datetime'])
+
                 # Send and track verification prompt
-                _ = self.generic_pft_utilities.send_and_track_transaction(
+                _ = self.generic_pft_utilities.process_queue_transaction(
                     wallet=node_wallet,
                     memo=row['memo_to_send'],
                     destination=row['user_account'],
-                    amount=1,
+                    pft_amount=1,
                     tracking_set=prompts_to_verify,
-                    tracking_tuple=(row['user_account'], row['memo_type'], row['datetime'])
+                    tracking_tuple=tracking_tuple
                 )
 
             # Define verification predicate
@@ -1647,14 +1664,16 @@ class PostFiatTaskGenerationSystem:
                     reward_to_dispatch = int(np.min([reward_to_dispatch,constants.MAX_REWARD_AMOUNT]))
                     reward_to_dispatch = int(np.max([reward_to_dispatch,constants.MIN_REWARD_AMOUNT]))
 
+                    tracking_tuple = (destination_address, slicex.loc['memo_type'], slicex.loc['datetime'])
+
                     # Send and track reward
-                    _ = self.generic_pft_utilities.send_and_track_transaction(
+                    _ = self.generic_pft_utilities.process_queue_transaction(
                         wallet=node_wallet,
                         memo=memo_to_send,
                         destination=destination_address,
-                        amount=reward_to_dispatch,
+                        pft_amount=reward_to_dispatch,
                         tracking_set=rewards_to_verify,
-                        tracking_tuple=(destination_address, slicex.loc['memo_type'], slicex.loc['datetime'])
+                        tracking_tuple=tracking_tuple
                     )
 
                 # Define verification predicate
@@ -1721,6 +1740,8 @@ class PostFiatTaskGenerationSystem:
                 for _, request in pending_handshakes.iterrows():
                     sender_address = request['account']
                     logger.debug(f"PostFiatTaskManagement.process_handshake_queue: Processing handshake for sender: {sender_address}")
+
+                    tracking_tuple = (sender_address, constants.SystemMemoType.HANDSHAKE.value, request['datetime'])
                     
                     # Get ECDH public key
                     ecdh_key = self.cred_manager.get_ecdh_public_key(secret_type)
@@ -1730,13 +1751,12 @@ class PostFiatTaskGenerationSystem:
                     )
 
                     # Send and track handshake
-                    _ = self.generic_pft_utilities.send_and_track_transaction(
+                    _ = self.generic_pft_utilities.process_queue_transaction(
                         wallet=wallet,
                         memo=handshake_memo,
                         destination=sender_address,
-                        amount=1,
                         tracking_set=handshakes_to_verify,
-                        tracking_tuple=(sender_address, constants.SystemMemoType.HANDSHAKE.value, request['datetime'])
+                        tracking_tuple=tracking_tuple
                     )
 
             if handshakes_to_verify:
@@ -1813,6 +1833,8 @@ class PostFiatTaskGenerationSystem:
                 except Exception as e:
                     logger.error(f"PostFiatTaskManagement.run_queue_processing: Error processing chat queue: {e}")
 
+                self.generic_pft_utilities.dump_google_doc_links()
+
                 time.sleep(constants.TRANSACTION_HISTORY_SLEEP_TIME) 
 
         self.processing_thread = threading.Thread(target=process_all_tasks)
@@ -1862,7 +1884,24 @@ class PostFiatTaskGenerationSystem:
     #     dbconnx = self.db_connection_manager.spawn_sqlalchemy_db_connection_for_user(username=self.generic_pft_utilities.node_name)
     #     full_history.to_sql('foundation_discord', dbconnx, if_exists='replace')
 
+    def _process_row(self, row: pd.Series, memo_history: pd.DataFrame):
+        """Internal method to process a single row of memo data."""
+        try:
+            processed_memo = self.generic_pft_utilities.process_memo_data(
+                memo_type=row['memo_type'],
+                memo_data=row['memo_data'],
+                decompress=False,  # We only want unchunking
+                decrypt=False,     # No decryption needed
+                memo_history=memo_history,  # Pass full history for chunk lookup
+                channel_address=row['account']  # Needed for chunk filtering
+            )
+            return processed_memo
+        except Exception as e:
+            logger.warning(f"Error processing memo data for hash {row.name}: {e}")
+            return row['memo_data']  # Return original if processing fails
+
     def sync_and_format_new_transactions(self):
+        # TODO: Move this out of the Task generation system
         """
         Syncs new XRPL transactions with the foundation discord database and formats them for Discord.
         
@@ -1881,19 +1920,35 @@ class PostFiatTaskGenerationSystem:
 
             # Get all transactions for the node's address
             memo_history = self.generic_pft_utilities.get_account_memo_history(
-                account_address=self.generic_pft_utilities.node_address
+                account_address=self.generic_pft_utilities.node_address,
+                pft_only=False
             ).sort_values('datetime')
+
+            # Filter for transactions that we want to display
+            # 1. Transactions with PFT OR 
+            # 2. Specific system memo types we want to display
+            display_memo_types = [
+                constants.SystemMemoType.INITIATION_RITE.value,
+                constants.SystemMemoType.GOOGLE_DOC_CONTEXT_LINK.value
+            ]
+            memo_history = memo_history[
+                (memo_history['directional_pft'] != 0) |  # Has PFT
+                (memo_history['memo_type'].isin(display_memo_types))  # Is a displayed system memo type
+            ]
 
             # Add XRPL explorer URLs
             url_mask = self.network_config.explorer_tx_url_mask
             memo_history['url'] = memo_history['hash'].apply(lambda x: url_mask.format(hash=x))
+
+            # Add processed memo data column
+            memo_history['processed_memo_data'] = memo_history.apply(self._process_row, axis=1, memo_history=memo_history)
         
             def format_message(row):
                 return (f"Date: {row['datetime']}\n"
                         f"Account: {row['account']}\n"
                         f"Memo Format: {row['memo_format']}\n"
                         f"Memo Type: {row['memo_type']}\n"
-                        f"Memo Data: {row['memo_data']}\n"
+                        f"Memo Data: {row['processed_memo_data']}\n"
                         f"Directional PFT: {row['directional_pft']}\n"
                         f"URL: {row['url']}")
 
@@ -1903,12 +1958,13 @@ class PostFiatTaskGenerationSystem:
 
             # Filter for new transactions
             new_transactions_df = memo_history[~memo_history.index.isin(existing_hashes)]
-
+    
             # Prepare messages for Discord
             messages_to_send = list(new_transactions_df['formatted_message'])
 
             # Write new transactions to database if any exist
             if not new_transactions_df.empty:
+
                 writer_df = new_transactions_df.reset_index()
                 columns_to_save = [
                     'hash', 'memo_data', 'memo_type', 'memo_format',

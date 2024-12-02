@@ -210,7 +210,7 @@ class ChatProcessor:
 
             responses = self.generic_pft_utilities.send_memo(
                 wallet_seed=self.cred_manager.get_credential(f"{self.node_config.remembrancer_name}__v1xrpsecret"),
-                user_name='odv',
+                username='odv',
                 destination=destination_account,
                 memo=op_response,
                 message_id=message_id,

@@ -3,9 +3,9 @@ from typing import Optional, Dict
 from .timer import Timer
 from .metric_types import Metric
 from functools import wraps
-from datetime import datetime, timedelta
-from collections import defaultdict
+from datetime import datetime
 import json
+from loguru import logger
 
 class PerfMeasurement:
     """Handles individual performance measurements"""
@@ -27,7 +27,7 @@ class PerfMeasurement:
             case Metric.COUNT:
                 pass
             case _:
-                print(f"PerfMeasurement.track: Unsupported metric type: {metric_type}")
+                logger.error(f"PerfMeasurement.track: Unsupported metric type: {metric_type}")
 
     def end_track(self, metric_type: Metric) -> float:
         """End a measurement and return the value"""
@@ -37,7 +37,7 @@ class PerfMeasurement:
             case Metric.COUNT:
                 value = 1  # Each call counts as 1
             case _:
-                print(f"Unsupported metric type: {metric_type}")
+                logger.error(f"PerfMeasurement.end_track: Unsupported metric type: {metric_type}")
                 value = 0
 
         self.data.update({
@@ -71,7 +71,7 @@ class AggregatedMeasurement:
             case Metric.COUNT:
                 pass
             case _:
-                print(f"AggregatedMeasurement.track: Unsupported metric type: {metric_type}")
+                logger.error(f"AggregatedMeasurement.track: Unsupported metric type: {metric_type}")
 
     def end_track(self, metric_type: Metric) -> Optional[float]:
         """End a measurement and update aggregates. Returns None if still aggregating."""
@@ -85,7 +85,7 @@ class AggregatedMeasurement:
                 value = 1  # Each call counts as 1
                 self.count += value
             case _:
-                print(f"AggregatedMeasurement.end_track: Unsupported metric type: {metric_type}")
+                logger.error(f"AggregatedMeasurement.end_track: Unsupported metric type: {metric_type}")
                 return None
             
         self.data.update({
@@ -204,7 +204,7 @@ class PerformanceMonitor:
                 
                 if override_aggregation or monitor.time_window is None:
                     # Use immediate measurements 
-                    print(f"Starting measurement for {process} ({[m.type_name for m in metrics]})")
+                    logger.debug(f"Starting measurement for {process} ({[m.type_name for m in metrics]})")
                     perf_measurement = monitor.measurements.get(process)
                     if perf_measurement is None:
                         perf_measurement = PerfMeasurement(process)
@@ -265,9 +265,9 @@ class PerformanceMonitor:
             message += f"Performance logs will be written to {self.output_dir}"
         else:
             message += "Performance log saving is currently disabled."
-        print(message)
+        logger.info(message)
 
     def stop(self):
         """Stop the performance monitor"""
         PerformanceMonitor._instance = None
-        print("Performance monitoring stopped")
+        logger.info("Performance monitoring stopped")

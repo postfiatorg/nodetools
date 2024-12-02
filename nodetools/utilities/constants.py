@@ -28,9 +28,13 @@ MAX_CHUNK_MESSAGES_IN_CONTEXT = 20
 TRANSACTION_HISTORY_UPDATE_INTERVAL = 30  # in seconds
 TRANSACTION_HISTORY_SLEEP_TIME = 30  # in seconds
 
-# Transaction verification parameters
-TRANSACTION_VERIFICATION_ATTEMPTS = 12
-TRANSACTION_VERIFICATION_WAIT_TIME = 5  # in seconds
+# Transaction verification parameters from the node's perspective
+NODE_TRANSACTION_VERIFICATION_ATTEMPTS = 12
+NODE_TRANSACTION_VERIFICATION_WAIT_TIME = 5  # in seconds
+
+# Transaction verification parameters from the user's perspective
+USER_TRANSACTION_VERIFICATION_ATTEMPTS = 12
+USER_TRANSACTION_VERIFICATION_WAIT_TIME = 10  # in seconds
 
 # Reward processing parameters
 REWARD_PROCESSING_WINDOW = 35  # in days
@@ -41,7 +45,8 @@ MIN_REWARD_AMOUNT = 1  # in PFT
 # ===MEMO ORGANIZATION===
 
 class SystemMemoType(Enum):
-    INITIATION_REWARD = 'INITIATION_REWARD ___ '  # name is memo_type, value is memo_data pattern
+    # SystemMemoTypes cannot be chunked
+    INITIATION_REWARD = 'INITIATION_REWARD'  # name is memo_type, value is memo_data pattern
     HANDSHAKE = 'HANDSHAKE'
     INITIATION_RITE = 'INITIATION_RITE'
     GOOGLE_DOC_CONTEXT_LINK = 'google_doc_context_link'

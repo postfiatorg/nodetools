@@ -8,6 +8,7 @@ from nodetools.utilities.db_manager import DBConnectionManager
 from nodetools.utilities.credentials import CredentialManager
 import uuid
 import nodetools.utilities.constants as constants
+from loguru import logger
 
 class OpenAIRequestTool:
     _instance = None
@@ -25,8 +26,7 @@ class OpenAIRequestTool:
             self.async_client = AsyncOpenAI(api_key=cred_manager.get_credential('openai'))
             self.db_connection_manager = DBConnectionManager()
             self.__class__._initialized = True
-            # print(f"---------------------------------Initialized OpenAIRequestTool---------------------------------\n")
-            print(f"The primary model for OpenAI is currently {constants.DEFAULT_OPEN_AI_MODEL}")
+            logger.debug(f"The primary model for OpenAI is currently {constants.DEFAULT_OPEN_AI_MODEL}")
 
     def run_chat_completion_demo(self):
         '''Demo run of chat completion with gpt-4-1106-preview model'''
@@ -78,9 +78,9 @@ class OpenAIRequestTool:
     async def get_completions(self, arg_async_map):
         '''Get completions asynchronously for given arguments map'''
         async def task_with_debug(job_name, api_args):
-            print(f"Task {job_name} start: {datetime.datetime.now().time()}")
+            logger.debug(f"OpenAIRequestTool.get_completions: Task {job_name} start: {datetime.datetime.now().time()}")
             response = await self.async_client.chat.completions.create(**api_args)
-            print(f"Task {job_name} end: {datetime.datetime.now().time()}")
+            logger.debug(f"OpenAIRequestTool.get_completions: Task {job_name} end: {datetime.datetime.now().time()}")
             return job_name, response
 
         tasks = [asyncio.create_task(task_with_debug(job_name, args)) for job_name, args in arg_async_map.items()]

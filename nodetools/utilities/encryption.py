@@ -11,6 +11,7 @@ import nodetools.utilities.constants as constants
 from loguru import logger
 from nodetools.utilities.base import BaseUtilities
 import nodetools.utilities.configuration as config
+import re
 
 class MessageEncryption(BaseUtilities):
     """Handles encryption/decryption of messages using ECDH-derived shared secrets"""
@@ -92,7 +93,7 @@ class MessageEncryption(BaseUtilities):
         return encrypted_bytes.decode()
     
     @staticmethod
-    def decrypt_message(encrypted_content: str, shared_secret: bytes) -> Optional[str]:
+    def decrypt_message(encrypted_content: str, shared_secret: Union[str, bytes]) -> Optional[str]:
         """
         Decrypt a message using a shared secret.
         
@@ -104,6 +105,10 @@ class MessageEncryption(BaseUtilities):
             Decrypted message or None if decryption fails
         """
         try:
+            # Ensure shared_secret is bytes
+            if isinstance(shared_secret, str):
+                shared_secret = shared_secret.encode()
+
             # Generate a Fernet key from the shared secret
             key = base64.urlsafe_b64encode(hashlib.sha256(shared_secret).digest())
             fernet = Fernet(key)
@@ -214,23 +219,23 @@ class MessageEncryption(BaseUtilities):
             raise ValueError(f"Failed to derive ECDH public key: {e}") from e
     
     @staticmethod
-    def get_shared_secret(received_key: str, wallet_seed: str) -> bytes:
+    def get_shared_secret(received_public_key: str, channel_private_key: str) -> bytes:
         """
         Derive a shared secret using ECDH
         
         Args:
-            received_key: public key received from another party
-            wallet_seed: Seed for the wallet to derive the shared secret
+            received_public_key: public key received from another party
+            channel_private_key: Seed for the wallet to derive the shared secret
 
         Returns:
             bytes: The derived shared secret
 
         Raises:
-            ValueError: if received_key is invalid or wallet_seed is invalid
+            ValueError: if received_public_key is invalid or channel_private_key is invalid
         """
         try:
-            raw_entropy = MessageEncryption._get_raw_entropy(wallet_seed)
-            return MessageEncryption.derive_shared_secret(public_key_hex=received_key, seed_bytes=raw_entropy)
+            raw_entropy = MessageEncryption._get_raw_entropy(channel_private_key)
+            return MessageEncryption.derive_shared_secret(public_key_hex=received_public_key, seed_bytes=raw_entropy)
         except Exception as e:
             logger.error(f"MessageEncryption.get_shared_secret: Failed to derive shared secret: {e}")
             raise ValueError(f"Failed to derive shared secret: {e}") from e
@@ -279,39 +284,39 @@ class MessageEncryption(BaseUtilities):
         """Register a wallet address for automatic handshake responses."""
         if not wallet_address.startswith('r'):
             raise ValueError("Invalid XRPL address")
-            
         self._auto_handshake_wallets.add(wallet_address)
-        logger.info(f"Registered {wallet_address} for automatic handshake responses")
+        logger.debug(f"MessageEncryption.register_auto_handshake_wallet: Registered {wallet_address} for automatic handshake responses")
     
-    def get_handshake_for_address(self, source_address: str, destination: str, memo_history: Optional[pd.DataFrame] = None) -> tuple[bool, Optional[str]]:
-        """Returns (handshake_sent, their_public_key) tuple indicating handshake status between addresses.
+    def get_handshake_for_address(
+            self, 
+            channel_address: str, 
+            channel_counterparty: str, 
+            memo_history: Optional[pd.DataFrame] = None
+        ) -> tuple[bool, Optional[str]]:
+        """Get handshake public keys between two addresses.
         
         Args:
-            source_address: Address checking handshake status
-            destination: Target address for handshake
+            channel_address: One end of the encryption channel
+            channel_counterparty: The other end of the encryption channel
             memo_history: Optional pre-filtered memo history. If None, will be fetched.
             
         Returns:
-            tuple[bool, Optional[str]]: (handshake_sent, received_public_key)
-                - handshake_sent: Whether source has sent their public key
-                - received_public_key: Public key received from destination, if any
-                
-        Raises:
-            ValueError: If addresses are invalid
+            TODO: replace bool in first position of tuple with the actual key sent
+            Tuple of (key_sent, received_key) handshake public keys
         """
         try:
             if not self.pft_utilities:
                 raise ValueError("PFT utilities not initialized")
             
             # Validate addresses
-            if not (source_address.startswith('r') and destination.startswith('r')):
-                logger.error(f"MessageEncryption.get_handshake_for_address: Invalid XRPL addresses provided: {source_address}, {destination}")
+            if not (channel_address.startswith('r') and channel_counterparty.startswith('r')):
+                logger.error(f"MessageEncryption.get_handshake_for_address: Invalid XRPL addresses provided: {channel_address}, {channel_counterparty}")
                 raise ValueError("Invalid XRPL addresses provided")
             
             # Get memo history if not provided
             if memo_history is None:
                 memo_history = self.pft_utilities.get_account_memo_history(
-                    account_address=source_address,
+                    account_address=channel_address,
                     pft_only=False
                 )
 
@@ -323,23 +328,28 @@ class MessageEncryption(BaseUtilities):
             if handshakes.empty:
                 return False, None
             
+            # Function to clean chunk prefixes
+            # TODO: move this to a more general transaction-processing utility
+            def clean_chunk_prefix(memo_data: str) -> str:
+                return re.sub(r'^chunk_\d+__', '', memo_data)
+            
             # Check for sent handshake
             sent_handshakes = handshakes[
-                (handshakes['user_account'] == destination) & 
+                (handshakes['user_account'] == channel_counterparty) & 
                 (handshakes['direction'] == 'OUTGOING')
             ]
             handshake_sent = not sent_handshakes.empty
 
             # Check for received handshake and get latest public key
             received_handshakes = handshakes[
-                (handshakes['user_account'] == destination) &
+                (handshakes['user_account'] == channel_counterparty) &
                 (handshakes['direction'] == 'INCOMING')
             ]
 
             received_key = None
             if not received_handshakes.empty:
                 latest_received = received_handshakes.sort_values('datetime').iloc[-1]
-                received_key = latest_received['memo_data']
+                received_key = clean_chunk_prefix(latest_received['memo_data'])
 
             return handshake_sent, received_key
         
@@ -348,33 +358,33 @@ class MessageEncryption(BaseUtilities):
             raise ValueError(f"Failed to get handshake status: {e}") from e
 
     @staticmethod
-    def get_pending_handshakes(memo_history: pd.DataFrame, destination_address: str) -> pd.DataFrame:
+    def get_pending_handshakes(memo_history: pd.DataFrame, channel_counterparty: str) -> pd.DataFrame:
         """Get pending handshakes that need responses for a specific address.
         
         Args:
             memo_history: DataFrame containing memo history
-            destination_address: Address to check for pending handshakes
+            channel_counterparty: Address to check for pending handshakes
             
         Returns:
             DataFrame containing pending handshake requests
         """
         return memo_history[
             (memo_history['memo_type'] == constants.SystemMemoType.HANDSHAKE.value) &
-            (memo_history['destination'] == destination_address) &
+            (memo_history['destination'] == channel_counterparty) &
             ~memo_history['account'].isin(  # Exclude accounts that have received responses
                 memo_history[
                     (memo_history['memo_type'] == constants.SystemMemoType.HANDSHAKE.value) &
-                    (memo_history['account'] == destination_address)
+                    (memo_history['account'] == channel_counterparty)
                 ]['destination'].unique()
             )
         ]
 
-    def send_handshake(self, source_seed: str, destination_address: str, username: str = None) -> bool:
+    def send_handshake(self, channel_private_key: str, channel_counterparty: str, username: str = None) -> bool:
         """Send a handshake transaction containing the ECDH public key.
         
         Args:
-            source_seed: Seed of sending wallet
-            destination_address: Address to send handshake to
+            channel_private_key: Private key for this end of the channel
+            channel_counterparty: Address of the other end of the channel
             username: Optional username to include in logging
             
         Returns:
@@ -382,21 +392,30 @@ class MessageEncryption(BaseUtilities):
         """
         try:
             # Get ECDH public key
-            public_key = self.get_ecdh_public_key_from_seed(source_seed)
+            public_key = self.get_ecdh_public_key_from_seed(channel_private_key)
             
             # Construct handshake memo
             handshake_memo = self.pft_utilities.construct_handshake_memo(
-                user=destination_address,
+                user=username,
                 ecdh_public_key=public_key
             )
             
             # Send transaction
-            wallet = self.pft_utilities.spawn_wallet_from_seed(source_seed)
+            wallet = self.pft_utilities.spawn_wallet_from_seed(channel_private_key)
             log_message_source = f"{username} ({wallet.address})" if username else wallet.address
-            logger.debug(f"MessageEncryption.send_handshake: Spawned wallet for {log_message_source} to send handshake to {destination_address}")
-            logger.debug(f"MessageEncryption.send_handshake: Sending handshake from {log_message_source} to {destination_address}: {handshake_memo[:8]}...")
-            response = self.pft_utilities.send_memo_single(wallet, destination_address, handshake_memo)
-            return self.pft_utilities.verify_transaction_response(response)
+            logger.debug(f"MessageEncryption.send_handshake: Sending handshake from {log_message_source} to {channel_counterparty}...")
+            responses = self.pft_utilities.send_memo(
+                wallet_seed_or_wallet=channel_private_key, 
+                destination=channel_counterparty, 
+                memo=handshake_memo,
+                username=username,
+                compress=False,
+            )
+            for response in responses:
+                if not self.pft_utilities.verify_transaction_response(response):
+                    logger.error(f"MessageEncryption.send_handshake: Failed to send handshake from {log_message_source} to {channel_counterparty}")
+                    return False
+            return True
             
         except Exception as e:
             logger.error(f"Error sending handshake: {e}")

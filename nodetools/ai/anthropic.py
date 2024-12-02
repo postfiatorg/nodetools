@@ -9,6 +9,7 @@ import time
 from asyncio import Semaphore
 from nodetools.utilities.credentials import CredentialManager
 import nodetools.utilities.constants as constants
+from loguru import logger
 
 class AnthropicTool:
     _instance = None
@@ -104,13 +105,13 @@ class AnthropicTool:
     async def rate_limited_request(self, job_name, api_args):
         async with self.semaphore:
             await self.wait_for_rate_limit()
-            print(f"Task {job_name} start: {datetime.datetime.now().time()}")
+            logger.debug(f"AnthropicTool.rate_limited_request: Task {job_name} start: {datetime.datetime.now().time()}")
             try:
                 response = await self.async_client.messages.create(**api_args)
-                print(f"Task {job_name} end: {datetime.datetime.now().time()}")
+                logger.debug(f"AnthropicTool.rate_limited_request: Task {job_name} end: {datetime.datetime.now().time()}")
                 return job_name, response
             except anthropic.RateLimitError as e:
-                print(f"Rate limit error for task {job_name}: {str(e)}")
+                logger.debug(f"AnthropicTool.rate_limited_request: Rate limit error for task {job_name}: {str(e)}")
                 await asyncio.sleep(5)  # Wait for 5 seconds before retrying
                 return await self.rate_limited_request(job_name, api_args)
 

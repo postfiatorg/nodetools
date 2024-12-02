@@ -1,5 +1,5 @@
 from decimal import Decimal
-from typing import Optional
+from typing import Optional, Union
 import binascii
 import datetime 
 import random
@@ -24,7 +24,7 @@ from xrpl.clients import JsonRpcClient
 from xrpl.models.requests import AccountInfo, AccountLines, AccountTx
 from nodetools.utilities.encryption import MessageEncryption
 from nodetools.performance.monitor import PerformanceMonitor
-from nodetools.utilities.address_service import AddressService
+from nodetools.utilities.transaction_requirements import TransactionRequirementService
 from nodetools.ai.openai import OpenAIRequestTool
 from nodetools.utilities.db_manager import DBConnectionManager
 from nodetools.utilities.credentials import CredentialManager
@@ -54,7 +54,7 @@ class GenericPFTUtilities(BaseUtilities):
             self.node_config = config.get_node_config()
             self.pft_issuer = self.network_config.issuer_address
             self.node_address = self.node_config.node_address
-            self.address_service = AddressService(self.network_config, self.node_config)
+            self.transaction_requirements = TransactionRequirementService(self.network_config, self.node_config)
             self.node_name = self.node_config.node_name
 
             # Determine endpoint with fallback logic
@@ -77,7 +77,6 @@ class GenericPFTUtilities(BaseUtilities):
             # Register auto-handshake addresses from node config
             for address in self.node_config.auto_handshake_addresses:
                 self.message_encryption.register_auto_handshake_wallet(address)
-                logger.debug(f"Registered auto-handshake address: {address}")
 
             self.__class__._initialized = True
 
@@ -269,14 +268,16 @@ class GenericPFTUtilities(BaseUtilities):
             'MemoData': MemoData
         }
     
+    # TODO: Replace with MemoBuilder once ready
     @staticmethod
-    def construct_google_doc_context_memo(user, google_doc_link):                  
+    def construct_google_doc_context_memo(user, google_doc_link):               
         return GenericPFTUtilities.construct_memo(
             user=user, 
             memo_type=constants.SystemMemoType.GOOGLE_DOC_CONTEXT_LINK.value, 
             memo_data=google_doc_link
         ) 
 
+    # TODO: Replace with MemoBuilder once ready
     @staticmethod
     def construct_genesis_memo(user, task_id, full_output):
         return GenericPFTUtilities.construct_memo(
@@ -285,6 +286,7 @@ class GenericPFTUtilities(BaseUtilities):
             memo_data=full_output
         )
 
+    # TODO: Replace with MemoBuilder once ready
     @staticmethod
     def construct_memo(user, memo_type, memo_data):
 
@@ -531,6 +533,8 @@ class GenericPFTUtilities(BaseUtilities):
         WHERE account = %s OR destination = %s
         """
 
+        # TODO: Add filtering on successful transactions only (tx_json_parsed::text LIKE '%"TransactionResult":"tesSUCCESS%"')
+
         if pft_only:
             query += " AND tx_json_parsed::text LIKE %s"
             params = (account_address, account_address, account_address, account_address, 
@@ -540,9 +544,6 @@ class GenericPFTUtilities(BaseUtilities):
                     account_address)
 
         df = pd.read_sql(query, dbconnx, params=params, parse_dates=['simple_date'])
-
-        if df.empty:
-            return pd.DataFrame()
         
         # Handle remaining transformations that must stay in Python
         df['converted_memos'] = df['main_memo_data'].apply(self.convert_memo_dict__generic)
@@ -552,45 +553,62 @@ class GenericPFTUtilities(BaseUtilities):
 
         return df
     
-    def send_and_track_transaction(
+    def process_queue_transaction(
             self,
             wallet: Wallet,
             memo: str,
             destination: str,
-            amount: int,
             tracking_set: set,
-            tracking_tuple: tuple
+            tracking_tuple: tuple,
+            pft_amount: Optional[Union[int, float, Decimal]] = None
         ) -> bool:
-        """Send transaction and track for verification if successful.
+        """Send and track a node-initiated transaction for queue processing.
+        
+        This method is specifically designed for node-initiated operations (like rewards and handshake responses)
+        that need to be verified as a final step during queue processing. It should NOT be used for 
+        user-initiated transactions.
         
         Args:
-            wallet: XRPL wallet instance to send from
+            wallet: XRPL wallet instance for the node
             memo: Formatted memo object for the transaction
             destination: Destination address for transaction
-            amount: Amount of PFT to send
-            tracking_set: Set to add tracking tuple to if successful
-            tracking_tuple: Tuple of (user_account, memo_type, datetime) for verification
+            tracking_set: Set to add tracking tuple to if successful (for queue verification)
+            tracking_tuple: Tuple of (user_account, memo_type, datetime) for queue tracking
+            amount: Optional PFT amount to send (will be converted to Decimal)
             
         Returns:
-            bool: True if transaction was sent and verified, False otherwise
+            bool: True if all chunks were sent and verified successfully
+            
+        Note:
+            This method is intended for internal node operations only. For user-initiated
+            transactions, use send_memo() instead.
         """
         try:
+            # Convert amount to Decimal if provided
+            pft_amount = Decimal(str(pft_amount)) if pft_amount is not None else None
+
             # Send transaction
-            response = self.send_PFT_with_info(
-                sending_wallet=wallet,
-                amount=amount,
+            responses = self.send_memo(
+                wallet_seed_or_wallet=wallet,
+                destination=destination,
                 memo=memo,
-                destination_address=destination
+                pft_amount=pft_amount,
+                compress=False
             )
 
-            # Track for verification if successful
-            if self.verify_transaction_response(response):
+            # Verify all responses were successful
+            all_successful = all(
+                self.verify_transaction_response(response) 
+                for response in responses
+            )
+
+            if all_successful:
                 tracking_set.add(tracking_tuple)
                 return True
             else:
-                logger.warning(f"GenericPFTUtilities._send_and_track_transactions: Failed to verify transaction to {destination}")
+                logger.warning(f"Failed to verify all chunks in transaction to {destination}")
                 return False
-            
+        
         except Exception as e:
             logger.error(f"GenericPFTUtilities._send_and_track_transactions: Error sending transaction to {destination}: {e}")
             return False
@@ -601,7 +619,7 @@ class GenericPFTUtilities(BaseUtilities):
             transaction_type: str, 
             verification_predicate: callable
         ) -> pd.DataFrame:
-        """Generic verification loop for transactions.
+        """Generic verification loop for transactions initiated by the node.
         
         Args:
             items_to_verify: Set of (user_account, memo_type, datetime) tuples
@@ -616,14 +634,14 @@ class GenericPFTUtilities(BaseUtilities):
             return items_to_verify
         
         logger.debug(f"GenericPFTUtilities._verify_transactions: Verifying {len(items_to_verify)} {transaction_type}")
-        max_attempts = constants.TRANSACTION_VERIFICATION_ATTEMPTS
+        max_attempts = constants.NODE_TRANSACTION_VERIFICATION_ATTEMPTS
         attempt = 0
 
         while attempt < max_attempts and items_to_verify:
             attempt += 1
             logger.debug(f"GenericPFTUtilities._verify_transactions: Verification attempt {attempt} of {max_attempts}")
 
-            time.sleep(constants.TRANSACTION_VERIFICATION_WAIT_TIME)
+            time.sleep(constants.NODE_TRANSACTION_VERIFICATION_WAIT_TIME)
 
             # Force sync of database
             self.sync_pft_transaction_history()
@@ -655,9 +673,9 @@ class GenericPFTUtilities(BaseUtilities):
         """Check if a memo is encrypted"""
         return self.message_encryption.is_encrypted(memo)
     
-    def send_handshake(self, wallet_seed: str, user_name: str, destination: str):
+    def send_handshake(self, wallet_seed: str, destination: str, username: str = None):
         """Sends a handshake memo to establish encrypted communication"""
-        return self.message_encryption.send_handshake(source_seed=wallet_seed, user_name=user_name, destination=destination)
+        return self.message_encryption.send_handshake(channel_private_key=wallet_seed, channel_counterparty=destination, username=username)
     
     def register_auto_handshake_wallet(self, wallet_address: str):
         """Register a wallet address for automatic handshake responses."""
@@ -670,11 +688,12 @@ class GenericPFTUtilities(BaseUtilities):
     def get_pending_handshakes(self, address: str):
         """Get pending handshakes for a specific address"""
         memo_history = self.get_account_memo_history(account_address=address, pft_only=False)
-        return self.message_encryption.get_pending_handshakes(memo_history=memo_history, destination_address=address)
+        return self.message_encryption.get_pending_handshakes(memo_history=memo_history, channel_counterparty=address)
 
-    def get_handshake_for_address(self, remembrancer_address: str, account_address: str):
+    def get_handshake_for_address(self, source_address: str, destination: str):
         """Get handshake for a specific address"""
-        return self.message_encryption.get_handshake_for_address(remembrancer_address, account_address)
+        memo_history = self.get_account_memo_history(account_address=source_address, pft_only=False)
+        return self.message_encryption.get_handshake_for_address(source_address, destination, memo_history)
     
     def get_shared_secret(self, received_key: str, wallet_seed: str):
         """Get shared secret for a received key and wallet seed"""
@@ -685,101 +704,134 @@ class GenericPFTUtilities(BaseUtilities):
         return self.message_encryption.process_encrypted_message(message, shared_secret)
 
     def send_memo(self, 
-            wallet_seed: str, 
-            user_name: str, 
+            wallet_seed_or_wallet: Union[str, xrpl.wallet.Wallet], 
             destination: str, 
-            memo: str, 
+            memo: Union[str, Memo], 
+            username: str = None,
             message_id: str = None, 
             compress: bool = True, 
-            encrypt: bool = False
+            encrypt: bool = False,
+            pft_amount: Optional[Decimal] = None
         ) -> list[dict]:
-        """ Sends a memo to a destination, chunking by MAX_MEMO_CHUNK_SIZE, with optional compression and encryption
+        """Primary method for sending memos on the XRPL with PFT requirements.
+        
+        This method handles all aspects of memo sending including:
+        - PFT requirement calculation based on destination and memo type
+        - Encryption for secure communication (requires prior handshake) TODO: Move this to a MemoBuilder class
+        - Compression for large messages TODO: Move this to a MemoBuilder class
+        - Automatic chunking for messages exceeding size limits TODO: Move this to a MemoBuilder class
+        - Standardized memo formatting TODO: Move this to a MemoBuilder class
         
         Args:
-            wallet_seed (str): Seed for the wallet to send the memo
-            user_name (str): Name of the user sending the memo
-            destination (str): XRPL destination address
-            memo (str): Message content to send
-            message_id (str): Custom message ID to use, otherwise a random one will be generated
-            compress (bool): Whether to compress the memo (default True)
-            encrypt (bool): Whether to encrypt the memo (default False)
-            
+            wallet_seed_or_wallet: Either a wallet seed string or a Wallet object
+            destination: XRPL destination address
+            memo: Either a string message or pre-constructed Memo object
+            username: Optional user identifier for memo format field
+            message_id: Optional custom ID for memo type field, auto-generated if None
+            compress: Whether to compress the memo data (default True)
+            encrypt: Whether to encrypt the memo data (default False)
+            pft_amount: Optional specific PFT amount to send. If None, amount will be 
+                determined by transaction requirements service.
+                
         Returns:
-            list[dict]: Responses from each chunk sent
+            list[dict]: Transaction responses for each chunk sent
+            
+        Raises:
+            ValueError: If wallet input is invalid
+            HandshakeRequiredException: If encryption requested without prior handshake
         """
-        logger.debug(f"GenericPFTUtilities.send_memo: Spawning wallet for {user_name} to send memo to {destination}: {memo}...")
-        wallet = self.spawn_wallet_from_seed(wallet_seed)
-        message_id = self.generate_custom_id() if message_id is None else message_id
-        logger.debug(f"GenericPFTUtilities.send_memo: Generated message ID for {user_name}: {message_id}")
+        # Handle wallet input
+        if isinstance(wallet_seed_or_wallet, str):
+            wallet = self.spawn_wallet_from_seed(wallet_seed_or_wallet)
+            logged_user = f"{username} ({wallet.address})" if username else wallet.address
+            logger.debug(f"GenericPFTUtilities.send_memo: Spawned wallet for {logged_user} to send memo to {destination}...")
+        elif isinstance(wallet_seed_or_wallet, xrpl.wallet.Wallet):
+            wallet = wallet_seed_or_wallet
+        else:
+            logger.error("GenericPFTUtilities.send_memo: Invalid wallet input, raising ValueError")
+            raise ValueError("Invalid wallet input")
+
+        # Extract memo data, type, and format
+        if isinstance(memo, Memo):
+            memo_data = self.hex_to_text(memo.memo_data)
+            memo_type = self.hex_to_text(memo.memo_type)
+            memo_format = self.hex_to_text(memo.memo_format)
+        else:
+            memo_data = str(memo)
+            memo_type = message_id or self.generate_custom_id()
+            memo_format = username or wallet.classic_address
+
+        # Get per-tx PFT requirement
+        pft_amount = pft_amount or self.transaction_requirements.get_pft_requirement(
+            address=destination,
+            memo_type=memo_type
+        )
+
+        # Check if this is a system memo type
+        is_system_memo = any(
+            memo_type == system_type.value 
+            for system_type in constants.SystemMemoType
+        )
 
         # Handle encryption if requested
         if encrypt:
-            logger.debug(f"GenericPFTUtilities.send_memo: {user_name} requested encryption. Checking handshake status.")
-            # Check handshake status
-            _, received_key = MessageEncryption.get_handshake_for_address(wallet_seed, destination)
-
+            logger.debug(f"GenericPFTUtilities.send_memo: {username} requested encryption. Checking handshake status.")
+            _, received_key = self.message_encryption.get_handshake_for_address(wallet.address, destination)
             if not received_key:
                 raise HandshakeRequiredException(destination)
-            
-            # Derive shared secret and encrypt 
-            shared_secret = MessageEncryption.get_shared_secret(received_key, wallet_seed)
-            encrypted_memo = MessageEncryption.encrypt_memo(memo, shared_secret)
-            memo = "WHISPER__" + encrypted_memo
+            shared_secret = self.message_encryption.get_shared_secret(received_key, wallet.seed)
+            encrypted_memo = self.message_encryption.encrypt_memo(memo_data, shared_secret)
+            memo_data = "WHISPER__" + encrypted_memo
 
         # Handle compression if requested
         if compress:
-            logger.debug(f"GenericPFTUtilities.send_memo: {user_name} requested compression. Compressing memo.")
-            compressed_data = self.compress_string(memo)
+            logger.debug(f"GenericPFTUtilities.send_memo: {username} requested compression. Compressing memo.")
+            compressed_data = self.compress_string(memo_data)
             logger.debug(f"GenericPFTUtilities.send_memo: Compressed memo to length {len(compressed_data)}")
-            memo = "COMPRESSED__" + compressed_data
+            memo_data = "COMPRESSED__" + compressed_data
 
-        # Split into chunks
-        memo_chunks = self.split_text_into_chunks(memo)
+        # For system memos, verify size before sending
+        if is_system_memo:
+            if self.is_over_1kb(memo_data):
+                raise ValueError(f"System memo type {memo_type} exceeds 1KB size limit and cannot be chunked")
+            
+            # Convert to hex to check actual size
+            test_memo = self.construct_standardized_xrpl_memo(
+                memo_format=memo_format,
+                memo_type=memo_type,
+                memo_data=memo_data
+            )
+            
+            # Send as single message
+            return [self._send_memo_single(wallet, destination, test_memo, pft_amount)]
+
+        # For non-system memos, proceed with normal chunking
+        memo_chunks = self.split_text_into_chunks(memo_data)
         responses = []
 
         # Send each chunk
         for idx, memo_chunk in enumerate(memo_chunks):
-            log_content = memo_chunk
-            if compress and idx == 0:
-                try:
-                    log_content = f"[compressed memo preview] {memo[:100]}..."
-                except Exception as e:
-                    logger.error(f"GenericPFTUtilities.send_memo: Error previewing memo chunk: {e}")
-                    log_content = "[compressed content]"
-                
-            logger.debug(f"GenericPFTUtilities.send_memo: Sending chunk {idx+1} of {len(memo_chunks)}: {log_content[:100]}...")
+            logger.debug(f"GenericPFTUtilities.send_memo: Sending chunk {idx+1} of {len(memo_chunks)}...")
 
-            chunk_memo = self.construct_basic_postfiat_memo(
-                user=user_name, 
-                task_id=message_id, 
-                full_output=memo_chunk
+            chunk_memo = self.construct_standardized_xrpl_memo(
+                memo_format=memo_format, 
+                memo_type=memo_type, 
+                memo_data=memo_chunk
             )
 
-            responses.append(self.send_memo_single(wallet, destination, chunk_memo))
+            responses.append(self._send_memo_single(wallet, destination, chunk_memo, pft_amount))
 
         return responses
 
-    def send_memo_single(self, wallet: Wallet, destination: str, memo: str | Memo):
+    def _send_memo_single(self, wallet: Wallet, destination: str, memo: Memo, pft_amount: Decimal):
         """ Sends a single memo to a destination """
         client = xrpl.clients.JsonRpcClient(self.primary_endpoint)
-
-        # Handle memo 
-        if isinstance(memo, Memo):
-            memos = [memo]
-        elif isinstance(memo, str):
-            memos = [Memo(memo_data=self.to_hex(memo))]
-        else:
-            logger.error("GenericPFTUtilities._send_memo_single: Memo is not a string or a Memo object, raising ValueError")
-            raise ValueError("Memo must be either a string or a Memo object")
         
         payment_args = {
             "account": wallet.address,
             "destination": destination,
-            "memos": memos
+            "memos": [memo]
         }
-
-        # Get PFT requirement for destination
-        pft_amount = self.address_service.get_pft_requirement(destination)
 
         if pft_amount > 0:
             payment_args["amount"] = xrpl.models.amounts.IssuedCurrencyAmount(
@@ -804,57 +856,156 @@ class GenericPFTUtilities(BaseUtilities):
             logger.error(response)
 
         return response
-
-    # TODO: Consider replacing with send_memo (reference pftpyclient/task_manager/basic_tasks.py)
-    def send_pft_compressed_message_based_on_wallet_seed(self, wallet_seed, user_name, destination,memo, compress, message_id):
-        """
-        wallet_seed='s___5'
-        user_name='goodalexander'
-        destination='rJ1mBMhEBKack5uTQvM8vWoAntbufyG9Yn'
-        memo= '''
-        ODV: Welcome initiate. This is my first message to you through this local platform
-        compress=True
-        '''
-        """
-        #compress= True
-        wallet = self.spawn_wallet_from_seed(wallet_seed)
-        if message_id is None:
-            message_id = self.generate_custom_id()
-        if compress:
-            logger.debug(f"GenericPFTUtilities.send_pft_compressed_message_based_on_wallet_seed: Compressing memo of length {len(memo)}")
-            compressed_data = self.compress_string(memo)
-            logger.debug(f"GenericPFTUtilities.send_pft_compressed_message_based_on_wallet_seed: Compressed to length {len(compressed_data)}")
-            memo = "COMPRESSED__" + compressed_data
+    
+    def process_memo_data(
+        self,
+        memo_type: str,
+        memo_data: str,
+        decompress: bool = True,
+        decrypt: bool = True,
+        memo_history: Optional[pd.DataFrame] = None,
+        channel_address: Optional[str] = None,
+        channel_counterparty: Optional[str] = None,
+        channel_private_key: Optional[Union[str, xrpl.wallet.Wallet]] = None
+    ) -> str:
+        """Process memo data, handling both single and multi-chunk messages.
         
-        memo_chunks = self.split_text_into_chunks(memo)
-        responses = []
-        # Send each chunk
-        for idx, memo_chunk in enumerate(memo_chunks):
-            log_content = memo_chunk
-            if compress and idx == 0:
-                try:
-                    log_content = f"[compressed memo preview] {memo[:100]}..."
-                except Exception as e:
-                    logger.error(f"GenericPFTUtilities.send_pft_compressed_message_based_on_wallet_seed: Error previewing memo chunk: {e}")
-                    log_content = "[compressed content]"
-                
-            logger.debug(f"GenericPFTUtilities.send_pft_compressed_message_based_on_wallet_seed: Sending chunk {idx+1} of {len(memo_chunks)}: {log_content[:100]}...")
-            
-            chunk_memo = self.construct_basic_postfiat_memo(
-                user=user_name, 
-                task_id=message_id,
-                full_output=memo_chunk
+        For encrypted messages (WHISPER__ prefix), this method handles decryption using ECDH:
+        
+        Encryption Channel:
+        - An encrypted channel exists between two XRPL addresses (channel_address and channel_counterparty)
+        - To decrypt a message, you need the private key (channel_private_key) corresponding to one end 
+        of the channel (channel_address)
+        - It doesn't matter which end was the sender or receiver - what matters is having 
+        the private key for channel_address, and the public key for channel_counterparty
+        
+        Example Usage:
+        1. When node has the private key:
+            process_memo_data(
+                channel_address=node_address,               # The end we have the private key for
+                channel_counterparty=other_party_address,   # The other end of the channel
+                channel_private_key=node_private_key        # Must correspond to channel_address
             )
-            
-            responses.append(self.send_PFT_with_info(
-                sending_wallet=wallet,
-                amount=1,
-                memo=chunk_memo,
-                destination_address=destination
-            ))
-        last_response = responses[-1:][0]
-        return last_response
+        
+        2. When we have a user's private key (legacy case):
+            process_memo_data(
+                channel_address=user_address,             # The end we have the private key for
+                channel_counterparty=node_address,        # The other end of the channel
+                channel_private_key=user_private_key      # Must correspond to channel_address
+            )
 
+        Args:
+            memo_type: The memo type to identify related chunks
+            memo_data: Initial memo data string
+            account_address: One end of the encryption channel - MUST correspond to wallet_seed
+            decompress: If True, decompresses data if COMPRESSED__ prefix is present
+            decrypt: If True, decrypts data if WHISPER__ prefix is present
+            destination: Required for decryption - the other end of the encryption channel
+            memo_history: Optional pre-filtered memo history for chunk lookup
+            wallet_seed: Required for decryption - MUST be the private key corresponding 
+                        to account_address (not destination)
+        
+        Raises:
+            ValueError: If decrypt=True but wallet_seed is not provided
+            ValueError: If decrypt=True but destination is not provided
+            ValueError: If wallet_seed provided doesn't correspond to account_address
+        """
+        try:
+            processed_data = memo_data
+
+            # Skip chunk processing for SystemMemoType messages
+            is_system_memo = any(
+                memo_type == system_type.value 
+                for system_type in constants.SystemMemoType
+            )
+
+            # Handle chunking for non-system messages only
+            if not is_system_memo:
+                # Check if this is a chunked message
+                chunk_match = re.match(r'^chunk_\d+__', memo_data)
+                if chunk_match:
+                    # Get or use provided memo history
+                    if memo_history is None:
+                        memo_history = self.get_account_memo_history(
+                            account_address=channel_address, 
+                            pft_only=False
+                        )
+
+                    # Get all chunks with this memo type and from this account
+                    memo_chunks = memo_history[
+                        (memo_history['memo_type'] == memo_type) &
+                        (memo_history['account'] == channel_address) &
+                        (memo_history['memo_data'].str.match(r'^chunk_\d+__'))  # Only get actual chunks
+                    ].copy()
+
+                    if not memo_chunks.empty:
+                        # Extract chunk numbers and sort
+                        def extract_chunk_number(x):
+                            match = re.search(r'^chunk_(\d+)__', x)
+                            return int(match.group(1)) if match else 0  # Return 0 for non-chunks
+                        
+                        memo_chunks['chunk_number'] = memo_chunks['memo_data'].apply(extract_chunk_number)
+                        memo_chunks = memo_chunks.sort_values('chunk_number')
+                        
+                        # Combine chunks
+                        processed_data = ''.join(
+                            memo_chunks['memo_data'].apply(lambda x: re.sub(r'^chunk_\d+__', '', x))
+                        )
+                    else:
+                        # If no chunks found, just clean the prefix from the single message
+                        processed_data = re.sub(r'^chunk_\d+__', '', memo_data)
+                # If not a chunk, leave the data unchanged
+                else:
+                    processed_data = memo_data
+        
+            # Handle decompression
+            if decompress and processed_data.startswith('COMPRESSED__'):
+                processed_data = processed_data.replace('COMPRESSED__', '', 1)
+                processed_data = self.decompress_string(processed_data)
+
+            # Handle encryption
+            if decrypt and processed_data.startswith('WHISPER__'):
+                if not channel_private_key:
+                    raise ValueError("Sender's wallet_seed (account_address's seed) is required for decryption")
+                if not channel_counterparty:
+                    raise ValueError("Recipient's address (destination) is required for decryption")
+                
+                # Validate that wallet_seed corresponds to account_address
+                sender_seed = channel_private_key.seed if isinstance(channel_private_key, xrpl.wallet.Wallet) else channel_private_key
+                sender_wallet = (channel_private_key if isinstance(channel_private_key, xrpl.wallet.Wallet) 
+                                else xrpl.wallet.Wallet.from_seed(sender_seed))
+                
+                if sender_wallet.classic_address != channel_address:
+                    raise ValueError(
+                        f"wallet_seed must correspond to sender's address (account_address). "
+                        f"Got wallet for {sender_wallet.classic_address} but account_address is {channel_address}"
+                    )
+                    
+                _, handshake_key = self.message_encryption.get_handshake_for_address(
+                    channel_address=channel_address,
+                    channel_counterparty=channel_counterparty
+                )
+                
+                if not handshake_key:
+                    raise ValueError(f"No handshake found between {channel_address} and {channel_counterparty}")
+                
+                # Get the shared secret from the handshake key
+                shared_secret = self.message_encryption.get_shared_secret(
+                    received_public_key=handshake_key, 
+                    channel_private_key=sender_seed
+                )
+
+                # Remove WHISPER__ prefix and decrypt
+                processed_data = processed_data.replace('WHISPER__', '', 1)
+                processed_data = self.message_encryption.decrypt_message(processed_data, shared_secret)
+                
+            return processed_data
+            
+        except Exception as e:
+            logger.error(f"GenericPFTUtilities.process_memo_data: Error processing memo data: {e}")
+            raise
+
+    # TODO: Add automatic decryption to this method
     def get_all_account_compressed_messages(self, account_address):
 
         def try_fix_compressed_string(compressed_string):
@@ -956,24 +1107,24 @@ class GenericPFTUtilities(BaseUtilities):
     
         return new_log_memo_df
     
-    # TODO: Replace with get_latest_outgoing_context_doc_link (reference pftpyclient/task_manager/basic_tasks.py)
-    def get_most_recent_google_doc_for_user(self, account_memo_detail_df, address):
-        """ This function takes a memo detail df and a classic address and outputs
-        the associated google doc
+    # # TODO: Replace with get_latest_outgoing_context_doc_link (reference pftpyclient/task_manager/basic_tasks.py)
+    # def get_most_recent_google_doc_for_user(self, account_memo_detail_df, address):
+    #     """ This function takes a memo detail df and a classic address and outputs
+    #     the associated google doc
         
-        EXAMPLE:
-        address = 'r3UHe45BzAVB3ENd21X9LeQngr4ofRJo5n'
-        all_account_info = self.get_memo_detail_df_for_account(account_address='r3UHe45BzAVB3ENd21X9LeQngr4ofRJo5n',transaction_limit=5000,
-            pft_only=True) 
-        """ 
-        op = ''
-        try:
-            op=list(account_memo_detail_df[(account_memo_detail_df['converted_memos'].apply(lambda x: 'google_doc' in str(x))) & 
-                    (account_memo_detail_df['account']==address)]['converted_memos'].tail(1))[0]['MemoData']
-        except:
-            logger.warning('GenericPFTUtilities.get_most_recent_google_doc_for_user: No Google Doc Associated with Address')
-            pass
-        return op
+    #     EXAMPLE:
+    #     address = 'r3UHe45BzAVB3ENd21X9LeQngr4ofRJo5n'
+    #     all_account_info = self.get_memo_detail_df_for_account(account_address='r3UHe45BzAVB3ENd21X9LeQngr4ofRJo5n',transaction_limit=5000,
+    #         pft_only=True) 
+    #     """ 
+    #     op = ''
+    #     try:
+    #         op=list(account_memo_detail_df[(account_memo_detail_df['converted_memos'].apply(lambda x: 'google_doc' in str(x))) & 
+    #                 (account_memo_detail_df['account']==address)]['converted_memos'].tail(1))[0]['MemoData']
+    #     except:
+    #         logger.warning('GenericPFTUtilities.get_most_recent_google_doc_for_user: No Google Doc Associated with Address')
+    #         pass
+    #     return op
     
     # TODO: Replace with is_valid_id (reference pftpyclient/task_manager/basic_tasks.py)
     def determine_if_map_is_task_id(self,memo_dict):
@@ -1310,7 +1461,7 @@ class GenericPFTUtilities(BaseUtilities):
     def run_transaction_history_updates(self):
         """
         Runs transaction history updates using a single coordinated thread
-        Updates happen every 30 seconds using the primary endpoint
+        Updates happen every TRANSACTION_HISTORY_UPDATE_INTERVAL seconds using the primary endpoint
         """
         self._last_update = 0
         self._update_lock = threading.Lock()
@@ -1545,6 +1696,7 @@ class GenericPFTUtilities(BaseUtilities):
 
     def get_latest_outgoing_context_doc_link(self, wallet: xrpl.wallet.Wallet) -> Optional[str]:
         """Get the most recent Google Doc context link sent by this wallet.
+        Handles both encrypted and unencrypted links for backwards compatibility.
             
         Args:
             wallet: XRPL wallet object
@@ -1562,11 +1714,22 @@ class GenericPFTUtilities(BaseUtilities):
             ]
             
             if len(context_docs) > 0:
-                return context_docs.iloc[-1]['memo_data']
+                latest_doc = context_docs.iloc[-1]
+                
+                return self.process_memo_data(
+                    memo_type=latest_doc['memo_type'],
+                    memo_data=latest_doc['memo_data'],
+                    channel_address=self.node_address,
+                    channel_counterparty=wallet.classic_address,
+                    memo_history=memo_history,
+                    channel_private_key=self.credential_manager.get_credential(f"{self.node_name}__v1xrpsecret")
+                )
+
             return None
+            
         except Exception as e:
             logger.error(f"GenericPFTUtilities.get_latest_outgoing_context_doc_link: Error getting latest context doc link: {e}")
-            return None   
+            return None
     
     @staticmethod
     def get_google_doc_text(share_link):
@@ -1659,6 +1822,7 @@ class GenericPFTUtilities(BaseUtilities):
         if self.get_xrp_balance(wallet.classic_address) == 0:
             raise GoogleDocIsNotFundedException(google_doc_link)
     
+    # TODO: This might become redundant with the introduction of google doc link updates. assess soon
     def google_doc_sent(self, wallet: xrpl.wallet.Wallet):
         """Check if wallet has sent a Google Doc context link.
         
@@ -1695,9 +1859,10 @@ class GenericPFTUtilities(BaseUtilities):
 
         if not self.google_doc_sent(wallet):
             logger.debug(f"GenericPFTUtilities.handle_google_doc: Google doc not sent for {wallet.classic_address}, sending now...")
-            return self.send_google_doc(wallet, google_doc_link, username)
         else:
-            logger.debug(f"GenericPFTUtilities.handle_google_doc: Google doc already sent for {wallet.classic_address}.")
+            logger.debug(f"GenericPFTUtilities.handle_google_doc: Google doc sent before for {wallet.classic_address}. Updating to new link...")
+
+        return self.send_google_doc(wallet, google_doc_link, username)
 
     def send_google_doc(self, wallet: xrpl.wallet.Wallet, google_doc_link: str, username: str) -> dict:
         """Send Google Doc context link to the node.
@@ -1716,14 +1881,21 @@ class GenericPFTUtilities(BaseUtilities):
                 google_doc_link=google_doc_link
             )
             logger.debug(f"GenericPFTUtilities.send_google_doc: Sending Google Doc link transaction from {wallet.classic_address} to node {self.node_address}: {google_doc_link}")
-            response = self.send_PFT_with_info(
-                sending_wallet=wallet,
-                amount=1,
+            
+            responses = self.send_memo(
+                wallet_seed_or_wallet=wallet,
+                username=username,
                 memo=google_doc_memo,
-                destination_address=self.node_address
+                destination=self.node_address,
+                compress=False,
+                encrypt=True  # Google Doc link is always encrypted
             )
-            if not self.verify_transaction_response(response):
-                raise Exception(f"GenericPFTUtilities.send_google_doc: Failed to send Google Doc link: {response}")
+
+            for response in responses:
+                if not self.verify_transaction_response(response):
+                    raise Exception(f"GenericPFTUtilities.send_google_doc: Failed to send Google Doc link: {response}")
+
+            return responses[-1]  # Return last response for compatibility with existing code
 
         except Exception as e:
             raise Exception(f"GenericPFTUtilities.send_google_doc: Error sending Google Doc: {str(e)}")
@@ -1745,6 +1917,61 @@ class GenericPFTUtilities(BaseUtilities):
             formatted_messages.append(formatted_message)
         
         return "\n".join(formatted_messages)
+    
+    def dump_google_doc_links(self, output_file: str = "google_doc_links.csv") -> None:
+        """Dump all Google Doc context links to a file for review.
+        
+        Creates a file containing wallet addresses, usernames, and their associated
+        decrypted Google Doc links for node operator review.
+        
+        Args:
+            output_file: Path to output file. Defaults to "google_doc_links.txt"
+        """
+        try:
+            # Get all transactions for the node
+            memo_history = self.get_account_memo_history(
+                account_address=self.node_address,
+                pft_only=False
+            )
+
+            # Filter for Google Doc context links
+            doc_links = memo_history[
+                (memo_history['memo_type'] == constants.SystemMemoType.GOOGLE_DOC_CONTEXT_LINK.value) &
+                (memo_history['transaction_result'] == "tesSUCCESS")
+            ]
+
+            if doc_links.empty:
+                return
+            
+            # Get latest link for each account using pandas operations
+            latest_links = (doc_links
+                .sort_values('datetime')
+                .groupby('account')
+                .last()
+                .reset_index()[['account', 'memo_format', 'memo_data', 'datetime']]
+                .rename(columns={'memo_format': 'username', 'datetime': 'last_updated'})
+            )
+
+            # Process using node's address/secret since that's the end we have the key for
+            latest_links['google_doc_link'] = latest_links.apply(
+                lambda row: self.process_memo_data(
+                    memo_type=constants.SystemMemoType.GOOGLE_DOC_CONTEXT_LINK.value,
+                    memo_data=row['memo_data'],
+                    channel_address=self.node_address,  # The end we have the key for
+                    channel_counterparty=row['account'],         # The other end of the channel
+                    memo_history=memo_history,
+                    channel_private_key=self.credential_manager.get_credential(f"{self.node_name}__v1xrpsecret")
+                ),
+                axis=1
+            )
+
+            # Drop the memo_data column and save
+            latest_links.drop('memo_data', axis=1).to_csv(output_file, index=False)
+            logger.debug(f"Google Doc links dumped to {output_file}")
+            
+        except Exception as e:
+            logger.error(f"GenericPFTUtilities.dump_google_doc_links: Error dumping Google Doc links: {e}")
+            raise
 
     def format_refusal_frame(self, refusal_frame_constructor):
         """
@@ -2320,7 +2547,7 @@ PFT WEEKLY AVG:   {weekly_pft_reward_avg}
         Raises:
             Exception: If there is an error checking for the initiation rite
         """
-        if allow_reinitiation and constants.USE_TESTNET:
+        if allow_reinitiation and config.RuntimeConfig.USE_TESTNET:
             logger.debug(f"GenericPFTUtilities.has_initiation_rite: Re-initiation allowed for {wallet.classic_address} (test mode)")
             return False
         
@@ -2364,14 +2591,15 @@ PFT WEEKLY AVG:   {weekly_pft_reward_avg}
                 memo_format=username
             )
             logger.debug(f"GenericPFTUtilities.handle_initiation_rite: Sending initiation rite transaction from {wallet.classic_address} to node {self.node_address}")
-            response = self.send_PFT_with_info(
-                sending_wallet=wallet, 
-                amount=1, 
-                memo=initiation_memo, 
-                destination_address=self.node_address, 
+            responses = self.send_memo(
+                wallet_seed_or_wallet=wallet,
+                memo=initiation_memo,
+                destination=self.node_address,
+                username=username,
+                compress=False
             )
-            if not self.verify_transaction_response(response):
-                raise Exception(f"Initiation rite failed to send: {response}")
+            if not all(self.verify_transaction_response(response) for response in responses):
+                raise Exception("Initiation rite failed to send")
 
     def get_recent_messages_for_account_address(self,wallet_address='r3UHe45BzAVB3ENd21X9LeQngr4ofRJo5n'): 
         incoming_message = ''
@@ -2411,6 +2639,18 @@ PFT WEEKLY AVG:   {weekly_pft_reward_avg}
             'outgoing_message': outgoing_message
         }
         return transaction_messages
+    
+    @staticmethod
+    def remove_chunk_prefix(self, memo_data: str) -> str:
+        """Remove chunk prefix from memo data if present.
+        
+        Args:
+            memo_data: Raw memo data string
+                
+        Returns:
+            str: Memo data with chunk prefix removed if present, otherwise unchanged
+        """
+        return re.sub(r'^chunk_\d+__', '', memo_data)
 
     def format_tasks_for_discord(self, input_text: str):
         """
@@ -2756,138 +2996,138 @@ PFT WEEKLY AVG:   {weekly_pft_reward_avg}
             
             return formatted_df
         
-        def test_leaderboard_creation(leaderboard_df, output_path="test_leaderboard.png"):
-            """
-            Test function to create leaderboard image from a DataFrame
-            """
-            import plotly.graph_objects as go
-            from datetime import datetime
+        # def test_leaderboard_creation(leaderboard_df, output_path="test_leaderboard.png"):
+        #     """
+        #     Test function to create leaderboard image from a DataFrame
+        #     """
+        #     import plotly.graph_objects as go
+        #     from datetime import datetime
             
-            # Format the DataFrame first
-            formatted_df = format_leaderboard_df(leaderboard_df)
+        #     # Format the DataFrame first
+        #     formatted_df = format_leaderboard_df(leaderboard_df)
             
-            # Format current date
-            current_date = datetime.now().strftime("%Y-%m-%d")
+        #     # Format current date
+        #     current_date = datetime.now().strftime("%Y-%m-%d")
             
-            # Add rank and get the index
-            wallet_addresses = formatted_df.index.tolist()  # Get addresses from index
+        #     # Add rank and get the index
+        #     wallet_addresses = formatted_df.index.tolist()  # Get addresses from index
             
-            # Define column headers with line breaks and widths
-            headers = [
-                'Rank',
-                'Wallet Address',
-                'Account<br>Name', 
-                'Total<br>Rewards', 
-                'Yellow<br>Flag %', 
-                'Reward<br>Percentile',
-                'Focus',
-                'Motivation',
-                'Efficacy',
-                'Honesty',
-                'Total<br>Qualitative',
-                'Overall<br>Score'
-            ]
+        #     # Define column headers with line breaks and widths
+        #     headers = [
+        #         'Rank',
+        #         'Wallet Address',
+        #         'Account<br>Name', 
+        #         'Total<br>Rewards', 
+        #         'Yellow<br>Flag %', 
+        #         'Reward<br>Percentile',
+        #         'Focus',
+        #         'Motivation',
+        #         'Efficacy',
+        #         'Honesty',
+        #         'Total<br>Qualitative',
+        #         'Overall<br>Score'
+        #     ]
             
-            # Custom column widths
-            column_widths = [30, 140, 80, 60, 60, 60, 50, 50, 50, 50, 60, 60]
+        #     # Custom column widths
+        #     column_widths = [30, 140, 80, 60, 60, 60, 50, 50, 50, 50, 60, 60]
             
-            # Prepare values with rank column and wallet addresses
-            values = [
-                [str(i+1) for i in range(len(formatted_df))],  # Rank
-                wallet_addresses,  # Full wallet address from index
-                formatted_df['account_name'],
-                formatted_df['total_rewards'],
-                formatted_df['yellow_flag_pct'],
-                formatted_df['reward_percentile'],
-                formatted_df['focus'],
-                formatted_df['motivation'],
-                formatted_df['efficacy'],
-                formatted_df['honesty'],
-                formatted_df['total_qualitative_score'],
-                formatted_df['overall_score']
-            ]
+        #     # Prepare values with rank column and wallet addresses
+        #     values = [
+        #         [str(i+1) for i in range(len(formatted_df))],  # Rank
+        #         wallet_addresses,  # Full wallet address from index
+        #         formatted_df['account_name'],
+        #         formatted_df['total_rewards'],
+        #         formatted_df['yellow_flag_pct'],
+        #         formatted_df['reward_percentile'],
+        #         formatted_df['focus'],
+        #         formatted_df['motivation'],
+        #         formatted_df['efficacy'],
+        #         formatted_df['honesty'],
+        #         formatted_df['total_qualitative_score'],
+        #         formatted_df['overall_score']
+        #     ]
             
-            # Create figure
-            fig = go.Figure(data=[go.Table(
-                columnwidth=column_widths,
-                header=dict(
-                    values=headers,
-                    fill_color='#000000',  # Changed to black
-                    font=dict(color='white', size=15),
-                    align=['center'] * len(headers),
-                    height=60,
-                    line=dict(width=1, color='#40444b')
-                ),
-                cells=dict(
-                    values=values,
-                    fill_color='#000000',  # Changed to black
-                    font=dict(color='white', size=14),
-                    align=['left', 'left'] + ['center'] * (len(headers)-2),
-                    height=35,
-                    line=dict(width=1, color='#40444b')
-                )
-            )])
+        #     # Create figure
+        #     fig = go.Figure(data=[go.Table(
+        #         columnwidth=column_widths,
+        #         header=dict(
+        #             values=headers,
+        #             fill_color='#000000',  # Changed to black
+        #             font=dict(color='white', size=15),
+        #             align=['center'] * len(headers),
+        #             height=60,
+        #             line=dict(width=1, color='#40444b')
+        #         ),
+        #         cells=dict(
+        #             values=values,
+        #             fill_color='#000000',  # Changed to black
+        #             font=dict(color='white', size=14),
+        #             align=['left', 'left'] + ['center'] * (len(headers)-2),
+        #             height=35,
+        #             line=dict(width=1, color='#40444b')
+        #         )
+        #     )])
             
-            # Update layout
-            fig.update_layout(
-                width=1800,
-                height=len(formatted_df) * 35 + 100,
-                margin=dict(l=20, r=20, t=40, b=20),
-                paper_bgcolor='#000000',  # Changed to black
-                plot_bgcolor='#000000',  # Changed to black
-                title=dict(
-                    text=f"Foundation Node Leaderboard as of {current_date} (30D Rolling)",
-                    font=dict(color='white', size=20),
-                    x=0.5
-                )
-            )
+        #     # Update layout
+        #     fig.update_layout(
+        #         width=1800,
+        #         height=len(formatted_df) * 35 + 100,
+        #         margin=dict(l=20, r=20, t=40, b=20),
+        #         paper_bgcolor='#000000',  # Changed to black
+        #         plot_bgcolor='#000000',  # Changed to black
+        #         title=dict(
+        #             text=f"Foundation Node Leaderboard as of {current_date} (30D Rolling)",
+        #             font=dict(color='white', size=20),
+        #             x=0.5
+        #         )
+        #     )
             
-            # Save as image with higher resolution
-            fig.write_image(output_path, scale=2)
+        #     # Save as image with higher resolution
+        #     fig.write_image(output_path, scale=2)
             
-            logger.debug(f"Leaderboard image saved to: {output_path}")
+        #     logger.debug(f"Leaderboard image saved to: {output_path}")
             
-            try:
-                from IPython.display import Image
-                return Image(filename=output_path)
-            except:
-                return None
-        leaderboard_df = self.output_postfiat_foundation_node_leaderboard_df()
-        test_leaderboard_creation(leaderboard_df=format_leaderboard_df(leaderboard_df))
+        #     try:
+        #         from IPython.display import Image
+        #         return Image(filename=output_path)
+        #     except:
+        #         return None
+        # leaderboard_df = self.output_postfiat_foundation_node_leaderboard_df()
+        # test_leaderboard_creation(leaderboard_df=format_leaderboard_df(leaderboard_df))
 
-    # TODO: Consider deprecating, not used anywhere
-    def get_full_google_text_and_verification_stub_for_account(self,address_to_work = 'rwmzXrN3Meykp8pBd3Boj1h34k8QGweUaZ'):
+    # # TODO: Consider deprecating, not used anywhere
+    # def get_full_google_text_and_verification_stub_for_account(self,address_to_work = 'rwmzXrN3Meykp8pBd3Boj1h34k8QGweUaZ'):
 
-        memo_history = self.get_account_memo_history(account_address=address_to_work)
-        google_acount = self.get_most_recent_google_doc_for_user(account_memo_detail_df
-                                                                                =memo_history, 
-                                                                                address=address_to_work)
-        user_full_google_acccount = self.generic_pft_utilities.get_google_doc_text(share_link=google_acount)
-        #verification #= user_full_google_acccount.split('VERIFICATION SECTION START')[-1:][0].split('VERIFICATION SECTION END')[0]
+    #     memo_history = self.get_account_memo_history(account_address=address_to_work)
+    #     google_acount = self.get_most_recent_google_doc_for_user(account_memo_detail_df
+    #                                                                             =memo_history, 
+    #                                                                             address=address_to_work)
+    #     user_full_google_acccount = self.generic_pft_utilities.get_google_doc_text(share_link=google_acount)
+    #     #verification #= user_full_google_acccount.split('VERIFICATION SECTION START')[-1:][0].split('VERIFICATION SECTION END')[0]
         
-        import re
+    #     import re
         
-        def extract_verification_text(content):
-            """
-            Extracts text between task verification markers.
+    #     def extract_verification_text(content):
+    #         """
+    #         Extracts text between task verification markers.
             
-            Args:
-                content (str): Input text containing verification sections
+    #         Args:
+    #             content (str): Input text containing verification sections
                 
-            Returns:
-                str: Extracted text between markers, or empty string if no match
-            """
-            pattern = r'TASK VERIFICATION SECTION START(.*?)TASK VERIFICATION SECTION END'
+    #         Returns:
+    #             str: Extracted text between markers, or empty string if no match
+    #         """
+    #         pattern = r'TASK VERIFICATION SECTION START(.*?)TASK VERIFICATION SECTION END'
             
-            try:
-                # Use re.DOTALL to make . match newlines as well
-                match = re.search(pattern, content, re.DOTALL)
-                return match.group(1).strip() if match else ""
-            except Exception as e:
-                logger.error(f"GenericPFTUtilities.extract_verification_text: Error extracting text: {e}")
-                return ""
-        xstr =extract_verification_text(user_full_google_acccount)
-        return {'verification_text': xstr, 'full_google_doc': user_full_google_acccount}
+    #         try:
+    #             # Use re.DOTALL to make . match newlines as well
+    #             match = re.search(pattern, content, re.DOTALL)
+    #             return match.group(1).strip() if match else ""
+    #         except Exception as e:
+    #             logger.error(f"GenericPFTUtilities.extract_verification_text: Error extracting text: {e}")
+    #             return ""
+    #     xstr =extract_verification_text(user_full_google_acccount)
+    #     return {'verification_text': xstr, 'full_google_doc': user_full_google_acccount}
 
     def get_account_pft_balance(self, account_address: str) -> float:
         """
