@@ -10,7 +10,10 @@ MIN_XRP_PER_TRANSACTION = 0.00001  # Minimum XRP amount per transaction
 MIN_XRP_BALANCE = 12  # Minimum XRP balance to be able to perform a transaction
 
 # Maximum chunk size for a memo
-MAX_MEMO_CHUNK_SIZE = 760
+MAX_MEMO_CHUNK_SIZE = 900
+
+# Maximum length for a commitment sentence
+MAX_COMMITMENT_SENTENCE_LENGTH = 950
  
 # Maximum history length
 MAX_HISTORY = 15  # TODO: rename this to something more descriptive
@@ -33,8 +36,8 @@ NODE_TRANSACTION_VERIFICATION_ATTEMPTS = 12
 NODE_TRANSACTION_VERIFICATION_WAIT_TIME = 5  # in seconds
 
 # Transaction verification parameters from the user's perspective
-USER_TRANSACTION_VERIFICATION_ATTEMPTS = 12
-USER_TRANSACTION_VERIFICATION_WAIT_TIME = 10  # in seconds
+NODE_HANDSHAKE_RESPONSE_USER_VERIFICATION_ATTEMPTS = 24
+NODE_HANDSHAKE_RESPONSE_USER_VERIFICATION_INTERVAL = 5  # in seconds
 
 # Reward processing parameters
 REWARD_PROCESSING_WINDOW = 35  # in days

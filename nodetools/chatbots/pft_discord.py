@@ -81,18 +81,30 @@ class MyClient(discord.Client):
                     amount = self.amount.value
                     message = self.message.value
 
-                    # Trigger the transaction
-                    proper_string = generic_pft_utilities.discord_send_pft_with_info_from_seed(
-                        destination_address=destination_address, 
-                        seed=self.seed,
-                        user_name=interaction.user.name, 
-                        message=message, 
-                        amount=amount
+                    # construct memo
+                    memo = generic_pft_utilities.construct_standardized_xrpl_memo(
+                        memo_data=message, 
+                        memo_type='DISCORD_SERVER', 
+                        memo_format=interaction.user.name
                     )
+
+                    # send memo with PFT attached
+                    response = generic_pft_utilities.send_memo(
+                        wallet_seed_or_wallet=self.seed,
+                        destination=destination_address,
+                        memo=memo,
+                        username=interaction.user.name,
+                        pft_amount=Decimal(amount)
+                    )
+
+                    # extract response from last memo
+                    tx_info = generic_pft_utilities.extract_transaction_info_from_response_object(response)['clean_string']
+
                     await interaction.followup.send(
-                        f'Transaction sent! {proper_string}',
+                        f'Transaction result: {tx_info}',
                         ephemeral=True
                     )
+
             # Pass the user's seed to the modal
             await interaction.response.send_modal(SimpleTransactionModal(seed=seed))
             
@@ -330,94 +342,46 @@ class MyClient(discord.Client):
 
             seed = client.user_seeds[user_id]
             user_name = interaction.user.name
+            logger.debug(f"MyClient.pf_remembrancer: Spawning wallet to send message to remembrancer for {interaction.user.name}")
+            wallet = generic_pft_utilities.spawn_wallet_from_seed(seed=seed)
 
             # Defer the response to avoid timeout for longer operations
             await interaction.response.defer(ephemeral=True)
 
             try:
+                if encrypt:
+                    handshake_success, user_key, counterparty_key, message_obj = await self._ensure_handshake(
+                        interaction=interaction,
+                        seed=seed,
+                        counterparty=self.remembrancer,
+                        username=user_name,
+                        command_name="pf_remembrancer"
+                    )
+                    if not handshake_success:
+                        return
+                    
+                    await message_obj.edit(content="Handshake verified. Proceeding to send memo...")
+
                 responses = generic_pft_utilities.send_memo(
-                    wallet_seed_or_wallet=seed,
+                    wallet_seed_or_wallet=wallet,
                     username=user_name,
                     destination=self.remembrancer,
                     memo=message,
+                    chunk=True,
                     compress=True,
                     encrypt=encrypt
                 )
+                last_transaction_response = responses[-1]
 
-                transaction_info = generic_pft_utilities.extract_transaction_info_from_response_object(response=responses[-1])
+                transaction_info = generic_pft_utilities.extract_transaction_info_from_response_object(
+                    response=last_transaction_response
+                )
                 clean_string = transaction_info['clean_string']
 
                 mode = "Encrypted message" if encrypt else "Message"
-                await interaction.followup.send(
-                    f"{mode} sent to remembrancer successfully. Last chunk details:\n{clean_string}", 
-                    ephemeral=True
+                await message_obj.edit(
+                    content=f"{mode} sent to remembrancer successfully. Last chunk details:\n{clean_string}", 
                 )
-
-            except HandshakeRequiredException:
-                try:
-                    # Initiate handshake protocol
-                    logger.debug(f"MyClient.setup_hook.pf_log_encrypted: Handshake required for {interaction.user.name}. Initiating handshake protocol.")
-                    
-                    handshake_response = generic_pft_utilities.send_handshake(
-                        wallet_seed=seed,
-                        user_name=user_name,
-                        destination=self.remembrancer
-                    )
-
-                    await interaction.followup.send(
-                        "Encryption handshake initiated. Please wait a few moments for the handshake to be processed.",
-                        ephemeral=True
-                    )
-
-                    # Verification loop
-                    handshake_verified = False
-                    logger.debug(f"MyClient.setup_hook.pf_remembrancer: Attempting to verify handshake receipt from remembrancer ({self.remembrancer}) for {interaction.user.name}...")
-                    for attempt in range(constants.NODE_TRANSACTION_VERIFICATION_ATTEMPTS):
-                        logger.debug(f"MyClient.setup_hook.pf_remembrancer: Attempt {attempt+1} of {constants.NODE_TRANSACTION_VERIFICATION_ATTEMPTS}...")
-
-                        # Check for remembrancer's handshake response
-                        _, received_key = self.generic_pft_utilities.get_handshake_for_address(
-                            wallet_address=self.generic_pft_utilities.spawn_wallet_from_seed(seed=seed).address,
-                            destination=self.remembrancer
-                        )
-
-                        if received_key:
-                            handshake_verified = True
-                            logger.debug(f"MyClient.setup_hook.pf_remembrancer: Handshake verified after {attempt+1} attempts, proceeding with message send...")
-                            break
-                        
-                        await asyncio.sleep(constants.NODE_TRANSACTION_VERIFICATION_WAIT_TIME)
-
-                    if handshake_verified:
-                        await interaction.followup.send(
-                            "Handshake verification timed out. Please try sending your message again.",
-                            ephemeral=True
-                        )
-                        return
-
-                    response = generic_pft_utilities.send_memo(
-                        wallet_seed=seed,
-                        username=user_name,
-                        destination=self.remembrancer,
-                        memo=message,
-                        compress=True,
-                        encrypt=encrypt
-                    )
-
-                    transaction_info = generic_pft_utilities.extract_transaction_info_from_response_object(response=response)
-                    clean_string = transaction_info['clean_string']
-
-                    mode = "Encrypted message" if encrypt else "Message"
-                    await interaction.followup.send(
-                        f"{mode} sent to remembrancer successfully. Last chunk details:\n{clean_string}", 
-                        ephemeral=True
-                    )
-
-                except Exception as e:
-                    await interaction.followup.send(
-                        f"An error occurred while initiating the encryption handshake protocol: {str(e)}", 
-                        ephemeral=True
-                    )
 
             except Exception as e:
                 await interaction.followup.send(f"An error occurred while sending the message: {str(e)}", ephemeral=True)
@@ -683,6 +647,7 @@ class MyClient(discord.Client):
             try:
                 # Spawn the user's wallet
                 logger.debug(f"MyClient.setup_hook.pf_initiate: Spawning wallet to initiate for {interaction.user.name}")
+                username = interaction.user.name
                 seed = self.user_seeds[user_id]
                 wallet = generic_pft_utilities.spawn_wallet_from_seed(seed)
 
@@ -703,8 +668,11 @@ class MyClient(discord.Client):
                     return
 
                 # Define the modal to collect Google Doc Link and Commitment
-                logger.debug(f"MyClient.setup_hook.pf_initiate: Defining initiation modal for {interaction.user.name} ({wallet.classic_address})")
                 class InitiationModal(discord.ui.Modal, title='Initiation Commitment'):
+                    def __init__(self, client_instance: discord.Client, *args, **kwargs):
+                        super().__init__(*args, **kwargs)
+                        self.client = client_instance
+
                     google_doc_link = discord.ui.TextInput(
                         label='Please enter your Google Doc Link', 
                         style=discord.TextStyle.long,
@@ -713,6 +681,7 @@ class MyClient(discord.Client):
                     commitment_sentence = discord.ui.TextInput(
                         label='Commit to a Long-Term Objective',
                         style=discord.TextStyle.long,
+                        max_length=constants.MAX_COMMITMENT_SENTENCE_LENGTH,
                         placeholder="A 1-sentence commitment to a long-term objective"
                     )
 
@@ -720,72 +689,125 @@ class MyClient(discord.Client):
                         await interaction.response.defer(ephemeral=True)
                         
                         try:
-                            # Establish handshake first since this is a new user
-                            logger.debug(f"MyClient.setup_hook.pf_initiate: Initiation handshake protocol for new user {interaction.user.name}")
+                            handshake_success, user_key, node_key, message_obj = await self.client._ensure_handshake(
+                                interaction=interaction,
+                                seed=seed,
+                                counterparty=generic_pft_utilities.node_address,
+                                username=username,
+                                command_name="pf_initiate"
+                            )
                             
-                            handshake_response = generic_pft_utilities.send_handshake(
-                                wallet_seed=seed,
-                                destination=generic_pft_utilities.node_address,
-                                username=interaction.user.name
-                            )
-
-                            await interaction.followup.send(
-                                "Establishing secure connection. Please wait a moment...",
-                                ephemeral=True
-                            )
-
-                            # Verify handshake completion
-                            handshake_verified = False
-                            for attempt in range(constants.USER_TRANSACTION_VERIFICATION_ATTEMPTS):
-                                logger.debug(f"MyClient.setup_hook.pf_initiate: Verifying handshake completion for {interaction.user.name} ({wallet.classic_address}) - Attempt {attempt + 1}")
-
-                                _, received_key = generic_pft_utilities.get_handshake_for_address(
-                                    source_address=wallet.classic_address,
-                                    destination=generic_pft_utilities.node_address
-                                )
-
-                                if received_key:
-                                    handshake_verified = True
-                                    logger.debug(f"MyClient.setup_hook.pf_initiate: Handshake verified for {interaction.user.name} ({wallet.classic_address}) after {attempt + 1} attempts")
-                                    break
-
-                                await asyncio.sleep(constants.USER_TRANSACTION_VERIFICATION_WAIT_TIME)
-
-                            if not handshake_verified:
-                                await interaction.followup.send(
-                                    "Could not establish secure connection. Please try again later.",
-                                    ephemeral=True
-                                )
+                            if not handshake_success:
                                 return
+                            
+                            await message_obj.edit(content="Sending commitment and encrypted google doc link to node...")
 
                             # Attempt the initiation rite
                             post_fiat_task_generation_system.discord__initiation_rite(
                                 user_seed=seed, 
                                 initiation_rite=self.commitment_sentence.value, 
                                 google_doc_link=self.google_doc_link.value, 
-                                username=interaction.user.name,
+                                username=username,
                                 allow_reinitiation=config.RuntimeConfig.USE_TESTNET and config.RuntimeConfig.ENABLE_REINITIATIONS  # Allow re-initiation in test mode
                             )
                             
                             mode = "(TEST MODE)" if config.RuntimeConfig.USE_TESTNET else ""
-                            await interaction.followup.send(
-                                f"Initiation complete! {mode}\nCommitment: {self.commitment_sentence.value}\nGoogle Doc: {self.google_doc_link.value}",
-                                ephemeral=True
+                            await message_obj.edit(
+                                content=f"Initiation complete! {mode}\nCommitment: {self.commitment_sentence.value}\nGoogle Doc: {self.google_doc_link.value}"
                             )
 
                         except Exception as e:
                             logger.error(f"MyClient.setup_hook.pf_initiate: Error during initiation: {str(e)}")
-                            await interaction.followup.send(
-                                f"An error occurred during initiation: {str(e)}", 
-                                ephemeral=True
-                            )
+                            await message_obj.edit(content=f"An error occurred during initiation: {str(e)}")
 
-                # Present the modal to the user
-                await interaction.response.send_modal(InitiationModal())
+                # Show modal immediately
+                await interaction.response.send_modal(InitiationModal(client_instance=self))
 
             except Exception as e:
                 logger.error(f"MyClient.setup_hook.pf_initiate: Error during initiation: {str(e)}")
                 await interaction.followup.send(f"An error occurred during initiation: {str(e)}", ephemeral=True)
+
+        @self.tree.command(name="pf_update_link", description="Update your Google Doc link")
+        async def pf_update_link(interaction: discord.Interaction):
+            user_id = interaction.user.id
+
+            # Check if the user has a stored seed
+            if user_id not in self.user_seeds:
+                await interaction.response.send_message(
+                    "You must store a seed using /pf_store_seed first.",
+                    ephemeral=True
+                )
+                return
+            
+            try:
+                logger.debug(f"MyClient.pf_update_link: Spawning wallet for {interaction.user.name} to update google doc link")
+                seed = self.user_seeds[user_id]
+                username = interaction.user.name
+                wallet = generic_pft_utilities.spawn_wallet_from_seed(seed)
+
+                # Check for existing initiation
+                memo_history = generic_pft_utilities.get_account_memo_history(wallet.classic_address, pft_only=False)
+                existing_initiations = memo_history[
+                    (memo_history['memo_type'] == 'INITIATION_RITE') & 
+                    (memo_history['transaction_result'] == 'tesSUCCESS')
+                ]
+
+                # Verify user has completed initiation
+                if existing_initiations.empty:
+                    await interaction.response.send_message(
+                        "You must perform the initiation rite first. Run /pf_initiate to do so.",
+                        ephemeral=True
+                    )
+                    return
+                
+                # Define the modal for new Google Doc link
+                class UpdateLinkModal(discord.ui.Modal, title='Update Google Doc Link'):
+                    def __init__(self, client_instance: discord.Client, *args, **kwargs):
+                        super().__init__(*args, **kwargs)
+                        self.client = client_instance
+
+                    google_doc_link = discord.ui.TextInput(
+                        label='Please enter new Google Doc Link', 
+                        style=discord.TextStyle.long,
+                        placeholder="Your link will be encrypted but the node operator retains access for effective task generation."
+                    )
+
+                    async def on_submit(self, interaction: discord.Interaction):
+                        await interaction.response.defer(ephemeral=True)
+
+                        try:
+                            handshake_success, user_key, node_key, message_obj = await self.client._ensure_handshake(
+                                interaction=interaction,
+                                seed=seed,
+                                counterparty=generic_pft_utilities.node_address,
+                                username=username,
+                                command_name="pf_update_link"
+                            )
+
+                            if not handshake_success:
+                                return
+
+                            await message_obj.edit(content="Sending encrypted google doc link to node...")
+
+                            # Construct and send the encrypted memo
+                            post_fiat_task_generation_system.discord__update_google_doc_link(
+                                user_seed=seed,
+                                google_doc_link=self.google_doc_link.value,
+                                username=username
+                            )
+
+                            await message_obj.edit(content=f"Google Doc link updated to {self.google_doc_link.value}")
+
+                        except Exception as e:
+                            logger.error(f"MyClient.pf_update_link: Error during update: {str(e)}")
+                            await interaction.followup.send(f"An error occurred during update: {str(e)}", ephemeral=True)
+
+                # Show modal immediately
+                await interaction.response.send_modal(UpdateLinkModal(client_instance=self))
+
+            except Exception as e:
+                logger.error(f"MyClient.pf_update_link: Error during update: {str(e)}")
+                await interaction.followup.send(f"An error occurred during update: {str(e)}", ephemeral=True)
 
         @self.tree.command(name="pf_request_task", description="Request a Post Fiat task")
         async def pf_task_slash(interaction: discord.Interaction, task_request: str):
@@ -1046,7 +1068,7 @@ Note: XRP wallets need 15 XRP to transact.
             await interaction.response.defer(ephemeral=True)
             
             if user_id not in self.user_seeds:
-                await interaction.response.send_message(
+                await interaction.followup.send(
                     "No seed found for your account. Use /pf_store_seed to store a seed first.",
                     ephemeral=True
                 )
@@ -1254,6 +1276,90 @@ Note: XRP wallets need 15 XRP to transact.
 
             # Send the message with the dropdown menu
             await interaction.response.send_message("Please choose a task for final verification:", view=view, ephemeral=True)
+
+    async def _ensure_handshake(
+        self,
+        interaction: discord.Interaction,
+        seed: str,
+        counterparty: str,
+        username: str,
+        command_name: str,
+        message_obj: discord.Message = None
+    ) -> tuple[bool, Optional[str], Optional[str]]:
+        """
+        Ensures handshake protocol is established between wallet and counterparty
+
+        Args: 
+            interaction: Discord interaction object
+            wallet_address: Wallet address of the user
+            counterparty: Counterparty address
+            seed: Seed of the user
+            username: Username of the user
+            command_name: Name of the command that requires the handshake protocol
+            message_obj: Message object to edit (optional)
+
+        Returns:
+            tuple[bool, str, str, discord.Message]: (success, user_key, counterparty_key, message_obj)
+        """
+        try:
+            # Send message if we don't have a message object
+            if not message_obj:
+                message_obj = await interaction.followup.send(
+                    "Checking encryption handshake status...",
+                    ephemeral=True,
+                    wait=True  # returns message object
+                )
+
+            # Check handshake status
+            wallet = generic_pft_utilities.spawn_wallet_from_seed(seed=seed)
+            user_key, counterparty_key = generic_pft_utilities.get_handshake_for_address(
+                channel_address=wallet.classic_address,
+                channel_counterparty=counterparty
+            )
+
+            if not user_key:
+                # Send handshake if we haven't yet
+                logger.debug(f"MyClient.{command_name}: Initiating handshake for {username} with {counterparty}")
+                generic_pft_utilities.send_handshake(
+                    wallet_seed=seed,
+                    destination=counterparty,
+                    username=username
+                )
+                await message_obj.edit(content="Encryption handshake initiated. Waiting for onchain confirmation...")
+
+                # Verify handshake completion and response from counterparty (node or remembrancer)
+                for attempt in range(constants.NODE_HANDSHAKE_RESPONSE_USER_VERIFICATION_ATTEMPTS):
+                    logger.debug(f"MyClient.{command_name}: Checking handshake status for {username} with {counterparty} (attempt {attempt+1})")
+
+                    user_key, counterparty_key = generic_pft_utilities.get_handshake_for_address(
+                        channel_address=wallet.classic_address,
+                        channel_counterparty=counterparty
+                    )
+
+                    if counterparty_key:
+                        logger.debug(f"MyClient.{command_name}: Handshake confirmed for {username} with {counterparty}")
+                        break
+
+                    if user_key:
+                        await message_obj.edit(content="Handshake sent. Waiting for node to process...")
+
+                    await asyncio.sleep(constants.NODE_HANDSHAKE_RESPONSE_USER_VERIFICATION_INTERVAL)
+
+            if not user_key:
+                await message_obj.edit(content="Encryption handshake failed to send. Please reach out to support.")
+                return False, None, None, message_obj
+            
+            if not counterparty_key:
+                await message_obj.edit(content="Encryption handshake sent but not yet processed. Please wait and try again later.")
+                return False, user_key, None, message_obj
+            
+            await message_obj.edit(content="Handshake verified. Proceeding with operation...")
+            return True, user_key, counterparty_key, message_obj
+
+        except Exception as e:
+            logger.error(f"MyClient.{command_name}: An error occurred while ensuring handshake: {str(e)}")
+            await message_obj.edit(content=f"An error occurred during handshake setup: {str(e)}")
+            return False, None, None, message_obj
 
     async def on_ready(self):
         logger.debug(f'MyClient.on_ready: Logged in as {self.user} (ID: {self.user.id})')

@@ -18,12 +18,10 @@ class ChatProcessor:
         self.generic_pft_utilities = GenericPFTUtilities()
         self.open_ai_request_tool = OpenAIRequestTool()
 
-        # Cache for account handshakes
-        self.account_handshakes = {}  # gets populated by _get_handshake_key, which gets called by _check_for_odv
-
     def _get_handshake_key(self, account_address: str) -> Optional[str]:
         """
-        Internal method to get handshake key for an account, using cached value if available
+        Internal method to get handshake key for an account. 
+        Assumes remembrancer has already sent its handshake to the counterparty via the handshake queue processor.
         
         Args:
             account_address: The account to get handshake for
@@ -32,19 +30,15 @@ class ChatProcessor:
             Optional[str]: The received public key if found, None otherwise
         """
         try:
-            if account_address not in self.account_handshakes:
-                remembrancer_address = self.node_config.remembrancer_address
-                has_handshake, received_key = self.generic_pft_utilities.get_handshake_for_address(
-                    remembrancer_address, 
-                    account_address
-                )
-                if has_handshake:
-                    self.account_handshakes[account_address] = received_key
-                else:
-                    logger.debug(f"No handshake found for {account_address}")
-                    return None
+            remembrancer_address = self.node_config.remembrancer_address
+            remembrancer_key, counterparty_key = self.generic_pft_utilities.get_handshake_for_address(
+                remembrancer_address, 
+                account_address
+            )
+            if not (remembrancer_key and counterparty_key):
+                raise HandshakeRequiredException(remembrancer_address, account_address)
                     
-            return self.account_handshakes[account_address]
+            return counterparty_key
             
         except Exception as e:
             logger.error(f"ChatProcessor._get_handshake_key: Error getting handshake key: {e}")
@@ -63,20 +57,22 @@ class ChatProcessor:
         try:
             if self.generic_pft_utilities.is_encrypted(message):
                 received_key = self._get_handshake_key(row['account'])
-
-                if not received_key:
-                    logger.warning(f"ChatProcessor._check_for_odv: No handshake found for {row['account']}")
-                    return False
                 
                 shared_secret = self.generic_pft_utilities.get_shared_secret(
-                    received_key=received_key, 
-                    wallet_seed=self.cred_manager.get_credential(f"{self.node_config.remembrancer_name}__v1xrpsecret")
+                    received_public_key=received_key, 
+                    channel_private_key=self.cred_manager.get_credential(f"{self.node_config.remembrancer_name}__v1xrpsecret")
                 )
 
                 decrypted = self.generic_pft_utilities.process_encrypted_message(message, shared_secret)
                 return 'ODV' in decrypted
             
             return 'ODV' in message
+        
+        except HandshakeRequiredException as e:
+            warning_message = (f"ChatProcessor._check_for_odv: Handshake not established between remembrancer and {row['account']}. "
+                                f"Handshake required to decrypt message from {row['account']} and check for ODV.")
+            logger.warning(warning_message)
+            return False
         
         except Exception as e:
             logger.error(f"ChatProcessor._check_for_odv: Error checking for ODV in message from {row['account']}: {e}")
@@ -99,7 +95,7 @@ class ChatProcessor:
                 
                 # Get shared secret
                 shared_secret = self.generic_pft_utilities.get_shared_secret(
-                    received_key=received_key, 
+                    received_public_key=received_key, 
                     wallet_secret=self.cred_manager.get_credential(f"{self.node_config.remembrancer_name}__v1xrpsecret")
                 )
 
@@ -214,12 +210,13 @@ class ChatProcessor:
                 destination=destination_account,
                 memo=op_response,
                 message_id=message_id,
+                chunk=True,
+                compress=True,
                 encrypt=was_encrypted
             )
 
-            for response in responses:
-                if not self.generic_pft_utilities.verify_transaction_response(response):
-                    logger.error(f"ChatProcessor.process_chat_queue: Failed to send response chunk. Response: {response}")
-                    break
+            if not self.generic_pft_utilities.verify_transaction_response(responses):
+                logger.error(f"ChatProcessor.process_chat_queue: Failed to send response chunk. Response: {responses}")
+                break
             else:
                 logger.debug(f"ChatProcessor.process_chat_queue: All response chunks sent successfully to {destination_account}")

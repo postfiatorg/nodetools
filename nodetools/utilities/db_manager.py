@@ -19,7 +19,6 @@ class DBConnectionManager:
         if not self.__class__._initialized:
             self.credential_manager = CredentialManager()
             self.__class__._initialized = True
-            # print("--------------------------------Initialized DBConnectionManager--------------------------------\n")
 
     def spawn_sqlalchemy_db_connection_for_user(self, username):
         """Create a SQLAlchemy engine for the specified user"""

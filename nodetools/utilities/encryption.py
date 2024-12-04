@@ -34,6 +34,7 @@ class MessageEncryption(BaseUtilities):
         if not self.__class__._initialized:
             super().__init__()
             self._auto_handshake_wallets = set()  # Store addresses that should auto-respond to handshakes
+            self._handshake_cache = {}  # Cache of addresses to public keys
             self.__class__._initialized = True
 
     @classmethod
@@ -292,7 +293,7 @@ class MessageEncryption(BaseUtilities):
             channel_address: str, 
             channel_counterparty: str, 
             memo_history: Optional[pd.DataFrame] = None
-        ) -> tuple[bool, Optional[str]]:
+        ) -> tuple[Optional[str], Optional[str]]:
         """Get handshake public keys between two addresses.
         
         Args:
@@ -301,10 +302,15 @@ class MessageEncryption(BaseUtilities):
             memo_history: Optional pre-filtered memo history. If None, will be fetched.
             
         Returns:
-            TODO: replace bool in first position of tuple with the actual key sent
-            Tuple of (key_sent, received_key) handshake public keys
+            Tuple of (channel_address's ECDH public key, channel_counterparty's ECDH public key)
         """
         try:
+            # Check the cache first
+            cache_key = (channel_address, channel_counterparty)
+            # Check if both keys are cached and neither key is None
+            if self._handshake_cache.get(cache_key) and None not in self._handshake_cache[cache_key]:
+                return self._handshake_cache[cache_key]
+
             if not self.pft_utilities:
                 raise ValueError("PFT utilities not initialized")
             
@@ -326,7 +332,7 @@ class MessageEncryption(BaseUtilities):
             ]
 
             if handshakes.empty:
-                return False, None
+                return None, None
             
             # Function to clean chunk prefixes
             # TODO: move this to a more general transaction-processing utility
@@ -338,20 +344,25 @@ class MessageEncryption(BaseUtilities):
                 (handshakes['user_account'] == channel_counterparty) & 
                 (handshakes['direction'] == 'OUTGOING')
             ]
-            handshake_sent = not sent_handshakes.empty
+            sent_key = None
+            if not sent_handshakes.empty:
+                latest_sent = sent_handshakes.sort_values('datetime').iloc[-1]
+                sent_key = clean_chunk_prefix(latest_sent['memo_data'])
 
             # Check for received handshake and get latest public key
             received_handshakes = handshakes[
                 (handshakes['user_account'] == channel_counterparty) &
                 (handshakes['direction'] == 'INCOMING')
             ]
-
             received_key = None
             if not received_handshakes.empty:
                 latest_received = received_handshakes.sort_values('datetime').iloc[-1]
                 received_key = clean_chunk_prefix(latest_received['memo_data'])
 
-            return handshake_sent, received_key
+            # Cache the result and return
+            result = (sent_key, received_key)
+            self._handshake_cache[cache_key] = result
+            return result
         
         except Exception as e:
             logger.error(f"MessageEncryption.get_handshake_for_address: Error checking handshake status: {e}")
@@ -404,17 +415,15 @@ class MessageEncryption(BaseUtilities):
             wallet = self.pft_utilities.spawn_wallet_from_seed(channel_private_key)
             log_message_source = f"{username} ({wallet.address})" if username else wallet.address
             logger.debug(f"MessageEncryption.send_handshake: Sending handshake from {log_message_source} to {channel_counterparty}...")
-            responses = self.pft_utilities.send_memo(
+            response = self.pft_utilities.send_memo(
                 wallet_seed_or_wallet=channel_private_key, 
                 destination=channel_counterparty, 
                 memo=handshake_memo,
-                username=username,
-                compress=False,
+                username=username
             )
-            for response in responses:
-                if not self.pft_utilities.verify_transaction_response(response):
-                    logger.error(f"MessageEncryption.send_handshake: Failed to send handshake from {log_message_source} to {channel_counterparty}")
-                    return False
+            if not self.pft_utilities.verify_transaction_response(response):
+                logger.error(f"MessageEncryption.send_handshake: Failed to send handshake from {log_message_source} to {channel_counterparty}")
+                return False
             return True
             
         except Exception as e:

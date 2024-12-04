@@ -80,76 +80,42 @@ class PostFiatTaskGenerationSystem:
         """Filter and process initiation rites, only including successful transactions."""
 
         # Filter successful initiation rewards
-        initiation_rewards = memo_history[
+        rewards = memo_history[
             (memo_history['memo_type'] == constants.SystemMemoType.INITIATION_REWARD.value) &
             (memo_history['transaction_result'] == 'tesSUCCESS')
-        ][['user_account', 'memo_data', 'memo_format', 'directional_pft', 'datetime']].groupby('user_account').last()
+        ][['user_account', 'memo_data', 'memo_format', 'directional_pft', 'datetime']]
 
         # Filter successful initiation rites
         rites = memo_history[
             (memo_history['memo_type'] == constants.SystemMemoType.INITIATION_RITE.value) &
             (memo_history['transaction_result'] == 'tesSUCCESS')
-        ][['user_account', 'memo_data', 'datetime']].groupby('user_account').last()
+        ][['user_account', 'memo_data', 'datetime']]
 
-        rites.columns=['initiation_rite', 'rite_datetime']
-
-        # Combine rites and rewards
-        initiation_rite_queue_df = pd.concat([rites, initiation_rewards],axis=1).reset_index()
+        # Rename datetime column to reward_datetime for clarity
+        rewards.columns=['user_account', 'memo_data', 'memo_format', 'directional_pft', 'reward_datetime']
+        rites.columns=['user_account', 'initiation_rite', 'rite_datetime']
 
         # Step 1: Check if rite is valid
-        initiation_rite_queue_df['is_valid_rite'] = initiation_rite_queue_df['initiation_rite'].apply(self.is_valid_initiation_rite)
-
-        # Step 2: Check if rite has been rewarded
-        initiation_rite_queue_df['has_reward'] = initiation_rite_queue_df['memo_data'].apply(
-            lambda x: constants.SystemMemoType.INITIATION_REWARD.value in str(x)
-        )
-
-        # Step 3: In testnet, to allow for reinitiation rites, check if rite is newer than last reward
-        if config.RuntimeConfig.USE_TESTNET and config.RuntimeConfig.ENABLE_REINITIATIONS:
-            initiation_rite_queue_df['is_newer_than_last_reward'] = (
-                initiation_rite_queue_df['rite_datetime'] > initiation_rite_queue_df['datetime']
-            )
-
-            initiation_rite_queue_df['requires_work'] = (
-                initiation_rite_queue_df['is_valid_rite'] &
-                (
-                    ~initiation_rite_queue_df['has_reward'] |  # Never rewarded
-                    initiation_rite_queue_df['is_newer_than_last_reward']  # OR rite is newer than last reward
-                )
-            )
-        else:
-            # In mainnet, only process rites that haven't been rewarded yet
-            initiation_rite_queue_df['requires_work'] = (
-                initiation_rite_queue_df['is_valid_rite'] & 
-                ~initiation_rite_queue_df['has_reward']
-            )
-
-        return initiation_rite_queue_df
-
-    # # TODO: This function is not used anywhere.
-    # def phase_1_construct_required_post_fiat_generation_cue(self, all_account_info):
-    #     """ This is where the dataframe of requested tasks come from 
-    #     Google Docs are appended to the dataframe as well. Operates
-    #     on most recent tasks only 
+        rites['is_valid_rite'] = rites['initiation_rite'].apply(self.is_valid_initiation_rite)
         
-    #     account_to_study = self.user_wallet.classic_address
-    #     #account_to_study
-    #     all_account_info =self.generic_pft_utilities.get_memo_detail_df_for_account(account_address=account_to_study,
-    #                 transaction_limit=5000)
-    #     """ 
+        if config.RuntimeConfig.USE_TESTNET and config.RuntimeConfig.ENABLE_REINITIATIONS:
+            # For testnet with reinitiations: check if each rite has a reward after its timestamp
+            def has_later_reward(row, rewards_df):
+                user_rewards = rewards_df[rewards_df['user_account'] == row['user_account']]
+                if user_rewards.empty:
+                    return False
+                return any(pd.to_datetime(user_rewards['reward_datetime']) > pd.to_datetime(row['rite_datetime']))
+            
+            rites['has_reward'] = rites.apply(lambda row: has_later_reward(row, rewards), axis=1)
 
-    #     simplified_task_frame = self.generic_pft_utilities.convert_all_account_info_into_simplified_task_frame(all_account_info=
-    #                                                             all_account_info)
-    #     most_recent_tasks = simplified_task_frame.sort_values('datetime').copy().groupby('task_id').last()
-    #     required_post_fiat_generation_cue = most_recent_tasks[most_recent_tasks['full_output'].apply(lambda x: 
-    #                                                             'REQUEST_POST_FIAT ___' in x)]
-    #     required_post_fiat_generation_cue['google_doc']=None
-    #     if len(required_post_fiat_generation_cue)>0:
-    #         print('moo')
-    #         required_post_fiat_generation_cue['google_doc']= required_post_fiat_generation_cue.apply(lambda x: self.get_most_recent_google_doc_for_user(user_account=x['user_account'],
-    #                                                                                                 all_account_info=all_account_info),axis=1)
-    #     return required_post_fiat_generation_cue 
-    
+        else:
+            # For mainnet: chec if user has ever received any initiation reward
+            users_with_rewards = set(rewards['user_account'].unique())
+            rites['has_reward'] = rites['user_account'].isin(users_with_rewards)
+
+        rites['requires_work'] = rites['is_valid_rite'] & ~rites['has_reward']
+        return rites
+
     def discord__initiation_rite(
             self, 
             user_seed: str, 
@@ -208,16 +174,24 @@ class PostFiatTaskGenerationSystem:
             memo_format=self.node_config.node_name
         )
 
-        grant_response = self.generic_pft_utilities.send_PFT_with_info(
-            sending_wallet=node_wallet,
-            amount=10,
+        response = self.generic_pft_utilities.send_memo(
+            wallet_seed_or_wallet=node_wallet,
+            destination=wallet.classic_address,
             memo=memo,
-            destination_address=wallet.classic_address
+            username=username,
+            pft_amount=10
         )
 
-        if not self.generic_pft_utilities.verify_transaction_response(grant_response):
-            raise Exception(f"Failed to send initial PFT grant: {grant_response}")
+        if not self.generic_pft_utilities.verify_transaction_response(response):
+            logger.error(f"PostFiatTaskGenerationSystem.discord__initiation_rite: Failed to send initial PFT grant to {wallet.classic_address}")
         
+        return response
+
+    def discord__update_google_doc_link(self, user_seed: str, google_doc_link: str, username: str):
+        """Update the user's Google Doc link."""
+        wallet = self.generic_pft_utilities.spawn_wallet_from_seed(seed=user_seed)
+        return self.generic_pft_utilities.handle_google_doc(wallet, google_doc_link, username)
+    
     def _evaluate_initiation_rite(self, rite_text: str) -> dict:
         """Evaluate the initiation rite using OpenAI and extract reward details."""
         
@@ -272,25 +246,7 @@ class PostFiatTaskGenerationSystem:
             # Process each pending initiation rite
             logger.debug(f"PostFiatTaskGenerationSystem.process_pending_initiation_rewards: Processing {len(pending_rites)} pending rites")
             for _, row in pending_rites.iterrows():
-
                 logger.debug(f"PostFiatTaskGenerationSystem.process_pending_initiation_rewards: Processing initiation rite for {row['user_account']}")
-
-                # Check if reward already exists 
-                existing_rewards = memo_history[
-                    (memo_history['destination'] == row['user_account']) &
-                    (memo_history['memo_type'] == constants.SystemMemoType.INITIATION_REWARD.value)
-                ]
-
-                # If reinitiations are enabled, we need to check if this specific rite has been rewarded
-                if config.RuntimeConfig.ENABLE_REINITIATIONS:
-                    # Only consider rewards that came after this rite
-                    existing_rewards = existing_rewards[
-                        pd.to_datetime(existing_rewards['datetime']) > pd.to_datetime(row['rite_datetime'])
-                    ]
-
-                if not existing_rewards.empty:
-                    logger.debug(f"PostFiatTaskGenerationSystem.process_pending_initiation_rewards: Initiation reward already exists for {row['user_account']}")
-                    continue
                 
                 try:
                     # Evaluate the rite
@@ -376,14 +332,17 @@ class PostFiatTaskGenerationSystem:
             memo_format=memo_format
         )
 
-        op_response = self.generic_pft_utilities.send_PFT_with_info(
-            sending_wallet=sending_wallet,
-            amount=1,
+        response = self.generic_pft_utilities.send_memo(
+            wallet_seed_or_wallet=sending_wallet,
+            destination=self.generic_pft_utilities.node_address,
             memo=xmemo_to_send,
-            destination_address=self.generic_pft_utilities.node_address,
-            url=None
+            username=user_name
         )
-        return op_response 
+
+        if not self.generic_pft_utilities.verify_transaction_response(response):
+            logger.error(f"PostFiatTaskGenerationSystem.discord__send_postfiat_request: Failed to send PF request to node from {sending_wallet.address}")
+
+        return response
 
     def discord__task_acceptance(self, user_seed, user_name, task_id_to_accept, acceptance_string):
         """Accept a proposed task via Discord.
@@ -416,20 +375,29 @@ class PostFiatTaskGenerationSystem:
 
         if task_id_to_accept in valid_task_ids_to_accept:
             logger.debug('PostFiatTaskGenerationSystem.discord__task_acceptance: valid task ID proceeding to accept')
+
             formatted_acceptance_string = constants.TaskType.ACCEPTANCE.value + acceptance_string
-            acceptance_memo= self.generic_pft_utilities.construct_standardized_xrpl_memo(
+
+            acceptance_memo = self.generic_pft_utilities.construct_standardized_xrpl_memo(
                 memo_data=formatted_acceptance_string, 
                 memo_format=user_name, 
                 memo_type=task_id_to_accept
             )
-            acceptance_response = self.generic_pft_utilities.send_PFT_with_info(
-                sending_wallet=wallet, 
-                amount=1, 
-                memo=acceptance_memo, 
-                destination_address=self.node_address
+            
+            response = self.generic_pft_utilities.send_memo(
+                wallet_seed_or_wallet=wallet,
+                destination=self.node_address,
+                memo=acceptance_memo,
+                username=user_name
             )
-            transaction_info = self.generic_pft_utilities.extract_transaction_info_from_response_object(acceptance_response)
+
+            if not self.generic_pft_utilities.verify_transaction_response(response):
+                logger.error(f"PostFiatTaskGenerationSystem.discord__task_acceptance: Failed to send acceptance memo to node from {wallet.address}")
+
+            # Extract transaction info from last response
+            transaction_info = self.generic_pft_utilities.extract_transaction_info_from_response_object(response)
             output_string = transaction_info['clean_string']
+
         else:
             logger.debug('PostFiatTaskGenerationSystem.discord__task_acceptance: task ID already accepted or not valid')
             output_string = 'task ID already accepted or not valid'
@@ -474,13 +442,18 @@ class PostFiatTaskGenerationSystem:
                 memo_format=user_name, 
                 memo_type=task_id_to_refuse
             )
-            refusal_response = self.generic_pft_utilities.send_PFT_with_info(
-                sending_wallet=wallet, 
-                amount=1, 
-                memo=refusal_memo, 
-                destination_address=self.node_address
+            response = self.generic_pft_utilities.send_memo(
+                wallet_seed_or_wallet=wallet,
+                destination=self.node_address,
+                memo=refusal_memo,
+                username=user_name
             )
-            transaction_info = self.generic_pft_utilities.extract_transaction_info_from_response_object(refusal_response)
+
+            if not self.generic_pft_utilities.verify_transaction_response(response):
+                logger.error(f"PostFiatTaskGenerationSystem.discord__task_refusal: Failed to send refusal memo to node from {wallet.address}")
+
+            # Extract transaction info from last response
+            transaction_info = self.generic_pft_utilities.extract_transaction_info_from_response_object(response)
             output_string = transaction_info['clean_string']
         else:
             logger.debug('PostFiatTaskGenerationSystem.discord__task_refusal: task ID already accepted or not valid')
@@ -526,15 +499,18 @@ class PostFiatTaskGenerationSystem:
             )
 
             # Send completion memo transaction
-            completion_response = self.generic_pft_utilities.send_PFT_with_info(
-                sending_wallet=wallet, 
-                amount=1, 
-                memo=completion_memo, 
-                destination_address=self.node_address
+            response = self.generic_pft_utilities.send_memo(
+                wallet_seed_or_wallet=wallet,
+                destination=self.node_address,
+                memo=completion_memo,
+                username=user_name
             )
 
-            # Extract and return transaction result
-            transaction_info = self.generic_pft_utilities.extract_transaction_info_from_response_object(completion_response)
+            if not self.generic_pft_utilities.verify_transaction_response(response):
+                logger.error(f"PostFiatTaskManagement.discord__initial_submission: Failed to send completion memo to node from {wallet.address}")
+
+            # Extract and return transaction info from last response
+            transaction_info = self.generic_pft_utilities.extract_transaction_info_from_response_object(response)
             output_string = transaction_info['clean_string']
         else:
             logger.debug(f'PostFiatTaskManagement.discord__initial_submission: task ID {task_id_to_accept} is not in a valid state to submit for initial verification')
@@ -579,15 +555,18 @@ class PostFiatTaskGenerationSystem:
             )
 
             # Send verification response memo transaction
-            completion_response = self.generic_pft_utilities.send_PFT_with_info(
-                sending_wallet=wallet, 
-                amount=1, 
-                memo=completion_memo, 
-                destination_address=self.node_address
+            response = self.generic_pft_utilities.send_memo(
+                wallet_seed_or_wallet=wallet,
+                destination=self.node_address,
+                memo=completion_memo,
+                username=user_name
             )
 
-            # Extract and return transaction result
-            transaction_info = self.generic_pft_utilities.extract_transaction_info_from_response_object(completion_response)
+            if not self.generic_pft_utilities.verify_transaction_response(response):
+                logger.error(f"PostFiatTaskManagement.discord__final_submission: Failed to send verification memo to node from {wallet.address}")
+
+            # Extract and return transaction info from last response
+            transaction_info = self.generic_pft_utilities.extract_transaction_info_from_response_object(response)
             output_string = transaction_info['clean_string']
         else:
             logger.debug(f'PostFiatTaskManagement.discord__final_submission: task ID {task_id_to_submit} is not a valid task for completion')
@@ -1129,16 +1108,6 @@ class PostFiatTaskGenerationSystem:
             logger.debug(f"PostFiatTaskGenerationSystem.process_outstanding_task_queue: Sending {len(unprocessed_pf_requests)} tasks")
             for _, row in unprocessed_pf_requests.iterrows():
 
-                # Check if task already exists  # TODO this might be redundant
-                existing_tasks = memo_history[
-                    (memo_history['memo_data'].str.contains(constants.TaskType.PROPOSAL.value, na=False)) &
-                    (memo_history['user_account'] == row['user_account']) &
-                    (memo_history['memo_type'] == row['memo_type'])
-                ]
-                if not existing_tasks.empty:
-                    logger.debug(f"process_outstanding_task_queue: Task already exists for {row['user_account']}, skipping")
-                    continue
-
                 try:
                     if row['memo_to_send'] is None:
                         continue
@@ -1184,7 +1153,6 @@ class PostFiatTaskGenerationSystem:
                     (txn_df['memo_data'].str.contains(constants.TaskType.PROPOSAL.value, na=False))
                     & (txn_df['user_account'] == user_account)
                     & (txn_df['memo_type'] == memo_type)
-                    # & (txn_df['datetime'] > request_time)
                 ]
                 return not task_txns.empty and task_txns['datetime'].max() > request_time
             
@@ -1334,16 +1302,6 @@ class PostFiatTaskGenerationSystem:
             # Send verification prompts and track for verification
             logger.debug(f"PostFiatTaskGenerationSystem.process_verification_queue: Sending {len(verification_prompts_to_disperse)} verification prompts")
             for _, row in verification_prompts_to_disperse.iterrows():
-                # Check if verification prompt already exists  # TODO this might be redundant
-                existing_verifications = memo_history[
-                    (memo_history['memo_data'].str.contains(constants.TaskType.VERIFICATION_PROMPT.value, na=False)) &
-                    (memo_history['user_account'] == row['user_account']) &
-                    (memo_history['memo_type'] == row['memo_type'])
-                ]
-
-                if not existing_verifications.empty:
-                    logger.debug(f"PostFiatTaskManagement.process_verification_queue: Verification prompt already exists for task {row['memo_type']} for {row['user_account']}")
-                    continue
 
                 tracking_tuple = (row['user_account'], row['memo_type'], row['datetime'])
 
@@ -1648,17 +1606,6 @@ class PostFiatTaskGenerationSystem:
                     memo_to_send=slicex.loc['memo_to_send']
                     destination_address = slicex.loc['account']
 
-                    # Check if reward already exists  # TODO this might be redundant
-                    existing_rewards = memo_history[
-                        (memo_history['memo_data'].str.contains(constants.TaskType.REWARD.value, na=False)) &
-                        (memo_history['account'] == destination_address) &
-                        (memo_history['memo_type'] == slicex.loc['memo_type'])
-                    ]
-
-                    if not existing_rewards.empty:
-                        logger.warning(f"PostFiatTaskManagement.process_reward_queue: Reward already exists for {destination_address} - skipping")
-                        continue
-
                     # Ensure reward amount is within bounds
                     reward_to_dispatch = int(np.abs(slicex.loc['reward_to_dispatch']))
                     reward_to_dispatch = int(np.min([reward_to_dispatch,constants.MAX_REWARD_AMOUNT]))
@@ -1833,7 +1780,7 @@ class PostFiatTaskGenerationSystem:
                 except Exception as e:
                     logger.error(f"PostFiatTaskManagement.run_queue_processing: Error processing chat queue: {e}")
 
-                self.generic_pft_utilities.dump_google_doc_links()
+                self.generic_pft_utilities.dump_google_doc_links()  # TODO: Make this event-driven
 
                 time.sleep(constants.TRANSACTION_HISTORY_SLEEP_TIME) 
 
