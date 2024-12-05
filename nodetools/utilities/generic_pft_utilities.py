@@ -63,7 +63,7 @@ class GenericPFTUtilities(BaseUtilities):
                 if config.RuntimeConfig.HAS_LOCAL_NODE and self.network_config.local_rpc_url is not None
                 else self.network_config.public_rpc_url
             )
-            logger.debug(f"Using primary endpoint: {self.primary_endpoint}")
+            logger.debug(f"Using endpoint: {self.primary_endpoint}")
             # Initialize other components
             self.db_connection_manager = DBConnectionManager()
             self.credential_manager = CredentialManager()
@@ -1623,10 +1623,20 @@ class GenericPFTUtilities(BaseUtilities):
         # Calculate daily totals
         daily_totals = specific_rewards[['directional_pft', 'simple_date']].groupby('simple_date').sum()
 
+        if daily_totals.empty:
+            logger.warning("No rewards data available to calculate weekly totals.")
+            return pd.DataFrame(columns=['weekly_total'])
+
         # Extend date range to today
         today = pd.Timestamp.today().normalize()
+        start_date = daily_totals.index.min()
+
+        if pd.isna(start_date):
+            logger.warning("Start date is NaT, cannot calculate weekly totals.")
+            return pd.DataFrame(columns=['weekly_total'])
+        
         date_range = pd.date_range(
-            start=daily_totals.index.min(),
+            start=start_date,
             end=today,
             freq='D'
         )
@@ -1721,24 +1731,30 @@ class GenericPFTUtilities(BaseUtilities):
         output_string = "REWARD SUMMARY\n\n" + "\n".join(formatted_rewards)
         return output_string
 
-    def get_latest_outgoing_context_doc_link(self, wallet: xrpl.wallet.Wallet) -> Optional[str]:
+    def get_latest_outgoing_context_doc_link(
+            self, 
+            account_address: str,
+            memo_history: pd.DataFrame = None
+        ) -> Optional[str]:
         """Get the most recent Google Doc context link sent by this wallet.
         Handles both encrypted and unencrypted links for backwards compatibility.
             
         Args:
-            wallet: XRPL wallet object
+            account_address: Account address
+            memo_history: Optional DataFrame containing memo history
             
         Returns:
             str or None: Most recent Google Doc link or None if not found
         """
         try:
-            memo_history = self.get_account_memo_history(account_address=wallet.classic_address, pft_only=False)
+            if not memo_history:
+                memo_history = self.get_account_memo_history(account_address=account_address, pft_only=False)
 
-            context_docs = memo_history[
-                (memo_history['memo_type'].apply(lambda x: constants.SystemMemoType.GOOGLE_DOC_CONTEXT_LINK.value in str(x))) &
-                (memo_history['account'] == wallet.classic_address) &
-                (memo_history['transaction_result'] == "tesSUCCESS")
-            ]
+                context_docs = memo_history[
+                    (memo_history['memo_type'].apply(lambda x: constants.SystemMemoType.GOOGLE_DOC_CONTEXT_LINK.value in str(x))) &
+                    (memo_history['account'] == account_address) &
+                    (memo_history['transaction_result'] == "tesSUCCESS")
+                ]
             
             if len(context_docs) > 0:
                 latest_doc = context_docs.iloc[-1]
@@ -1747,7 +1763,7 @@ class GenericPFTUtilities(BaseUtilities):
                     memo_type=latest_doc['memo_type'],
                     memo_data=latest_doc['memo_data'],
                     channel_address=self.node_address,
-                    channel_counterparty=wallet.classic_address,
+                    channel_counterparty=account_address,
                     memo_history=memo_history,
                     channel_private_key=self.credential_manager.get_credential(f"{self.node_name}__v1xrpsecret")
                 )
@@ -2185,62 +2201,95 @@ THIS MESSAGE WILL AUTO DELETE IN 60 SECONDS
 """
         return output_string
 
-    def generate_basic_balance_info_string_for_account_address(self, account_address = 'r3UHe45BzAVB3ENd21X9LeQngr4ofRJo5n'):
-        try:
-            memo_history =self.get_account_memo_history(account_address=account_address)
-        except:
-            pass
-        monthly_pft_reward_avg=0
-        weekly_pft_reward_avg=0
-        try:
-            reward_ts = self.get_reward_data(all_account_info=memo_history)
-            monthly_pft_reward_avg = list(reward_ts['reward_ts'].tail(4).mean())[0]
-            weekly_pft_reward_avg = list(reward_ts['reward_ts'].tail(1).mean())[0]
-        except:
-            pass
-        number_of_transactions =0
-        try:
-            number_of_transactions = len(memo_history['memo_type'])
-        except:
-            pass
-        user_name=''
-        try:
-            user_name = list(memo_history[memo_history['direction']=='OUTGOING']['memo_format'].mode())[0]
-        except:
-            pass
+#     # TODO: Move to discord module
+#     def generate_basic_balance_info_string_for_account_address(self, account_address):
+#         try:
+#             memo_history =self.get_account_memo_history(account_address=account_address)
+#         except:
+#             pass
+#         monthly_pft_reward_avg=0
+#         weekly_pft_reward_avg=0
+#         try:
+#             reward_ts = self.get_reward_data(all_account_info=memo_history)
+#             monthly_pft_reward_avg = list(reward_ts['reward_ts'].tail(4).mean())[0]
+#             weekly_pft_reward_avg = list(reward_ts['reward_ts'].tail(1).mean())[0]
+#         except:
+#             pass
+#         number_of_transactions =0
+#         try:
+#             number_of_transactions = len(memo_history['memo_type'])
+#         except:
+#             pass
+#         user_name=''
+#         try:
+#             user_name = list(memo_history[memo_history['direction']=='OUTGOING']['memo_format'].mode())[0]
+#         except:
+#             pass
         
-        client = JsonRpcClient(self.primary_endpoint)
+#         client = JsonRpcClient(self.primary_endpoint)
         
-        # Get XRP balance
-        acct_info = AccountInfo(
-            account=account_address,
-            ledger_index="validated"
-        )
-        response = client.request(acct_info)
-        xrp_balance=0
+#         # Get XRP balance
+#         acct_info = AccountInfo(
+#             account=account_address,
+#             ledger_index="validated"
+#         )
+#         response = client.request(acct_info)
+#         xrp_balance=0
+#         try:
+#             xrp_balance = int(response.result['account_data']['Balance'])/1_000_000
+#         except:
+#             pass
+#         pft_balance= 0 
+#         try:
+#             account_lines = AccountLines(
+#                 account=account_address,
+#                 ledger_index="validated"
+#             )
+#             account_line_response = client.request(account_lines)
+#             pft_balance = [i for i in account_line_response.result['lines'] if i['account']=='rnQUEEg8yyjrwk9FhyXpKavHyCRJM9BDMW'][0]['balance']
+#         except:
+#             pass
+#         account_info_string =f"""ACCOUNT INFO for  {account_address}
+# LIKELY ALIAS:     {user_name}
+# XRP BALANCE:      {xrp_balance}
+# PFT BALANCE:      {pft_balance}
+# NUM PFT MEMO TX: {number_of_transactions}
+# PFT MONTHLY AVG:  {monthly_pft_reward_avg}
+# PFT WEEKLY AVG:   {weekly_pft_reward_avg}
+# """
+#         return account_info_string
+    
+    def get_pft_balance(self, address: str) -> float:
+        """Get PFT balance for an account.
+    
+        Args:
+            address (str): XRPL account address
+            
+        Returns:
+            float: PFT balance, 0 if no trustline exists
+            
+        Raises:
+            Exception: If there is an error getting the PFT balance
+        """
         try:
-            xrp_balance = int(response.result['account_data']['Balance'])/1_000_000
-        except:
-            pass
-        pft_balance= 0 
-        try:
+            client = JsonRpcClient(self.primary_endpoint)
             account_lines = AccountLines(
-                account=account_address,
+                account=address,
                 ledger_index="validated"
             )
-            account_line_response = client.request(account_lines)
-            pft_balance = [i for i in account_line_response.result['lines'] if i['account']=='rnQUEEg8yyjrwk9FhyXpKavHyCRJM9BDMW'][0]['balance']
-        except:
-            pass
-        account_info_string =f"""ACCOUNT INFO for  {account_address}
-LIKELY ALIAS:     {user_name}
-XRP BALANCE:      {xrp_balance}
-PFT BALANCE:      {pft_balance}
-NUM PFT MEMO TX: {number_of_transactions}
-PFT MONTHLY AVG:  {monthly_pft_reward_avg}
-PFT WEEKLY AVG:   {weekly_pft_reward_avg}
-"""
-        return account_info_string
+            response = client.request(account_lines)
+
+            if not response.is_successful():
+                logger.error(f"GenericPFTUtilities.get_pft_balance: Failed to get account lines for {address}: {response.result.get('error')}")
+                return 0
+            
+            pft_lines = [line for line in response.result['lines'] if line['account']==self.pft_issuer]
+
+            return float(pft_lines[0]['balance']) if pft_lines else 0
+        
+        except Exception as e:
+            logger.error(f"GenericPFTUtilities.get_pft_balance: Error getting PFT balance for {address}: {e}")
+            return 0
     
     def get_xrp_balance(self, address: str) -> float:
         """Get XRP balance for an account.

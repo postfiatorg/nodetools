@@ -9,6 +9,7 @@ from nodetools.utilities.credentials import CredentialManager
 import uuid
 import nodetools.utilities.constants as constants
 from loguru import logger
+import httpx
 
 class OpenAIRequestTool:
     _instance = None
@@ -22,11 +23,45 @@ class OpenAIRequestTool:
     def __init__(self):
         if not self.__class__._initialized:
             cred_manager = CredentialManager()
-            self.client = OpenAI(api_key=cred_manager.get_credential('openai'))
-            self.async_client = AsyncOpenAI(api_key=cred_manager.get_credential('openai'))
+
+            # Check for OpenRouter credentials first
+            openrouter_key = cred_manager.get_credential('openrouter')
+            self.using_openrouter = openrouter_key is not None
+            if openrouter_key:
+                logger.debug(f"OpenAIRequestTool: Using OpenRouter API. Primary model is {constants.OPENROUTER_MODELS[0]}, fallback model is {constants.OPENROUTER_MODELS[1]}")
+                base_url = constants.OPENROUTER_BASE_URL
+                self.api_key = openrouter_key
+            else:
+                logger.debug(f"OpenAIRequestTool: Using OpenAI API. Primary model is {constants.DEFAULT_OPEN_AI_MODEL}")
+                base_url = None  # Use default OpenAI URL
+                self.api_key = cred_manager.get_credential('openai')
+            
+            self.client = OpenAI(base_url=base_url, api_key=self.api_key)
+            self.async_client = AsyncOpenAI(base_url=base_url, api_key=self.api_key)
             self.db_connection_manager = DBConnectionManager()
             self.__class__._initialized = True
-            logger.debug(f"The primary model for OpenAI is currently {constants.DEFAULT_OPEN_AI_MODEL}")
+
+    def _prepare_api_args(self, api_args: dict) -> dict:
+        """Transform API arguments based on whether using OpenRouter or OpenAI.
+    
+        Args:
+            api_args: Original API arguments
+            
+        Returns:
+            Modified API arguments for the appropriate API
+        """
+        if not self.using_openrouter:
+            return api_args
+            
+        modified_args = api_args.copy()
+
+        # Replace 'model' with 'models' for OpenRouter, with fallback
+        if 'model' in modified_args:
+            modified_args['models'] = constants.OPENROUTER_MODELS
+            modified_args['route'] = 'fallback'
+            del modified_args['model']
+
+        return modified_args
 
     def run_chat_completion_demo(self):
         '''Demo run of chat completion with gpt-4-1106-preview model'''
@@ -37,25 +72,27 @@ class OpenAIRequestTool:
                 {"role": "user", "content": 'explain how to cook a trout'}
             ]
         }
-        output = self.client.chat.completions.create(**api_args)
+        prepared_args = self._prepare_api_args(api_args=api_args)
+        output = self.client.chat.completions.create(**prepared_args)
         return output
 
     def run_chat_completion_sync(self, api_args):
         '''Run synchronous chat completion with given API arguments'''
-        output = self.client.chat.completions.create(**api_args)
+        prepared_args = self._prepare_api_args(api_args=api_args)
+        output = self.client.chat.completions.create(**prepared_args)
         return output
 
     def create_writable_df_for_chat_completion(self, api_args):
         '''Create a DataFrame from chat completion response'''
         opx = self.run_chat_completion_sync(api_args=api_args)
         raw_df = pd.DataFrame(opx.model_dump(), index=[0]).copy()
-        raw_df['choices__finish_reason'] = raw_df['choices'].apply(lambda x: x['finish_reason'])
-        raw_df['choices__index'] = raw_df['choices'].apply(lambda x: x['index'])
-        raw_df['choices__message__content'] = raw_df['choices'].apply(lambda x: x['message']['content'])
-        raw_df['choices__message__role'] = raw_df['choices'].apply(lambda x: x['message']['role'])
-        raw_df['choices__message__function_call'] = raw_df['choices'].apply(lambda x: x['message']['function_call'])
-        raw_df['choices__message__tool_calls'] = raw_df['choices'].apply(lambda x: x['message']['tool_calls'])
-        raw_df['choices__log_probs'] = raw_df['choices'].apply(lambda x: x['logprobs'])
+        raw_df['choices__finish_reason'] = raw_df['choices'].apply(lambda x: x.get('finish_reason', None))
+        raw_df['choices__index'] = raw_df['choices'].apply(lambda x: x.get('index', None))
+        raw_df['choices__message__content'] = raw_df['choices'].apply(lambda x: x['message'].get('content', None))
+        raw_df['choices__message__role'] = raw_df['choices'].apply(lambda x: x['message'].get('role', None))
+        raw_df['choices__message__function_call'] = raw_df['choices'].apply(lambda x: x['message'].get('function_call', None))
+        raw_df['choices__message__tool_calls'] = raw_df['choices'].apply(lambda x: x['message'].get('tool_calls', None))
+        raw_df['choices__log_probs'] = raw_df['choices'].apply(lambda x: x.get('logprobs', None))
         raw_df['choices__json'] = raw_df['choices'].apply(lambda x: json.dumps(x))
         raw_df['write_time'] = datetime.datetime.now()
         return raw_df
@@ -78,12 +115,37 @@ class OpenAIRequestTool:
     async def get_completions(self, arg_async_map):
         '''Get completions asynchronously for given arguments map'''
         async def task_with_debug(job_name, api_args):
-            logger.debug(f"OpenAIRequestTool.get_completions: Task {job_name} start: {datetime.datetime.now().time()}")
-            response = await self.async_client.chat.completions.create(**api_args)
-            logger.debug(f"OpenAIRequestTool.get_completions: Task {job_name} end: {datetime.datetime.now().time()}")
-            return job_name, response
+            logger.debug(f"OpenAIRequestTool.get_completions: Task {job_name} starting")
+            try:
+                prepared_args = self._prepare_api_args(api_args=api_args)
 
-        tasks = [asyncio.create_task(task_with_debug(job_name, args)) for job_name, args in arg_async_map.items()]
+                # TODO: This is a hack to get around OpenAI's async client not supporting OpenRouter
+                if prepared_args.get('route') == 'fallback':
+                    # Use httpx or aiohttp for OpenRouter
+                    async with httpx.AsyncClient() as client:
+                        headers = {
+                            'Authorization': f"Bearer {self.api_key}",
+                            'Content-Type': 'application/json'
+                        }
+                        response = await client.post(
+                            "https://openrouter.ai/api/v1/chat/completions",
+                            json=prepared_args,
+                            headers=headers
+                        )
+                        response_data = response.json()
+                        logger.debug(f"OpenRouter response: {response_data}")
+                        return job_name, response_data
+                else:
+                    # Use OpenAI's async clients for direct OpenAI API calls
+                    response = await self.async_client.chat.completions.create(**prepared_args)
+                    return job_name, response
+
+            except Exception as e:
+                logger.error(f"OpenAIRequestTool.get_completions: Task {job_name} failed: {e}")
+                return job_name, None
+
+        tasks = [asyncio.create_task(task_with_debug(job_name, args)) 
+                 for job_name, args in arg_async_map.items()]
         return await asyncio.gather(*tasks)
 
     def create_writable_df_for_async_chat_completion(self, arg_async_map):
@@ -95,14 +157,21 @@ class OpenAIRequestTool:
         for xobj in x1:
             internal_name = xobj[0]
             completion_object = xobj[1]
-            raw_df = pd.DataFrame(completion_object.model_dump(), index=[0]).copy()
-            raw_df['choices__finish_reason'] = raw_df['choices'].apply(lambda x: x['finish_reason'])
-            raw_df['choices__index'] = raw_df['choices'].apply(lambda x: x['index'])
-            raw_df['choices__message__content'] = raw_df['choices'].apply(lambda x: x['message']['content'])
-            raw_df['choices__message__role'] = raw_df['choices'].apply(lambda x: x['message']['role'])
-            raw_df['choices__message__function_call'] = raw_df['choices'].apply(lambda x: x['message']['function_call'])
-            raw_df['choices__message__tool_calls'] = raw_df['choices'].apply(lambda x: x['message']['tool_calls'])
-            raw_df['choices__log_probs'] = raw_df['choices'].apply(lambda x: x['logprobs'])
+
+            # Handle both OpenAI responses (which have model_dump()) and OpenRouter responses (which are dictionaries)
+            if hasattr(completion_object, 'model_dump'):
+                raw_df = pd.DataFrame(completion_object.model_dump(), index=[0]).copy()
+            else:
+                raw_df = pd.DataFrame(completion_object, index=[0]).copy()
+
+            # Safely extract fields with defaults for missing data
+            raw_df['choices__finish_reason'] = raw_df['choices'].apply(lambda x: x.get('finish_reason', None))
+            raw_df['choices__index'] = raw_df['choices'].apply(lambda x: x.get('index', None))
+            raw_df['choices__message__content'] = raw_df['choices'].apply(lambda x: x['message'].get('content', None))
+            raw_df['choices__message__role'] = raw_df['choices'].apply(lambda x: x['message'].get('role', None))
+            raw_df['choices__message__function_call'] = raw_df['choices'].apply(lambda x: x['message'].get('function_call', None))
+            raw_df['choices__message__tool_calls'] = raw_df['choices'].apply(lambda x: x['message'].get('tool_calls', None))
+            raw_df['choices__log_probs'] = raw_df['choices'].apply(lambda x: x.get('logprobs', None))
             raw_df['choices__json'] = raw_df['choices'].apply(lambda x: json.dumps(x))
             raw_df['write_time'] = datetime.datetime.now()
             raw_df['internal_name'] = internal_name

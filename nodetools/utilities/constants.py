@@ -1,10 +1,12 @@
 from enum import Enum
 
-# ===OTHER CONSTANTS===
-
-# DEFAULT OPEN AI MODEL
+# AI MODELS
+OPENROUTER_MODELS = ["anthropic/claude-3.5-sonnet", "openai/chatgpt-4o-latest"]
+OPENROUTER_ROUTE = 'fallback'
 DEFAULT_OPEN_AI_MODEL = 'chatgpt-4o-latest'
 DEFAULT_ANTHROPIC_MODEL = 'claude-3-5-sonnet-20241022'
+
+OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
 
 MIN_XRP_PER_TRANSACTION = 0.00001  # Minimum XRP amount per transaction
 MIN_XRP_BALANCE = 12  # Minimum XRP balance to be able to perform a transaction

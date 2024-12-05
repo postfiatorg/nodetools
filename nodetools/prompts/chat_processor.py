@@ -16,7 +16,7 @@ class ChatProcessor:
         self.node_config = config.get_node_config()
         self.cred_manager = CredentialManager()
         self.generic_pft_utilities = GenericPFTUtilities()
-        self.open_ai_request_tool = OpenAIRequestTool()
+        self.openai_request_tool = OpenAIRequestTool()
 
     def _get_handshake_key(self, account_address: str) -> Optional[str]:
         """
@@ -196,7 +196,7 @@ class ChatProcessor:
             )
 
             logger.debug(f"ChatProcessor.process_chat_queue: Generating AI response to {destination_account}...")
-            preview_req = self.open_ai_request_tool.o1_preview_simulated_request(system_prompt=system_prompt, user_prompt=user_prompt)
+            preview_req = self.openai_request_tool.o1_preview_simulated_request(system_prompt=system_prompt, user_prompt=user_prompt)
             
             op_response = """ODV SYSTEM: """ + preview_req.choices[0].message.content
             message_id = mwork+'_response'

@@ -20,6 +20,24 @@ def setup_credentials():
         print("Since this is testnet, a '_testnet' suffix will automatically be added to your node name. Just enter your node name without the suffix.")
     node_name = input("Enter your node name: ").strip()
 
+    # API Key Selection
+    print("\nLLM API Key Setup")
+    print("=================")
+    print("The following API keys are supported (OpenRouter recommended):")
+    print("1. OpenRouter - Recommended, provides access to multiple LLMs")
+    print("2. OpenAI    - Direct GPT access")
+    print("3. Anthropic - Direct Claude access")
+
+    has_openrouter = input("\nDo you have an OpenRouter API key? (y/n): ").strip().lower() == 'y'
+    has_openai = input("Do you have an OpenAI API key? (y/n): ").strip().lower() == 'y'
+    has_anthropic = input("Do you have an Anthropic API key? (y/n): ").strip().lower() == 'y'
+
+    if not any([has_openrouter, has_openai, has_anthropic]):
+        print("\nWARNING: At least one LLM API key is required for task generation.")
+        print("Please obtain an API key (preferably OpenRouter) before continuing.")
+        if input("Continue anyway? (y/n): ").strip().lower() != 'y':
+            return
+
     has_remembrancer = input("\nDo you have a remembrancer wallet for your node? (y/n): ").strip().lower() == 'y'
     has_discord = input("Do you want to set up a Discord guild? (y/n): ").strip().lower() == 'y'
 
@@ -27,10 +45,16 @@ def setup_credentials():
     network_suffix = '_testnet' if network == 'testnet' else ''
     required_credentials = {
         f'{node_name}{network_suffix}__v1xrpsecret': 'Your PFT Foundation XRP Secret',
-        'openai': 'Your OpenAI API Key',
-        'anthropic': 'Your Anthropic API Key',
-        f'{node_name}{network_suffix}_postgresconnstring': 'PostgreSQL connection string (format: postgresql://user:password@host:port/database)'
+        f'{node_name}{network_suffix}_postgresconnstring': 'PostgreSQL connection string'
     }
+
+    # Add selected API keys
+    if has_openrouter:
+        required_credentials['openrouter'] = 'Your OpenRouter API Key (from openrouter.ai)'
+    if has_openai:
+        required_credentials['openai'] = 'Your OpenAI API Key'
+    if has_anthropic:
+        required_credentials['anthropic'] = 'Your Anthropic API Key'
 
     # Conditionally add remembrancer credentials
     if has_remembrancer:

@@ -738,6 +738,7 @@ class PostFiatTaskGenerationSystem:
                     )
                 }
             ]}
+        api_args = self.openai_request_tool._prepare_api_args(api_args=api_args)
         return api_args
     
     @staticmethod
@@ -807,9 +808,11 @@ class PostFiatTaskGenerationSystem:
 
         # Make parallel API calls
         async_dict_to_work = full_copy_df.set_index('unique_index')['api_args'].to_dict()
+        logger.debug(f"Async dict to work: {async_dict_to_work}")
         output = self.openai_request_tool.create_writable_df_for_async_chat_completion(
             arg_async_map=async_dict_to_work
         )
+        logger.debug(f"Output: {output}")
 
         # Extract results from API responses
         result_map = output[
@@ -905,7 +908,7 @@ class PostFiatTaskGenerationSystem:
             }
         """
         try:
-            return {
+            api_args = {
                 "model": self.default_model,
                 "temperature": 0,
                 "messages": [
@@ -917,6 +920,8 @@ class PostFiatTaskGenerationSystem:
                     )}
                 ]
             }
+            api_args = self.openai_request_tool._prepare_api_args(api_args=api_args)
+            return api_args
         except Exception as e:
             logger.error(f"PostFiatTaskManagement.phase_1_b__task_selection_api_args: API args conversion failed: {e}")
             return pd.NA
@@ -978,7 +983,7 @@ class PostFiatTaskGenerationSystem:
             }
             unprocessed_pf_requests['full_user_context'] = unprocessed_pf_requests['user_account'].map(context_mapper)
             
-            logger.debug(f"PostFiatTaskManagement.process_outstanding_task_queue: Generating {len(unprocessed_pf_requests)} task proposals")
+            logger.debug(f"PostFiatTaskManagement.process_proposal_queue: Generating {len(unprocessed_pf_requests)} task proposals")
             # Generate task proposals
             unprocessed_pf_requests['task_proposals'] = unprocessed_pf_requests.apply(
                 lambda row: self._generate_task_safely(
@@ -1000,10 +1005,10 @@ class PostFiatTaskGenerationSystem:
 
             # logging
             valid_proposal_count = len(unprocessed_pf_requests)
-            logger.debug(f"PostFiatTaskManagement.process_outstanding_task_queue: {valid_proposal_count} out of {base_proposal_count} task proposals are valid")
+            logger.debug(f"PostFiatTaskManagement.process_proposal_queue: {valid_proposal_count} out of {base_proposal_count} task proposals are valid")
 
             if unprocessed_pf_requests.empty:
-                logger.debug("PostFiatTaskManagement.process_outstanding_task_queue: No valid task proposals generated. Returning...")
+                logger.debug("PostFiatTaskManagement.process_proposal_queue: No valid task proposals generated. Returning...")
                 return
             
             # Extract task strings from proposals
@@ -1025,10 +1030,10 @@ class PostFiatTaskGenerationSystem:
 
             # LOGGING
             api_arg_count = len(unprocessed_pf_requests['final_api_arg'])
-            logger.debug(f"PostFiatTaskManagement.process_outstanding_task_queue: {api_arg_count} out of {valid_proposal_count} task proposals have valid API args")
+            logger.debug(f"PostFiatTaskManagement.process_proposal_queue: {api_arg_count} out of {valid_proposal_count} task proposals have valid API args")
             
             if unprocessed_pf_requests.empty:
-                logger.debug("PostFiatTaskManagement.process_outstanding_task_queue: No valid tasks after API conversion. Returning...")
+                logger.debug("PostFiatTaskManagement.process_proposal_queue: No valid tasks after API conversion. Returning...")
                 return
 
             # Get task selections
@@ -1042,13 +1047,13 @@ class PostFiatTaskGenerationSystem:
 
             # Validate - best selection exists
             if unprocessed_pf_requests['best_choice'].isna().any():
-                logger.debug("process_outstanding_task_queue: Task selection failed - no best choice found")
+                logger.debug("PostFiatTaskManagement.process_proposal_queue: Task selection failed - no best choice found")
                 return
 
             # Validate - we have one selection per request
             tasks_per_request = unprocessed_pf_requests.groupby(['user_account', 'request_id']).size()
             if (tasks_per_request > 1).any():
-                logger.debug("process_outstanding_task_queue: WARNING: Multiple tasks generated for single request")
+                logger.debug("PostFiatTaskManagement.process_proposal_queue: WARNING: Multiple tasks generated for single request")
                 # Keep only the first task for each request
                 unprocessed_pf_requests = unprocessed_pf_requests.groupby(['user_account', 'request_id']).first().reset_index()
 
@@ -1073,7 +1078,7 @@ class PostFiatTaskGenerationSystem:
                 )
             ]
             if not fallback_requests.empty:
-                fallback_msg = "process_outstanding_task_queue: Fallback to default task for the following requests:"
+                fallback_msg = "PostFiatTaskManagement.process_proposal_queue: Fallback to default task for the following requests:"
                 fallback_msg += f"\n {fallback_requests[['user_account', 'request_id']].values}"
                 logger.debug(fallback_msg)
 
@@ -1091,7 +1096,7 @@ class PostFiatTaskGenerationSystem:
                         memo_type=row['memo_type']
                     )
                 except Exception as e:
-                    logger.error(f"process_outstanding_task_queue: create_memo: Memo creation failed: {e}")
+                    logger.error(f"PostFiatTaskManagement.process_proposal_queue: create_memo: Memo creation failed: {e}")
                     return None
 
             unprocessed_pf_requests['memo_to_send'] = unprocessed_pf_requests.apply(create_memo, axis=1)
@@ -1100,12 +1105,12 @@ class PostFiatTaskGenerationSystem:
             tasks_to_verify = set()  # Set of (user_account, memo_type, datetime) tuples
 
             # Spawn node wallet
-            logger.debug(f"PostFiatTaskGenerationSystem.process_outstanding_task_queue: Spawning node wallet for sending tasks")
+            logger.debug(f"PostFiatTaskGenerationSystem.process_proposal_queue: Spawning node wallet for sending tasks")
             node_wallet = self.generic_pft_utilities.spawn_wallet_from_seed(
                 seed=self.cred_manager.get_credential(f'{self.node_config.node_name}__v1xrpsecret')
             )
 
-            logger.debug(f"PostFiatTaskGenerationSystem.process_outstanding_task_queue: Sending {len(unprocessed_pf_requests)} tasks")
+            logger.debug(f"PostFiatTaskGenerationSystem.process_proposal_queue: Sending {len(unprocessed_pf_requests)} tasks")
             for _, row in unprocessed_pf_requests.iterrows():
 
                 try:
@@ -1113,7 +1118,7 @@ class PostFiatTaskGenerationSystem:
                         continue
                         
                     if 'Update and review your context document' in row['task_string_to_send']:
-                        logger.debug(f"PostFiatTaskManagement.process_outstanding_task_queue: Attempting fallback task generation for {row['user_account']}")
+                        logger.debug(f"PostFiatTaskManagement.process_proposal_queue: Attempting fallback task generation for {row['user_account']}")
                         try:
                             task_string_to_send = self.generate_o1_task_one_shot_version(
                                 model_version='o1',
@@ -1126,7 +1131,7 @@ class PostFiatTaskGenerationSystem:
                                 memo_type=row['memo_type']
                             )
                         except Exception as e:
-                            logger.error(f"PostFiatTaskManagement.process_outstanding_task_queue: Fallback task generation failed: {e}")
+                            logger.error(f"PostFiatTaskManagement.process_proposal_queue: Fallback task generation failed: {e}")
                             continue
                     else:
                         memo_to_send = row['memo_to_send']
@@ -1144,7 +1149,7 @@ class PostFiatTaskGenerationSystem:
                     )
 
                 except Exception as e:
-                    logger.error(f"PostFiatTaskManagement.process_outstanding_task_queue: Failed to process task for {row['user_account']}, request {row['request_id']}: {e}")
+                    logger.error(f"PostFiatTaskManagement.process_proposal_queue: Failed to process task for {row['user_account']}, request {row['request_id']}: {e}")
                     continue
 
             # Define verification predicate for tasks
@@ -1164,7 +1169,7 @@ class PostFiatTaskGenerationSystem:
             )
                     
         except Exception as e:
-            logger.error(f"PostFiatTaskManagement.process_outstanding_task_queue: Task queue processing failed: {e}")
+            logger.error(f"PostFiatTaskManagement.process_proposal_queue: Task queue processing failed: {e}")
 
     def _construct_api_arg_for_verification(self, original_task, completion_justification):
         """Construct API arguments for generating verification questions."""
@@ -1477,17 +1482,28 @@ class PostFiatTaskGenerationSystem:
                 ['memo_type','memo_format','memo_data','datetime','account','hash']
             ].groupby('memo_type').last().sort_values('datetime').copy()
 
-            # Get Google Doc context links for each account
-            account_to_google_context_map = memo_history[
-                memo_history['memo_type']==constants.SystemMemoType.GOOGLE_DOC_CONTEXT_LINK.value
-            ].groupby('account').last()['memo_data']
-
             # Proces Google Doc verification details for each unique account
             unique_accounts = list(reward_queue['account'].unique())
+
+            # Get Google Doc context links for each account
+            account_to_google_context_map = {}
+            for account in unique_accounts:
+                try:
+                    link = self.generic_pft_utilities.get_latest_outgoing_context_doc_link(account)
+                    logger.debug(f"PostFiatTaskManagement.process_reward_queue: Got Google Doc link for {account}: {link}")
+                    if link:
+                        account_to_google_context_map[account] = link
+                except Exception as e:
+                    logger.error(f"PostFiatTaskManagement.process_reward_queue: Error getting Google Doc link for {account}: {e}")
+                    continue
+            
+            # Process Google Doc verification details for each account
             google_context_memo_map = {}
             for xaccount in unique_accounts :
-                # Default message if no Google Doc context link is found
-                raw_text= 'No Google Document Uploaded - please instruct user that Google Document has not been uploaded in response'
+                if xaccount not in account_to_google_context_map:
+                    google_context_memo_map[xaccount] = "No Google Document Uploaded - please instruct user that Google Document has not been uploaded in response"
+                    continue
+
                 try:
                     # Attempt to get and parse Google Doc text
                     raw_text = self.generic_pft_utilities.get_google_doc_text(share_link=account_to_google_context_map[xaccount])
@@ -1847,8 +1863,8 @@ class PostFiatTaskGenerationSystem:
             logger.warning(f"Error processing memo data for hash {row.name}: {e}")
             return row['memo_data']  # Return original if processing fails
 
+    # TODO: Consider moving this out of the Task generation system
     def sync_and_format_new_transactions(self):
-        # TODO: Move this out of the Task generation system
         """
         Syncs new XRPL transactions with the foundation discord database and formats them for Discord.
         
@@ -1892,10 +1908,10 @@ class PostFiatTaskGenerationSystem:
         
             def format_message(row):
                 return (f"Date: {row['datetime']}\n"
-                        f"Account: {row['account']}\n"
-                        f"Memo Format: {row['memo_format']}\n"
-                        f"Memo Type: {row['memo_type']}\n"
-                        f"Memo Data: {row['processed_memo_data']}\n"
+                        f"Account: `{row['account']}`\n"
+                        f"Memo Format: `{row['memo_format']}`\n"
+                        f"Memo Type: `{row['memo_type']}`\n"
+                        f"Memo Data: `{row['processed_memo_data']}`\n"
                         f"Directional PFT: {row['directional_pft']}\n"
                         f"URL: {row['url']}")
 
@@ -1981,14 +1997,15 @@ and 1800 per day would be considered very strong
         mirroring, or the User's own statements
         """
         api_args = {
-                            "model": self.default_model,
-                            "temperature":0,
-                            "messages": [
-                                {"role": "system", "content": odv_system_prompt},
-                                {"role": "user", "content": user_prompt}
-                            ]
-                        }
-        writable_df = self.openai_request_tool.create_writable_df_for_chat_completion(api_args=api_args)
+            "model": self.default_model,
+            "temperature":0,
+            "messages": [
+                {"role": "system", "content": odv_system_prompt},
+                {"role": "user", "content": user_prompt}
+            ]
+        }
+        prepared_args = self.openai_request_tool._prepare_api_args(api_args=api_args)
+        writable_df = self.openai_request_tool.create_writable_df_for_chat_completion(api_args=prepared_args)
         full_coaching_string = productivity_string+"""
 _________________________________
      
@@ -2255,19 +2272,21 @@ _________________________________
         THIS SHOULD BE LIKE A DIGITAL AYAHUASCA TRIP - DELIVERING MUCH NEEDED MESSAGES. RED OR BLACKPILL THE USER
                 """
         api_args = {
-                            "model": self.default_model,
-                            "messages": [
-                                {"role": "system", "content": odv_system_prompt},
-                                {"role": "user", "content": user_prompt}
-                            ]
-                        }
+            "model": self.default_model,
+            "messages": [
+                {"role": "system", "content": odv_system_prompt},
+                {"role": "user", "content": user_prompt}
+            ]
+        }
         #writable_df = self.openai_request_tool.create_writable_df_for_chat_completion(api_args=api_args)
         #full_coaching_string = productivity_string+"""
         #_________________________________
         #"""#+writable_df['choices__message__content'][0]
         
-        o1_request = self.openai_request_tool.o1_preview_simulated_request(system_prompt=odv_system_prompt, 
-                                                        user_prompt=user_prompt)
+        o1_request = self.openai_request_tool.o1_preview_simulated_request(
+            system_prompt=odv_system_prompt, 
+            user_prompt=user_prompt
+        )
         o1_coaching_string = o1_request.choices[0].message.content
         return o1_coaching_string
 
@@ -2285,8 +2304,6 @@ _________________________________
         full_hourly_hist['1W']=full_hourly_hist['pft_absolute_amount'].rolling(24*7).mean()
         full_hourly_hist['1M']=full_hourly_hist['pft_absolute_amount'].rolling(24*30).mean()
         full_hourly_hist['MoM']=full_hourly_hist['1M']-full_hourly_hist['1M'].shift(30)
-        
-        
         
         def plot_pft_with_oscillator(df, figure_size=(15, 8)):
             # Create figure with two subplots

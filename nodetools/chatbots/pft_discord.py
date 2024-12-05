@@ -20,6 +20,7 @@ import getpass
 from loguru import logger
 from nodetools.utilities.configure_logger import configure_logger
 from pathlib import Path
+from dataclasses import dataclass
     
 class MyClient(discord.Client):
     def __init__(self, *args, **kwargs):
@@ -30,7 +31,7 @@ class MyClient(discord.Client):
         self.remembrancer = self.node_config.remembrancer_address
 
         # Initialize components
-        self.open_ai_request_tool = OpenAIRequestTool()
+        self.openai_request_tool = OpenAIRequestTool()
         self.generic_pft_utilities = GenericPFTUtilities()
         self.post_fiat_task_generation_system = PostFiatTaskGenerationSystem()
 
@@ -317,7 +318,7 @@ class MyClient(discord.Client):
         @self.tree.command(name="wallet_info", description="Get information about a wallet")
         async def wallet_info(interaction: discord.Interaction, wallet_address: str):
             try:
-                account_info = generic_pft_utilities.generate_basic_balance_info_string_for_account_address(account_address=wallet_address)
+                account_info = self.generate_basic_balance_info_string(address=wallet_address)
                 
                 # Create an embed for better formatting
                 embed = discord.Embed(title="Wallet Information", color=0x00ff00)
@@ -1081,7 +1082,7 @@ Note: XRP wallets need 15 XRP to transact.
                 wallet_address = wallet.classic_address
 
                 # Get account info
-                account_info = generic_pft_utilities.generate_basic_balance_info_string_for_account_address(account_address=wallet_address)
+                account_info = self.generate_basic_balance_info_string(address=wallet.address)
                 
                 # Get recent messages
                 recent_messages = generic_pft_utilities.get_recent_messages_for_account_address(wallet_address)
@@ -1563,7 +1564,7 @@ Note: XRP wallets need 15 XRP to transact.
             api_args = {
             "model": self.default_openai_model,
             "messages": ref_convo}
-            op_df = self.open_ai_request_tool.create_writable_df_for_chat_completion(api_args=api_args)
+            op_df = self.openai_request_tool.create_writable_df_for_chat_completion(api_args=api_args)
             content = op_df['choices__message__content'][0]
             gpt_response = content
             self.conversations[user_id].append({
@@ -1583,7 +1584,7 @@ Note: XRP wallets need 15 XRP to transact.
                     memo_history = generic_pft_utilities.get_account_memo_history(user_wallet.classic_address)
                     full_user_context = generic_pft_utilities.get_full_user_context_string(user_wallet.classic_address, memo_history=memo_history)
                     
-                    open_ai_request_tool = OpenAIRequestTool()
+                    openai_request_tool = OpenAIRequestTool()
                     
                     user_prompt = f"""You are ODV Tactician module.
                     The User has the following transaction context as well as strategic context
@@ -1604,7 +1605,7 @@ Note: XRP wallets need 15 XRP to transact.
                         ]
                     }
                     
-                    writable_df = open_ai_request_tool.create_writable_df_for_chat_completion(api_args=api_args)
+                    writable_df = openai_request_tool.create_writable_df_for_chat_completion(api_args=api_args)
                     tactical_string = writable_df['choices__message__content'][0]
                     
                     await self.send_long_message(message, tactical_string)
@@ -1676,7 +1677,7 @@ My specific question/request is: {user_query}"""
                     await message.add_reaction('⏳')
 
                     # Make the API call using o1_preview_simulated_request
-                    response = self.open_ai_request_tool.o1_preview_simulated_request(
+                    response = self.openai_request_tool.o1_preview_simulated_request(
                         system_prompt=odv_system_prompt,
                         user_prompt=user_prompt
                     )
@@ -1787,7 +1788,7 @@ My specific question/request is: {user_query}"""
 
         if message.content.startswith('!wallet_info'):
             wallet_to_get = message.content.replace('!wallet_info','').strip()
-            account_info = generic_pft_utilities.generate_basic_balance_info_string_for_account_address(account_address=wallet_to_get)
+            account_info = self.generate_basic_balance_info_string(address=wallet_to_get)
             await self.send_long_message(message, account_info)
 
         if message.content.startswith('!store_seed'):
@@ -1826,7 +1827,7 @@ My specific question/request is: {user_query}"""
                 logger.debug(f"MyClient.my_wallet: Spawning wallet to fetch info for {message.author.name}")
                 wallet = generic_pft_utilities.spawn_wallet_from_seed(seed)
                 wallet_address = wallet.address
-                account_info = generic_pft_utilities.generate_basic_balance_info_string_for_account_address(account_address=wallet_address)
+                account_info = self.generate_basic_balance_info_string(address=wallet_address)
                 await self.send_long_message(message, f"Based on your seed your linked {account_info}")
             else:
                 await message.reply("No seed found for your account.", mention_author=True)
@@ -1863,6 +1864,69 @@ My specific question/request is: {user_query}"""
             output_message = generic_pft_utilities.create_full_outstanding_pft_string(account_address=wallet_address)
             await self.send_long_escaped_message(message, output_message)
 
+    def generate_basic_balance_info_string(self, address: str) -> str:
+        """Generate account information summary including balances and stats.
+        
+        Args:
+            wallet: Either an XRPL wallet object (for full access including encrypted docs) 
+                or an address string (for public info only)
+                
+        Returns:
+            str: Formatted account information string
+        """
+        account_info = AccountInfo(address=address)
+
+        try:
+            memo_history = self.generic_pft_utilities.get_account_memo_history(account_address=address)
+
+            # transaction count
+            account_info.transaction_count = len(memo_history['memo_type'])
+
+            # Likely username
+            account_info.username = list(memo_history[memo_history['direction']=='OUTGOING']['memo_format'].mode())[0]
+
+            # Reward statistics
+            reward_data = self.generic_pft_utilities.get_reward_data(all_account_info=memo_history)
+            if not reward_data['reward_ts'].empty:
+                account_info.monthly_pft_avg = float(reward_data['reward_ts'].tail(4).mean().iloc[0])
+                account_info.weekly_pft_avg = float(reward_data['reward_ts'].tail(1).mean().iloc[0])
+
+            # Get balances
+            account_info.xrp_balance = self.generic_pft_utilities.get_xrp_balance(address)
+            account_info.pft_balance = self.generic_pft_utilities.get_pft_balance(address)
+
+            # Get google doc link
+            account_info.google_doc_link = self.generic_pft_utilities.get_latest_outgoing_context_doc_link(address)
+
+        except Exception as e:
+            logger.error(f"Error generating account info for {address.address}: {e}")
+
+        return self._format_account_info(account_info)
+    
+    def _format_account_info(self, info: AccountInfo) -> str:
+        """Format AccountInfo into readable string."""
+        output = f"""ACCOUNT INFO for {info.address}
+                    LIKELY ALIAS:     {info.username}
+                    XRP BALANCE:      {info.xrp_balance}
+                    PFT BALANCE:      {info.pft_balance}
+                    NUM PFT MEMO TX:  {info.transaction_count}
+                    PFT MONTHLY AVG:  {info.monthly_pft_avg}
+                    PFT WEEKLY AVG:   {info.weekly_pft_avg}
+                    CONTEXT DOC:      {info.google_doc_link}"""
+        
+        return output
+
+@dataclass
+class AccountInfo:
+    address: str
+    username: str = ''
+    xrp_balance: float = 0
+    pft_balance: float = 0
+    transaction_count: int = 0
+    monthly_pft_avg: float = 0
+    weekly_pft_avg: float = 0
+    google_doc_link: Optional[str] = None
+
 def init_bot():
     """Initialize and return the Discord bot with required intents"""
     intents = discord.Intents.default()
@@ -1895,13 +1959,13 @@ def configure_runtime():
 
 def init_services():
     """Initialize and return core services"""
-    open_ai_request_tool = OpenAIRequestTool()
+    openai_request_tool = OpenAIRequestTool()
     post_fiat_task_generation_system = PostFiatTaskGenerationSystem()
     generic_pft_utilities = GenericPFTUtilities()
     generic_pft_utilities.run_transaction_history_updates()
 
     return (
-        open_ai_request_tool,
+        openai_request_tool,
         post_fiat_task_generation_system,
         generic_pft_utilities
     )
