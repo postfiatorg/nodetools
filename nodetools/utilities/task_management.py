@@ -232,26 +232,26 @@ class PostFiatTaskGenerationSystem:
             if pending_rites.empty:
                 return
             
-            logger.debug(f"PostFiatTaskGenerationSystem.process_pending_initiation_rewards: Processing {len(pending_rites)} pending rites")
+            logger.debug(f"PostFiatTaskGenerationSystem.process_initiation_queue: Processing {len(pending_rites)} pending rites")
 
             # Track processed accounts in this batch
             rewards_to_verify = set()
 
             # Spawn node wallet
-            logger.debug(f"PostFiatTaskGenerationSystem.process_pending_initiation_rewards: Spawning node wallet for sending initiation rewards")
+            logger.debug(f"PostFiatTaskGenerationSystem.process_initiation_queue: Spawning node wallet for sending initiation rewards")
             node_wallet = self.generic_pft_utilities.spawn_wallet_from_seed(
                 seed=self.cred_manager.get_credential(f'{self.node_config.node_name}__v1xrpsecret')
             )
             
             # Process each pending initiation rite
-            logger.debug(f"PostFiatTaskGenerationSystem.process_pending_initiation_rewards: Processing {len(pending_rites)} pending rites")
+            logger.debug(f"PostFiatTaskGenerationSystem.process_initiation_queue: Processing {len(pending_rites)} pending rites")
             for _, row in pending_rites.iterrows():
-                logger.debug(f"PostFiatTaskGenerationSystem.process_pending_initiation_rewards: Processing initiation rite for {row['user_account']}")
+                logger.debug(f"PostFiatTaskGenerationSystem.process_initiation_queue: Processing initiation rite for {row['user_account']}")
                 
                 try:
                     # Evaluate the rite
                     evaluation = self._evaluate_initiation_rite(row['initiation_rite'])
-                    logger.debug(f"PostFiatTaskGenerationSystem.process_pending_initiation_rewards: Evaluation complete - Reward amount: {evaluation['reward']}")
+                    logger.debug(f"PostFiatTaskGenerationSystem.process_initiation_queue: Evaluation complete - Reward amount: {evaluation['reward']}")
 
                     tracking_tuple = (
                         row['user_account'],
@@ -278,7 +278,7 @@ class PostFiatTaskGenerationSystem:
                     )
 
                 except Exception as e:
-                    logger.error(f"PostFiatTaskGenerationSystem.process_pending_initiation_rewards: Error processing initiation rite for {row['user_account']}: {e}")
+                    logger.error(f"PostFiatTaskGenerationSystem.process_initiation_queue: Error processing initiation rite for {row['user_account']}: {e}")
                     continue
 
             # Define verification predicate for initiation rewards
@@ -297,7 +297,7 @@ class PostFiatTaskGenerationSystem:
             )
 
         except Exception as e:
-            logger.error(f"PostFiatTaskGenerationSystem.process_pending_initiation_rewards: Error processing pending initiation rites: {e}")
+            logger.error(f"PostFiatTaskGenerationSystem.process_initiation_queue: Error processing pending initiation rites: {e}")
 
     def discord__send_postfiat_request(self, user_request, user_name, user_seed):
         """Send a PostFiat task request via Discord.
@@ -808,11 +808,9 @@ class PostFiatTaskGenerationSystem:
 
         # Make parallel API calls
         async_dict_to_work = full_copy_df.set_index('unique_index')['api_args'].to_dict()
-        logger.debug(f"Async dict to work: {async_dict_to_work}")
         output = self.openai_request_tool.create_writable_df_for_async_chat_completion(
             arg_async_map=async_dict_to_work
         )
-        logger.debug(f"Output: {output}")
 
         # Extract results from API responses
         result_map = output[
@@ -949,9 +947,12 @@ class PostFiatTaskGenerationSystem:
                 raise ValueError("Invalid dataframe")
                 
             selection_df = df_to_extract[df_to_extract['classification'] == choice_string]
-            if len(selection_df) == 0:
+
+            if selection_df.empty:
+                logger.error(f"PostFiatTaskManagement._extract_task_details: No matching task found: {choice_string}")
+                logger.error(f"full traceback: {traceback.format_exc()}")
                 raise ValueError("No matching task found")
-                
+
             return {
                 'task': selection_df['simplified_string'].iloc[0],
                 'reward': float(selection_df['value'].iloc[0])

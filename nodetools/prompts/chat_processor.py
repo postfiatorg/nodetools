@@ -120,7 +120,7 @@ class ChatProcessor:
 
         full_holder_df['balance'] = full_holder_df['balance'].astype(float)
         all_top_wallet_holders = full_holder_df.sort_values('balance',ascending=True)
-        real_users = all_top_wallet_holders[(all_top_wallet_holders['balance']*-1)>2_000].copy()
+        real_users = all_top_wallet_holders[(all_top_wallet_holders['balance']*-1)>2_000]
         top_accounts = list(real_users['account'].unique())
 
         # Get message queue

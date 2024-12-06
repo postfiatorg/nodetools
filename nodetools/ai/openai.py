@@ -28,11 +28,9 @@ class OpenAIRequestTool:
             openrouter_key = cred_manager.get_credential('openrouter')
             self.using_openrouter = openrouter_key is not None
             if openrouter_key:
-                logger.debug(f"OpenAIRequestTool: Using OpenRouter API. Primary model is {constants.OPENROUTER_MODELS[0]}, fallback model is {constants.OPENROUTER_MODELS[1]}")
                 base_url = constants.OPENROUTER_BASE_URL
                 self.api_key = openrouter_key
             else:
-                logger.debug(f"OpenAIRequestTool: Using OpenAI API. Primary model is {constants.DEFAULT_OPEN_AI_MODEL}")
                 base_url = None  # Use default OpenAI URL
                 self.api_key = cred_manager.get_credential('openai')
             
@@ -42,24 +40,17 @@ class OpenAIRequestTool:
             self.__class__._initialized = True
 
     def _prepare_api_args(self, api_args: dict) -> dict:
-        """Transform API arguments based on whether using OpenRouter or OpenAI.
-    
-        Args:
-            api_args: Original API arguments
-            
-        Returns:
-            Modified API arguments for the appropriate API
-        """
+        """Transform API arguments based on whether using OpenRouter or OpenAI."""
         if not self.using_openrouter:
             return api_args
             
         modified_args = api_args.copy()
 
-        # Replace 'model' with 'models' for OpenRouter, with fallback
+        # For OpenRouter, just ensure the model name is in the correct format
         if 'model' in modified_args:
-            modified_args['models'] = constants.OPENROUTER_MODELS
-            modified_args['route'] = 'fallback'
-            del modified_args['model']
+            model_name = modified_args['model']
+            if not '/' in model_name:
+                modified_args['model'] = f"openai/{model_name}"
 
         return modified_args
 
@@ -79,6 +70,7 @@ class OpenAIRequestTool:
     def run_chat_completion_sync(self, api_args):
         '''Run synchronous chat completion with given API arguments'''
         prepared_args = self._prepare_api_args(api_args=api_args)
+        logger.debug(f"OpenAIRequestTool.run_chat_completion_sync: Running chat completion with API arguments: {prepared_args}")
         output = self.client.chat.completions.create(**prepared_args)
         return output
 

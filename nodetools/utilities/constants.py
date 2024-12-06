@@ -1,8 +1,11 @@
 from enum import Enum
 
+# Super Users
+DISCORD_SUPER_USER_IDS = [402536023483088896, 471510026696261632]
+
 # AI MODELS
-OPENROUTER_MODELS = ["anthropic/claude-3.5-sonnet", "openai/chatgpt-4o-latest"]
-OPENROUTER_ROUTE = 'fallback'
+# OPENROUTER_MODELS = ["anthropic/claude-3.5-sonnet", "openai/chatgpt-4o-latest"]  # This doesn't work
+# OPENROUTER_ROUTE = 'fallback'
 DEFAULT_OPEN_AI_MODEL = 'chatgpt-4o-latest'
 DEFAULT_ANTHROPIC_MODEL = 'claude-3-5-sonnet-20241022'
 
