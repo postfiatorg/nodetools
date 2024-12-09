@@ -18,7 +18,8 @@ setup(
         'plotly',
         'matplotlib',
         'PyNaCl',
-        'loguru'
+        'loguru',
+        'asyncpg'
     ],
     author='Alex Good',
     author_email='alex@agti.net',

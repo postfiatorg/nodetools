@@ -1,9 +1,57 @@
 import pandas as pd
+from contextlib import asynccontextmanager
 import sqlalchemy
-#from agti.utilities import settings as gset
+import asyncpg
+from typing import Optional
+from loguru import logger
+from nodetools.utilities.credentials import CredentialManager
 import psycopg2
 import numpy as np
 from nodetools.utilities.credentials import CredentialManager
+
+class AsyncDBManager:
+    _instance = None
+    _initialized = False
+    _pool: Optional[asyncpg.Pool] = None
+
+    def __new__(cls, *args, **kwargs):
+        if cls._instance is None:
+            cls._instance = super().__new__(cls)
+        return cls._instance
+    
+    def __init__(self):
+        if not self.__class__._initialized:
+            self.credential_manager = CredentialManager()
+            self.__class__._initialized = True
+
+    async def initialize(self, username: str):
+        """Initialize connection pool"""
+        if self._pool is None:
+            logger.debug(f"AsyncDBManager.intialize: Creating connection pool for {username}")
+            connstring = self.credential_manager.get_credential(f"{username}_postgresconnstring")
+            self._pool = await asyncpg.create_pool(connstring)
+
+    async def close(self):
+        """Close connection pool"""
+        if self._pool:
+            await self._pool.close()
+            self._pool = None
+
+    async def execute(self, query: str, *args):
+        """Execute a query"""
+        if not self._pool:
+            raise RuntimeError("Database not initialized")
+        async with self._pool.acquire() as connection:
+            return await connection.execute(query, *args)
+
+    @asynccontextmanager
+    async def transaction(self):
+        """Provide a transaction context"""
+        if not self._pool:
+            raise RuntimeError("Database not initialized")
+        async with self._pool.acquire() as connection:
+            async with connection.transaction():
+                yield connection
 
 class DBConnectionManager:
     ''' supports 1 database for the collective and one for the user'''

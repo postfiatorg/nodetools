@@ -5,6 +5,7 @@ from nodetools.utilities.credentials import CredentialManager
 import sys
 import subprocess
 import platform
+from nodetools.sql.sql_manager import SQLManager
 
 def extract_node_name(postgres_key: str) -> str:
     """Extract node name from PostgreSQL credential key.
@@ -266,6 +267,8 @@ def init_database(drop_tables: bool = False, create_db: bool = False):
             print("\nNo PostgreSQL connection strings found!")
             print("Please run setup_credentials.py first to configure your database credentials.")
             return
+        
+        sql_manager = SQLManager()
 
         for postgres_key in postgres_keys:
             # Extract node name from PostgreSQL credential key
@@ -294,129 +297,60 @@ def init_database(drop_tables: bool = False, create_db: bool = False):
                 print(f"\nError connecting to database: {e}")
                 print("Please ensure the database exists and you have proper permissions.")
                 return
-
-            if drop_tables:
-                confirm = input("WARNING: This will drop existing tables. Are you sure you want to continue? (y/n): ")
-                if confirm.lower() != "y":
-                    print("Database initialization cancelled.")
-                    return
-
-            engine = create_engine(db_conn_string)
-
-            # First, create the tables
-            create_tables_sql = {
-                "postfiat_tx_cache":
-                """
-                CREATE TABLE IF NOT EXISTS postfiat_tx_cache (
-                    close_time_iso VARCHAR(255),
-                    hash VARCHAR(255) PRIMARY KEY,
-                    ledger_hash VARCHAR(255),
-                    ledger_index BIGINT,
-                    meta TEXT,
-                    tx_json TEXT,
-                    validated BOOLEAN,
-                    account VARCHAR(255),
-                    delivermax TEXT,
-                    destination VARCHAR(255),
-                    fee VARCHAR(20),
-                    flags FLOAT,
-                    lastledgersequence BIGINT,
-                    sequence BIGINT,
-                    signingpubkey TEXT,
-                    transactiontype VARCHAR(50),
-                    txnsignature TEXT,
-                    date BIGINT,
-                    memos TEXT
-                );
-                """,
-                "foundation_discord":
-                """
-                CREATE TABLE IF NOT EXISTS foundation_discord (
-                    hash VARCHAR(255) PRIMARY KEY,
-                    memo_data TEXT,
-                    memo_type VARCHAR(255),
-                    memo_format VARCHAR(255),
-                    datetime TIMESTAMP,
-                    url TEXT,
-                    directional_pft FLOAT,
-                    account VARCHAR(255),
-                    processed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-                );
-                """
-            }
-
-            # Create indices
-            create_indices_sql = """
-            CREATE INDEX IF NOT EXISTS idx_account_destination
-                ON postfiat_tx_cache(account, destination);
-            CREATE INDEX IF NOT EXISTS idx_close_time_iso
-                ON postfiat_tx_cache(close_time_iso DESC);
-            CREATE INDEX IF NOT EXISTS idx_hash
-                ON postfiat_tx_cache(hash);
-            """
-
-            # Create view
-            create_view_sql = """
-            DROP VIEW IF EXISTS memo_detail_view;
-            CREATE VIEW memo_detail_view AS
-            WITH parsed_json AS (
-                SELECT
-                    *,
-                    tx_json::jsonb as tx_json_parsed,
-                    meta::jsonb as meta_parsed
-                FROM postfiat_tx_cache
-            ),
-            memo_base AS (
-                SELECT
-                    *,
-                    meta_parsed->>'TransactionResult' as transaction_result,
-                    (tx_json_parsed->'Memos') IS NOT NULL as has_memos,
-                    (close_time_iso::timestamp) as datetime,
-                    COALESCE((tx_json_parsed->'DeliverMax'->>'value')::float, 0) as pft_absolute_amount,
-                    (close_time_iso::timestamp)::date as simple_date,
-                    (tx_json_parsed->'Memos'->0->'Memo') as main_memo_data
-                FROM parsed_json
-                WHERE (tx_json_parsed->'Memos') IS NOT NULL
-            )
-            SELECT * from memo_base;
-            """
-
+            
             try:
                 with engine.connect() as connection:
                     # Only drop tables if explicitly requested
                     if drop_tables:
-                        for table in create_tables_sql.keys():
+                        confirm = input("WARNING: This will drop existing tables. Are you sure you want to continue? (y/n): ")
+                        if confirm.lower() != "y":
+                            print("Database initialization cancelled.")
+                            return
+                        # Drop core tables
+                        for table in ["xrpl_transactions", "xrpl_memos"]:
                             connection.execute(text(f"DROP TABLE IF EXISTS {table} CASCADE;"))
+                        # Drop module tables
+                        connection.execute((text("DROP TABLE IF EXISTS discord_transactions CASCADE;")))    
                         connection.commit()
                         print("Dropped existing tables.")
 
-                    # Create the tables if they don't exist
-                    for table, create_table_sql in create_tables_sql.items():
-                        connection.execute(text(create_table_sql))
-                        connection.execute(text(f"GRANT ALL PRIVILEGES ON TABLE {table} to postfiat;"))
+                    # Initialize core database objects
+                    print("\nInitializing core database objects...")
+                    for category in ['create_tables', 'create_indices', 'create_views']:
+                        sql = sql_manager.load_query('init', category)
+                        connection.execute(text(sql))
                         connection.commit()
+                    print("Core database objects created successfully.")
 
+                    # Initialize Discord module
+                    print("\nInitializing Discord module...")
+                    for category in ['create_tables', 'create_indices', 'create_views']:
+                        sql = sql_manager.load_query(category, name=category, module='discord')
+                        connection.execute(text(sql))
+                        connection.commit()
+                    print("Discord module initialized successfully.")
+
+                    # Grant privileges
+                    print("\nGranting privileges...")
+                    for table in ["xrpl_transactions", "xrpl_memos", "discord_transactions"]:
+                        connection.execute(text(f"GRANT ALL PRIVILEGES ON TABLE {table} to postfiat;"))
+                    connection.execute(text("GRANT SELECT ON ALL VIEWS IN SCHEMA public TO postfiat;"))
+                    connection.commit()
+                    print("Privileges granted successfully.")
+
+                    # Print table info
+                    print("\nVerifying table structures:")
+                    for table in ["xrpl_transactions", "xrpl_memos", "discord_transactions"]:
                         result = connection.execute(text(f"""
                             SELECT column_name, data_type 
                             FROM information_schema.columns 
                             WHERE table_name = '{table}';
                         """))
                         columns = result.fetchall()
-                        print(f"\nCreated table: {table}")
+                        print(f"\nTable: {table}")
                         print("Columns:")
                         for col in columns:
                             print(f"- {col[0]}: {col[1]}")
-
-                    connection.commit()
-
-                    # Create or update indices
-                    connection.execute(text(create_indices_sql))
-                    connection.commit()
-
-                    # Create or replace view 
-                    connection.execute(text(create_view_sql))
-                    connection.execute(text("GRANT SELECT ON memo_detail_view TO postfiat;"))
-                    connection.commit()
 
             except Exception as e:
                 if "permission denied for schema public" in str(e):
@@ -432,8 +366,10 @@ def init_database(drop_tables: bool = False, create_db: bool = False):
             print("Database initialization completed successfully!")
             print("Status:")
             print("- Tables configured (drop_tables={})".format(drop_tables))
+            print("- Discord module initialized")
             print("- Indices updated")
             print("- Views updated")
+            print("- Privileges granted")
 
     except Exception as e:
         print(f"Error initializing database: {e}")
