@@ -76,11 +76,16 @@ class ChatProcessor:
 
     def process_chat_queue(self):
         """Process incoming chat messages and generate responses"""
-        # Get list of holders with sufficient balance (over 2000 PFT)
         full_holder_df = self.generic_pft_utilities.get_post_fiat_holder_df()
-        real_users = full_holder_df[
-            (full_holder_df['balance'].astype(float) * -1) > 2_000
-        ]
+
+        # Filter for holders with sufficient balance (over 2000 PFT), unless on TESTNET and DISABLE_PFT_REQUIREMENTS is true
+        if not (config.RuntimeConfig.USE_TESTNET and config.RuntimeConfig.DISABLE_PFT_REQUIREMENTS):
+            real_users = full_holder_df[
+                (full_holder_df['balance'].astype(float) * -1) > 2_000
+            ]
+        else:
+            real_users = full_holder_df
+
         top_accounts = list(real_users['account'].unique())
 
         # Retrieve messages
@@ -88,9 +93,6 @@ class ChatProcessor:
             account_address=self.node_config.remembrancer_address,
             channel_private_key=self.cred_manager.get_credential(f"{self.node_config.remembrancer_name}__v1xrpsecret")
         )
-
-        # debugging
-        full_message_queue.to_csv('full_message_queue.csv')
 
         # Filter for messages involving top accounts
         messages_to_work = full_message_queue[
@@ -102,9 +104,6 @@ class ChatProcessor:
             ((full_message_queue['processed_message'].apply(lambda x: 'ODV' in x)) |
             (full_message_queue['memo_type'].str.endswith('_response')))
         ].copy()
-
-        # debugging
-        messages_to_work.to_csv('messages_to_work.csv')
 
         # Check for already sent responses
         message_queue = self._filter_unresponded_messages(messages_to_work)

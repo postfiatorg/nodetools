@@ -1332,12 +1332,19 @@ class GenericPFTUtilities(BaseUtilities):
         return task_pairs
     
     # TODO: This is task management logic, move to task_management.py
-    def get_proposal_acceptance_pairs(self, account_memo_detail_df, include_pending=False, include_rewarded=False):
+    def get_proposal_acceptance_pairs(
+        self, 
+        account_memo_detail_df, 
+        include_pending=False, 
+        include_submitted_for_verification=True, 
+        include_rewarded=False
+    ):
         """Convert account info into a DataFrame of proposed and accepted tasks.
     
         Args:
             account_memo_detail_df: DataFrame containing account memo details
             include_pending: If True, includes proposals without responses
+            include_submitted_for_verification: If True, includes tasks that have been submitted for verification
             include_rewarded: If True, includes tasks that have been rewarded
             
         Returns:
@@ -1359,6 +1366,15 @@ class GenericPFTUtilities(BaseUtilities):
 
             # Filter out rewarded tasks
             task_pairs = task_pairs[~task_pairs.index.isin(rewarded_tasks)]
+
+        if not include_submitted_for_verification:
+            # Get task IDs that have been submitted for verification
+            verification_tasls = account_memo_detail_df[
+                account_memo_detail_df['memo_data'].str.contains(constants.TaskType.VERIFICATION_PROMPT.value, na=False)
+            ]['memo_type'].unique()
+
+            # Filter out verification tasks
+            task_pairs = task_pairs[~task_pairs.index.isin(verification_tasls)]
 
         if include_pending:
             # Keep acceptances and proposals without responses
@@ -2222,6 +2238,8 @@ class GenericPFTUtilities(BaseUtilities):
             logger.debug(f"GenericPFTUtilities.get_full_user_context_string: Retrieved google doc link: {google_url}")
             core_element__google_doc_text= self.get_google_doc_text(google_url)
 
+            logger.debug(f"GenericPFTUtilities.get_full_user_context_string: Retrieved google doc text: {core_element__google_doc_text}")
+
         except Exception as e:
             logger.error(f'GenericPFTUtilities.get_full_user_context_string: Exception for {account_address} while retrieving google doc text: {e}')
 
@@ -2484,6 +2502,7 @@ THIS MESSAGE WILL AUTO DELETE IN 60 SECONDS
         outstanding_task_df = self.get_proposal_acceptance_pairs(
             account_memo_detail_df=memo_history, 
             include_pending=True,
+            include_submitted_for_verification=False,
             include_rewarded=False
         )
         task_string = self.format_outstanding_tasks(outstanding_task_df)

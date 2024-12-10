@@ -846,6 +846,11 @@ class PostFiatTaskGenerationSystem:
             dict: Task generation results or pd.NA if generation fails
         """
         try:
+            logger.debug(f"PostFiatTaskManagement._generate_task_safely: Task generation started for {user_address}")
+            logger.debug(f"PostFiatTaskManagement._generate_task_safely: User context: {user_context}")
+            logger.debug(f"PostFiatTaskManagement._generate_task_safely: User request: {user_request}")
+            logger.debug(f"PostFiatTaskManagement._generate_task_safely: Number of copies: {n_copies}")
+            
             result = self._phase_1_a__n_post_fiat_task_generator(
                 user_context=user_context,
                 user_request=user_request,

@@ -1143,8 +1143,7 @@ class MyClient(discord.Client):
 ### Transaction
 1. /xrp_send: Send XRP to a destination address with a memo.
 2. /pf_send: Open a transaction form to send PFT tokens with a memo.
-3. /pf_log: take notes re your workflows
-4. /pf_log_encrypted: take encrypted notes re your workflows
+3. /pf_log: take notes re your workflows, with optional encryption
 
 ## Post Fiat operates on a Google Document.
 1. Place your Funded Wallet Address at the top of the Google Document 
@@ -1801,7 +1800,7 @@ Note: XRP wallets need 15 XRP to transact.
 
                     # Check PFT balance
                     pft_balance = self.generic_pft_utilities.get_account_pft_balance(wallet_address)
-                    if pft_balance < 25000:
+                    if pft_balance < 25000 or not (config.RuntimeConfig.USE_TESTNET and config.RuntimeConfig.DISABLE_PFT_REQUIREMENTS):
                         await message.reply(
                             f"You need at least 25,000 PFT to use the coach command. Your current balance is {pft_balance:,.2f} PFT.", 
                             mention_author=True

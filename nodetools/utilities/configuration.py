@@ -36,7 +36,10 @@ class RuntimeConfig:
     """Runtime configuration settings"""
     USE_TESTNET: bool = True
     HAS_LOCAL_NODE: bool = False
-    ENABLE_REINITIATIONS: bool = False  # TESTNET ONLY - only use this in conjunction with USE_TESTNET (USE_TESTNET & ENABLE_REINITIATIONS must both be true)
+    # TESTNET ONLY - only use these in conjunction with USE_TESTNET (i.e. USE_TESTNET & ENABLE_REINITIATIONS must both be true)
+    USE_OPENROUTER_AUTOROUTER: bool = True
+    ENABLE_REINITIATIONS: bool = False
+    DISABLE_PFT_REQUIREMENTS: bool = False
 
 # Network configurations
 XRPL_MAINNET = NetworkConfig(

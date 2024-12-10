@@ -1,4 +1,5 @@
 from enum import Enum
+from decimal import Decimal
 
 # Super Users
 DISCORD_SUPER_USER_IDS = [402536023483088896, 471510026696261632]
@@ -11,7 +12,7 @@ DEFAULT_ANTHROPIC_MODEL = 'claude-3-5-sonnet-20241022'
 
 OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
 
-MIN_XRP_PER_TRANSACTION = 0.00001  # Minimum XRP amount per transaction
+MIN_XRP_PER_TRANSACTION = Decimal('0.000001')  # Minimum XRP amount per transaction
 MIN_XRP_BALANCE = 12  # Minimum XRP balance to be able to perform a transaction
 
 # Maximum chunk size for a memo

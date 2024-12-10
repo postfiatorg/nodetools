@@ -8,6 +8,7 @@ from nodetools.utilities.db_manager import DBConnectionManager
 from nodetools.utilities.credentials import CredentialManager
 import uuid
 import nodetools.utilities.constants as constants
+import nodetools.utilities.configuration as config
 from loguru import logger
 import httpx
 
@@ -48,9 +49,12 @@ class OpenAIRequestTool:
 
         # For OpenRouter, just ensure the model name is in the correct format
         if 'model' in modified_args:
-            model_name = modified_args['model']
-            if not '/' in model_name:
-                modified_args['model'] = f"openai/{model_name}"
+            if config.RuntimeConfig.USE_TESTNET and config.RuntimeConfig.USE_OPENROUTER_AUTOROUTER:
+                modified_args['model'] = "openrouter/auto"
+            else:
+                model_name = modified_args['model']
+                if not '/' in model_name:
+                    modified_args['model'] = f"openai/{model_name}"
 
         return modified_args
 
