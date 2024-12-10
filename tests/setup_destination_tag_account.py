@@ -1,5 +1,5 @@
 import xrpl
-import nodetools.utilities.constants as constants
+import nodetools.configuration.constants as constants
 import getpass
 
 def setup_destination_tag_account(wallet_seed: str):

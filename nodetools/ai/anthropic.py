@@ -8,7 +8,7 @@ from anthropic import AsyncAnthropic
 import time
 from asyncio import Semaphore
 from nodetools.utilities.credentials import CredentialManager
-import nodetools.utilities.constants as constants
+import nodetools.configuration.constants as constants
 from loguru import logger
 
 class AnthropicTool:

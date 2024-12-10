@@ -3,7 +3,8 @@ from nodetools.utilities.generic_pft_utilities import GenericPFTUtilities
 from nodetools.ai.openai import OpenAIRequestTool
 from nodetools.chatbots.personas.odv import odv_system_prompt
 from nodetools.utilities.credentials import CredentialManager
-import nodetools.utilities.configuration as config
+from nodetools.task_processing.user_context_parsing import UserTaskParser
+import nodetools.configuration.configuration as config
 from loguru import logger
 import pandas as pd
 
@@ -14,6 +15,7 @@ class ChatProcessor:
         self.cred_manager = CredentialManager()
         self.generic_pft_utilities = GenericPFTUtilities()
         self.openai_request_tool = OpenAIRequestTool()
+        self.user_task_parser = UserTaskParser()
 
     def _filter_unresponded_messages(self, messages_df: pd.DataFrame) -> pd.DataFrame:
         """Filter out messages that have already been responded to."""
@@ -49,7 +51,7 @@ class ChatProcessor:
             Dict mapping account addresses to their context strings
         """
         return {
-            account: self.generic_pft_utilities.get_full_user_context_string(
+            account: self.user_task_parser.get_full_user_context_string(
                 account,
                 memo_history=self.generic_pft_utilities.get_account_memo_history(account)
             )

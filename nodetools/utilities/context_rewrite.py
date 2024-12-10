@@ -8,7 +8,7 @@ import logging
 import json
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
-import nodetools.utilities.constants as constants
+import nodetools.configuration.constants as constants
 
 @dataclass
 class TextImprovement:

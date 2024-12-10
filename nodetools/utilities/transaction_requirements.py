@@ -1,8 +1,8 @@
 from decimal import Decimal
 from enum import Enum
 from typing import Optional
-from nodetools.utilities.configuration import NetworkConfig, NodeConfig
-from nodetools.utilities.constants import SystemMemoType
+from nodetools.configuration.configuration import NetworkConfig, NodeConfig
+from nodetools.configuration.constants import SystemMemoType
 
 class AddressType(Enum):
     """Types of special addresses"""

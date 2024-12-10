@@ -7,10 +7,10 @@ from xrpl.core.keypairs.ed25519 import ED25519
 import nacl.bindings
 import nacl.signing
 import pandas as pd
-import nodetools.utilities.constants as constants
+import nodetools.configuration.constants as constants
 from loguru import logger
 from nodetools.utilities.base import BaseUtilities
-import nodetools.utilities.configuration as config
+import nodetools.configuration.configuration as config
 import re
 
 class MessageEncryption(BaseUtilities):

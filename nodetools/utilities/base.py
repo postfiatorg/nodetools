@@ -1,4 +1,4 @@
-import nodetools.utilities.configuration as config
+import nodetools.configuration.configuration as config
 
 class BaseUtilities:
     """Base class for shared functionality between utilities"""

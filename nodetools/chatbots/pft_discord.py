@@ -5,20 +5,21 @@ from discord.ui import Modal, TextInput, View, Select
 from nodetools.ai.openai import OpenAIRequestTool
 from nodetools.utilities.credentials import CredentialManager
 from nodetools.utilities.generic_pft_utilities import *
-from nodetools.utilities.task_management import PostFiatTaskGenerationSystem
+from nodetools.task_processing.task_management import PostFiatTaskGenerationSystem
 from nodetools.utilities.generic_pft_utilities import GenericPFTUtilities
 from nodetools.chatbots.personas.odv import odv_system_prompt
 from nodetools.performance.monitor import PerformanceMonitor
-from nodetools.utilities.configuration import (NetworkConfig, NodeConfig, RuntimeConfig, get_network_config, get_node_config)
+from nodetools.configuration.configuration import (NetworkConfig, NodeConfig, RuntimeConfig, get_network_config, get_node_config)
+from nodetools.task_processing.user_context_parsing import UserTaskParser
 import asyncio
 from datetime import datetime, time
 import pytz
 import datetime
-import nodetools.utilities.constants as constants
-import nodetools.utilities.configuration as config
+import nodetools.configuration.constants as constants
+import nodetools.configuration.configuration as config
 import getpass
 from loguru import logger
-from nodetools.utilities.configure_logger import configure_logger
+from nodetools.configuration.configure_logger import configure_logger
 from pathlib import Path
 from dataclasses import dataclass
 import traceback
@@ -35,6 +36,7 @@ class MyClient(discord.Client):
         self.openai_request_tool = OpenAIRequestTool()
         self.generic_pft_utilities = GenericPFTUtilities()
         self.post_fiat_task_generation_system = PostFiatTaskGenerationSystem()
+        self.user_task_parser = UserTaskParser()
 
         # Set network-specific attributes
         self.default_openai_model = constants.DEFAULT_OPEN_AI_MODEL
@@ -152,7 +154,7 @@ class MyClient(discord.Client):
                 return
 
             # Get proposal acceptance pairs
-            pf_df = generic_pft_utilities.get_proposal_acceptance_pairs(
+            pf_df = generic_pft_utilities.get_accepted_proposals(
                 account_memo_detail_df=memo_history, 
                 include_pending=True
             )
@@ -590,7 +592,7 @@ class MyClient(discord.Client):
                 output_message = generic_pft_utilities.create_full_outstanding_pft_string(account_address=wallet.address)
                 
                 # Format the message using the new formatting function
-                formatted_chunks = generic_pft_utilities.format_tasks_for_discord(output_message)
+                formatted_chunks = self.format_tasks_for_discord(output_message)
                 
                 # Send the first chunk
                 await interaction.followup.send(formatted_chunks[0], ephemeral=True)
@@ -958,7 +960,7 @@ class MyClient(discord.Client):
             # Fetch the tasks that are accepted but not completed
             memo_history = generic_pft_utilities.get_account_memo_history(wallet.address).copy()
 
-            pf_df = generic_pft_utilities.get_proposal_acceptance_pairs(account_memo_detail_df=memo_history)
+            pf_df = generic_pft_utilities.get_accepted_proposals(account_memo_detail_df=memo_history)
 
             # Return immediately if proposal acceptance pairs are empty
             if pf_df.empty:
@@ -1270,8 +1272,8 @@ Note: XRP wallets need 15 XRP to transact.
                     await interaction.followup.send("You have no rewards to show.", ephemeral=True)
                     return
 
-                reward_summary_map = generic_pft_utilities.get_reward_data(all_account_info=memo_history)
-                recent_rewards = generic_pft_utilities.format_reward_summary(reward_summary_map['reward_summaries'].tail(10))
+                reward_summary_map = self.generic_pft_utilities.get_reward_data(all_account_info=memo_history)
+                recent_rewards = self.format_reward_summary(reward_summary_map['reward_summaries'].tail(10))
 
                 # Split the message into chunks if it's too long
                 chunks = []
@@ -1752,7 +1754,7 @@ Note: XRP wallets need 15 XRP to transact.
                     logger.debug(f"MyClient.tactics: Spawning wallet to fetch info for {message.author.name}")
                     user_wallet = generic_pft_utilities.spawn_wallet_from_seed(seed=seed)
                     memo_history = generic_pft_utilities.get_account_memo_history(user_wallet.classic_address)
-                    full_user_context = generic_pft_utilities.get_full_user_context_string(user_wallet.classic_address, memo_history=memo_history)
+                    full_user_context = self.user_task_parser.get_full_user_context_string(user_wallet.classic_address, memo_history=memo_history)
                     
                     openai_request_tool = OpenAIRequestTool()
                     
@@ -1809,7 +1811,7 @@ Note: XRP wallets need 15 XRP to transact.
 
                     # Get user's full context
                     memo_history = self.generic_pft_utilities.get_account_memo_history(account_address=wallet_address)
-                    full_context = self.generic_pft_utilities.get_full_user_context_string(account_address=wallet_address, memo_history=memo_history)
+                    full_context = self.user_task_parser.get_full_user_context_string(account_address=wallet_address, memo_history=memo_history)
                     
                     # Get chat history
                     chat_history = []
@@ -1882,7 +1884,6 @@ My specific question/request is: {user_query}"""
                     logger.debug(f"MyClient.blackprint: Spawning wallet to fetch info for {message.author.name}")
                     user_wallet = self.generic_pft_utilities.spawn_wallet_from_seed(seed=seed)
                     user_address = user_wallet.classic_address
-                    #full_user_context = self.generic_pft_utilities.get_full_user_context_string(user_wallet.classic_address)
                     tactical_string = self.post_fiat_task_generation_system.generate_coaching_string_for_account(user_address)
                     
                     await self.send_long_message(message, tactical_string)
@@ -1902,7 +1903,6 @@ My specific question/request is: {user_query}"""
                     logger.debug(f"MyClient.deathmarch: Spawning wallet to fetch info for {message.author.name}")
                     user_wallet = self.generic_pft_utilities.spawn_wallet_from_seed(seed=seed)
                     user_address = user_wallet.classic_address
-                    #full_user_context = self.generic_pft_utilities.get_full_user_context_string(user_wallet.classic_address)
                     tactical_string = self.post_fiat_task_generation_system.get_o1_coaching_string_for_account(user_address)
                     
                     await self.send_long_message(message, tactical_string)
@@ -1921,7 +1921,6 @@ My specific question/request is: {user_query}"""
                     logger.debug(f"MyClient.redpill: Spawning wallet to fetch info for {message.author.name}")
                     user_wallet = self.generic_pft_utilities.spawn_wallet_from_seed(seed=seed)
                     user_address = user_wallet.classic_address
-                    #full_user_context = self.generic_pft_utilities.get_full_user_context_string(user_wallet.classic_address)
                     tactical_string = self.post_fiat_task_generation_system.o1_redpill(user_address)
                     
                     await self.send_long_message(message, tactical_string)
@@ -1940,7 +1939,6 @@ My specific question/request is: {user_query}"""
                     logger.debug(f"MyClient.docrewrite: Spawning wallet to fetch info for {message.author.name}")
                     user_wallet = self.generic_pft_utilities.spawn_wallet_from_seed(seed=seed)
                     user_address = user_wallet.classic_address
-                    #full_user_context = self.generic_pft_utilities.get_full_user_context_string(user_wallet.classic_address)
                     tactical_string = self.post_fiat_task_generation_system.generate_document_rewrite_instructions(user_address)
                     
                     await self.send_long_message(message, tactical_string)
@@ -2058,7 +2056,7 @@ My specific question/request is: {user_query}"""
                 account_info.username = list(memo_history[memo_history['direction']=='OUTGOING']['memo_format'].mode())[0]
 
                 # Reward statistics
-                reward_data = self.generic_pft_utilities.get_reward_data(all_account_info=memo_history)
+                reward_data = self.get_reward_data(all_account_info=memo_history)
                 if not reward_data['reward_ts'].empty:
                     account_info.monthly_pft_avg = float(reward_data['reward_ts'].tail(4).mean().iloc[0])
                     account_info.weekly_pft_avg = float(reward_data['reward_ts'].tail(1).mean().iloc[0])
@@ -2095,6 +2093,309 @@ My specific question/request is: {user_query}"""
             output += f"\n\nCONTEXT DOC:      {info.google_doc_link}"
         
         return output
+    
+    def format_tasks_for_discord(self, input_text: str):
+        """
+        Format task list for Discord with proper formatting and emoji indicators
+        Returns a list of formatted chunks ready for Discord sending
+        """
+        # Handle empty input
+        if not input_text or input_text.strip() == "OUTSTANDING TASKS":
+            return ["```ansi\n\u001b[1;33m=== OUTSTANDING TASKS ===\u001b[0m\n\u001b[0;37mNo outstanding tasks found.\u001b[0m\n```"]
+
+        # Split into main sections first
+        if "VERIFICATION REQUIREMENTS" in input_text:
+            tasks_section, verification_section = input_text.split("VERIFICATION REQUIREMENTS", 1)
+        else:
+            tasks_section, verification_section = input_text, ""
+
+        # Check if tasks section is empty (just the header)
+        tasks_section = tasks_section.strip()
+        if tasks_section == "OUTSTANDING TASKS":
+            return ["```ansi\n\u001b[1;33m=== OUTSTANDING TASKS ===\u001b[0m\n\u001b[0;37mNo outstanding tasks found.\u001b[0m\n```"]
+        
+        # Process tasks - remove the header line and split remaining tasks
+        tasks_lines = tasks_section.strip().split('\n', 1)[1]  # Skip the "OUTSTANDING TASKS" header
+        tasks = tasks_lines.split('--------------------------------------------------')
+        tasks = [t.strip() for t in tasks if t.strip()]  # Remove empty tasks and whitespace
+        
+        # Initialize formatted output parts
+        formatted_parts = []
+        current_chunk = ["```ansi\n\u001b[1;33m=== OUTSTANDING TASKS ===\u001b[0m\n"]
+        current_chunk_size = len(current_chunk[0])
+        
+        def add_to_chunks(content):
+            nonlocal current_chunk, current_chunk_size
+            content_size = len(content) + 1  # +1 for newline
+            
+            if current_chunk_size + content_size > 1900:
+                current_chunk.append("```")
+                formatted_parts.append("\n".join(current_chunk))
+                current_chunk = ["```ansi\n"]
+                current_chunk_size = len(current_chunk[0])
+                
+            current_chunk.append(content)
+            current_chunk_size += content_size
+        
+        # Process tasks
+        for task in tasks:
+            if not task.strip():
+                continue
+                
+            task_id_match = re.search(r'Task ID: ([0-9A-Za-z\-_:]+)', task)
+            proposal_match = re.search(r'Proposal: (.+?)(?=\nAcceptance:|$)', task, re.DOTALL)
+            acceptance_match = re.search(r'Acceptance: ?(.*?)(?=\n|$)', task, re.DOTALL)
+            priority_match = re.search(r'\.\. (\d+)', task)
+            
+            if not all([task_id_match, proposal_match, acceptance_match, priority_match]):
+                continue
+                
+            datetime_str = task_id_match.group(1).split('__')[0]
+            try:
+                date_obj = datetime.datetime.strptime(datetime_str, '%Y-%m-%d_%H:%M')
+                formatted_date = date_obj.strftime('%d %b %Y %H:%M')
+            except ValueError:
+                formatted_date = datetime_str
+
+            # Format acceptance status
+            acceptance_text = acceptance_match.group(1).strip()
+            acceptance_display = acceptance_text if acceptance_text else "(Pending)"
+            
+            # Format task components
+            task_parts = [
+                f"\u001b[1;36m📌 Task {task_id_match.group(1)}\u001b[0m",
+                f"\u001b[0;37mDate: {formatted_date}\u001b[0m",
+                f"\u001b[0;32mPriority: {priority_match.group(1)}\u001b[0m",
+                f"\u001b[1;37mProposal:\u001b[0m\n{proposal_match.group(1).strip()}",
+                f"\u001b[1;37mAcceptance:\u001b[0m\n{acceptance_display}",
+                "─" * 50
+            ]
+            
+            # Add each part to chunks
+            for part in task_parts:
+                add_to_chunks(part)
+
+        # Process verification section if it exists
+        if verification_section:
+            add_to_chunks("\n")  # Add spacing
+            add_to_chunks(f"\u001b[1;33m=== VERIFICATION REQUIREMENTS ===\u001b[0m")
+            
+            # Process each verification requirement
+            v_tasks = verification_section.split('--------------------------------------------------')
+            for vtask in v_tasks:
+                if not vtask.strip():
+                    continue
+                    
+                v_task_id_match = re.search(r'Task ID: ([0-9A-Za-z\-_:]+)', vtask)
+                v_prompt_match = re.search(r'Verification Prompt: (.+?)(?=\nOriginal Task:|$)', vtask, re.DOTALL)
+                v_original_match = re.search(r'Original Task: (.+?)(?=\n|$)', vtask, re.DOTALL)
+                
+                if not all([v_task_id_match, v_prompt_match]):
+                    continue
+                    
+                datetime_str = v_task_id_match.group(1).split('__')[0]
+                try:
+                    date_obj = datetime.datetime.strptime(datetime_str, '%Y-%m-%d_%H:%M')
+                    formatted_date = date_obj.strftime('%d %b %Y %H:%M')
+                except ValueError:
+                    formatted_date = datetime_str
+                
+                v_parts = [
+                    f"\u001b[1;36mTask {v_task_id_match.group(1)}\u001b[0m",
+                    f"\u001b[0;37mDate: {formatted_date}\u001b[0m",
+                    f"\u001b[1;37mPrompt:\u001b[0m\n{v_original_match.group(1).strip().replace(constants.TaskType.PROPOSAL.value, '')}",
+                    f"\u001b[1;37mVerification Prompt:\u001b[0m\n{v_prompt_match.group(1).strip().replace(constants.TaskType.VERIFICATION_PROMPT.value, '')}",
+                    "─" * 50
+                ]
+                
+                for part in v_parts:
+                    add_to_chunks(part)
+        
+        # Finalize last chunk
+        current_chunk.append("```")
+        formatted_parts.append("\n".join(current_chunk))
+        
+        return formatted_parts
+    
+    def format_outstanding_tasks(self, outstanding_task_df):
+        """
+        Convert outstanding_task_df to a more legible string format for AI tools.
+        
+        Args:
+            outstanding_task_df: DataFrame containing outstanding tasks
+            
+        Returns:
+            Formatted string representation of the tasks
+        """
+        formatted_tasks = []
+        for idx, row in outstanding_task_df.iterrows():
+            task_str = f"Task ID: {idx}\n"
+            task_str += f"Proposal: {row['proposal']}\n"
+            task_str += f"Acceptance: {row['acceptance']}\n"
+            task_str += "-" * 50  # Separator
+            formatted_tasks.append(task_str)
+        
+        formatted_task_string =  "\n".join(formatted_tasks)
+        output_string="""OUTSTANDING TASKS
+    """+formatted_task_string
+        return output_string
+    
+    def format_outstanding_verification_df(self, verification_requirements):
+        """
+        Format the verification_requirements dataframe into a string.
+
+        Args:
+        verification_requirements (pd.DataFrame): DataFrame containing columns 
+                                                'memo_type', 'memo_data', 'memo_format', and 'original_task'
+
+        Returns:
+        str: Formatted string of verification requirements
+        """
+        formatted_output = "VERIFICATION REQUIREMENTS\n"
+        for _, row in verification_requirements.iterrows():
+            formatted_output += f"Task ID: {row['memo_type']}\n"
+            formatted_output += f"Verification Prompt: {row['memo_data']}\n"
+            formatted_output += f"Original Task: {row['original_task']}\n"
+            formatted_output += "-" * 50 + "\n"
+        return formatted_output
+    
+    def create_full_outstanding_pft_string(self, account_address):
+        """ 
+        This takes in an account address and outputs the current state of its outstanding tasks.
+        Returns empty string for accounts with no PFT-related transactions.
+        """ 
+        memo_history = self.get_account_memo_history(account_address=account_address, pft_only=True)
+        if memo_history.empty:
+            return ""
+        
+        memo_history.sort_values('datetime', inplace=True)
+        outstanding_task_df = self.get_accepted_proposals(
+            account_memo_detail_df=memo_history, 
+            include_pending=True,
+            include_submitted_for_verification=False,
+            include_rewarded=False
+        )
+        task_string = self.format_outstanding_tasks(outstanding_task_df)
+        verification_df = self.post_fiat_task_generation_system.get_verification_df(account_memo_detail_df=memo_history)
+        verification_string = self.format_outstanding_verification_df(verification_requirements=verification_df)
+        full_postfiat_outstanding_string=f"{task_string}\n{verification_string}"
+        return full_postfiat_outstanding_string
+
+    def _calculate_weekly_reward_totals(self, specific_rewards):
+        """Calculate weekly reward totals with proper date handling.
+        
+        Returns DataFrame with weekly_total column indexed by date"""
+        # Calculate daily totals
+        daily_totals = specific_rewards[['directional_pft', 'simple_date']].groupby('simple_date').sum()
+
+        if daily_totals.empty:
+            logger.warning("No rewards data available to calculate weekly totals.")
+            return pd.DataFrame(columns=['weekly_total'])
+
+        # Extend date range to today
+        today = pd.Timestamp.today().normalize()
+        start_date = daily_totals.index.min()
+
+        if pd.isna(start_date):
+            logger.warning("Start date is NaT, cannot calculate weekly totals.")
+            return pd.DataFrame(columns=['weekly_total'])
+        
+        date_range = pd.date_range(
+            start=start_date,
+            end=today,
+            freq='D'
+        )
+
+        # Fill missing dates and calculate weekly totals
+        extended_daily_totals = daily_totals.reindex(date_range, fill_value=0)
+        extended_daily_totals = extended_daily_totals.resample('D').last().fillna(0)
+        extended_daily_totals['weekly_total'] = extended_daily_totals.rolling(7).sum()
+
+        # Return weekly totals
+        weekly_totals = extended_daily_totals.resample('W').last()[['weekly_total']]
+        weekly_totals.index.name = 'date'
+
+        # if weekly totals are NaN, set them to 0
+        weekly_totals = weekly_totals.fillna(0)
+
+        return weekly_totals
+    
+    def _pair_rewards_with_tasks(self, specific_rewards, all_account_info):
+        """Pair rewards with their original requests and proposals.
+        
+        Returns DataFrame with columns: memo_data, directional_pft, datetime, memo_type, request, proposal
+        """
+        # Get reward details
+        reward_details = specific_rewards[
+            ['memo_data', 'directional_pft', 'datetime', 'memo_type']
+        ].sort_values('datetime')
+
+        # Get original requests and proposals
+        task_requests = all_account_info[
+            all_account_info['memo_data'].apply(lambda x: constants.TaskType.REQUEST_POST_FIAT.value in x)
+        ].groupby('memo_type').first()['memo_data']
+
+        proposal_patterns = constants.TASK_PATTERNS[constants.TaskType.PROPOSAL]
+        task_proposals = all_account_info[
+            all_account_info['memo_data'].apply(lambda x: any(pattern in str(x) for pattern in proposal_patterns))
+        ].groupby('memo_type').first()['memo_data']
+
+        # Map requests and proposals to rewards
+        reward_details['request'] = reward_details['memo_type'].map(task_requests).fillna('No Request String')
+        reward_details['proposal'] = reward_details['memo_type'].map(task_proposals)
+
+        return reward_details
+
+    def get_reward_data(self, all_account_info):
+        """Get reward time series and task completion history.
+        
+        Args:
+            all_account_info: DataFrame containing account memo details
+            
+        Returns:
+            dict with keys:
+                - reward_ts: DataFrame of weekly reward totals
+                - reward_summaries: DataFrame containing rewards paired with original requests/proposals
+        """
+        # Get basic reward data
+        reward_responses = all_account_info[all_account_info['directional_pft'] > 0]
+        specific_rewards = reward_responses[
+            reward_responses.memo_data.apply(lambda x: "REWARD RESPONSE" in x)
+        ]
+
+        # Get weekly totals
+        weekly_totals = self._calculate_weekly_reward_totals(specific_rewards)
+
+        # Get reward summaries with context
+        reward_summaries = self._pair_rewards_with_tasks(
+            specific_rewards=specific_rewards,
+            all_account_info=all_account_info
+        )
+
+        return {
+            'reward_ts': weekly_totals,
+            'reward_summaries': reward_summaries
+        }
+
+    @staticmethod
+    def format_reward_summary(reward_summary_df):
+        """
+        Convert reward summary dataframe into a human-readable string.
+        :param reward_summary_df: DataFrame containing reward summary information
+        :return: Formatted string representation of the rewards
+        """
+        formatted_rewards = []
+        for _, row in reward_summary_df.iterrows():
+            reward_str = f"Date: {row['datetime']}\n"
+            reward_str += f"Request: {row['request']}\n"
+            reward_str += f"Proposal: {row['proposal']}\n"
+            reward_str += f"Reward: {row['directional_pft']} PFT\n"
+            reward_str += f"Response: {row['memo_data'].replace(constants.TaskType.REWARD.value, '')}\n"
+            reward_str += "-" * 50  # Separator
+            formatted_rewards.append(reward_str)
+        
+        output_string = "REWARD SUMMARY\n\n" + "\n".join(formatted_rewards)
+        return output_string
 
 @dataclass
 class AccountInfo:

@@ -7,8 +7,8 @@ import nest_asyncio
 from nodetools.utilities.db_manager import DBConnectionManager
 from nodetools.utilities.credentials import CredentialManager
 import uuid
-import nodetools.utilities.constants as constants
-import nodetools.utilities.configuration as config
+import nodetools.configuration.constants as constants
+import nodetools.configuration.configuration as config
 from loguru import logger
 import httpx
 

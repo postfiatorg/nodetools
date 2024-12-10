@@ -4,6 +4,7 @@ from nodetools.utilities.generic_pft_utilities import GenericPFTUtilities
 from nodetools.ai.openai import OpenAIRequestTool
 from nodetools.utilities.db_manager import DBConnectionManager
 from nodetools.utilities.credentials import CredentialManager
+from nodetools.task_processing.user_context_parsing import UserTaskParser
 import pandas as pd
 import numpy as np
 
@@ -19,6 +20,7 @@ class CorbanuChatBot:
     def __init__(self):
         if not self.__class__._initialized:
             self.db_connection_manager = DBConnectionManager()
+            self.user_task_parser = UserTaskParser()
             self.default_open_ai_model = 'chatgpt-4o-latest'
             self.open_ai_request_tool = OpenAIRequestTool()
             self.angron_map = self.generate_most_recent_angron_map()
@@ -104,7 +106,7 @@ class CorbanuChatBot:
         return classified_df
 
     def generate_o1_question(self, account_address='rJzZLYK6JTg9NG1UA8g3D6fnJwd6vh3N4u', user_chat_history=''):
-        full_user_context = self.generic_pft_utilities.get_full_user_context_string(account_address=account_address)
+        full_user_context = self.user_task_parser.get_full_user_context_string(account_address=account_address)
         system_prompt = f""" You are Corbanu. You are an expert at reading a users history and usefully mapping it to assets
         Your job is to take the user context and usefully extract information related to securities or assets 
         the user likely knows about based on their context history 
@@ -146,7 +148,7 @@ class CorbanuChatBot:
         return generate_question
 
     def generate_user_specific_question(self,account_address='rwmzXrN3Meykp8pBd3Boj1h34k8QGweUaZ',user_chat_history='',user_specific_offering=''):
-        full_user_context = self.generic_pft_utilities.get_full_user_context_string(account_address=account_address)
+        full_user_context = self.user_task_parser.get_full_user_context_string(account_address=account_address)
         system_prompt = f""" You are Corbanu. You are an expert at reading a users history and usefully mapping it to assets
         Your job is to take the user context and usefully extract information related to securities or assets 
         the user likely knows about based on their context history 
@@ -246,7 +248,7 @@ class CorbanuChatBot:
         return {'reward_value':reward_value, 'reward_description':reward_description}
 
     def generate_user_question_scoring_output(self, original_question, user_answer, account_address):
-        full_user_context = self.generic_pft_utilities.get_full_user_context_string(account_address=account_address)
+        full_user_context = self.user_task_parser.get_full_user_context_string(account_address=account_address)
         system_prompt = """ You are the corbanu scoring engine. You output a reward for a response.
         You follow instructions exactly. You are neither arbitrarily punitive nor are you arbitrarily generous with rewards
         you give exactly the correct value every time

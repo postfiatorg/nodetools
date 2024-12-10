@@ -22,12 +22,15 @@ import pandas as pd
 import matplotlib.pyplot as plt
 from matplotlib.dates import DateFormatter
 import matplotlib.ticker as ticker
-import nodetools.utilities.constants as constants
+import nodetools.configuration.constants as constants
 from nodetools.utilities.credentials import CredentialManager, SecretType
 from nodetools.utilities.exceptions import *
 from nodetools.performance.monitor import PerformanceMonitor
 from nodetools.prompts.chat_processor import ChatProcessor
-import nodetools.utilities.configuration as config
+import nodetools.configuration.configuration as config
+from nodetools.task_processing.user_context_parsing import UserTaskParser
+from nodetools.task_processing.task_creation import NewTaskGeneration
+import uuid
 
 class PostFiatTaskGenerationSystem:
     _instance = None
@@ -52,8 +55,10 @@ class PostFiatTaskGenerationSystem:
             self.generic_pft_utilities = GenericPFTUtilities()
             self.db_connection_manager = DBConnectionManager()
             self.message_encryption = MessageEncryption.get_instance()
+            self.user_task_parser = UserTaskParser()
             self.chat_processor = ChatProcessor()
             self.monitor = PerformanceMonitor()
+            self.task_generator = NewTaskGeneration()
             self.stop_threads = False
             self.default_model = constants.DEFAULT_OPEN_AI_MODEL
 
@@ -365,7 +370,7 @@ class PostFiatTaskGenerationSystem:
 
         # Get all transactions and filter for pending proposals
         memo_history = self.generic_pft_utilities.get_account_memo_history(wallet_address).copy()
-        pf_df = self.generic_pft_utilities.get_proposal_acceptance_pairs(
+        pf_df = self.generic_pft_utilities.get_accepted_proposals(
             account_memo_detail_df=memo_history,
             include_pending=True
         )
@@ -481,7 +486,7 @@ class PostFiatTaskGenerationSystem:
         
         # Get user's transaction history and accepted tasks
         memo_history = self.generic_pft_utilities.get_account_memo_history(wallet_address).copy()
-        pf_df = self.generic_pft_utilities.get_proposal_acceptance_pairs(account_memo_detail_df=memo_history)
+        pf_df = self.generic_pft_utilities.get_accepted_proposals(account_memo_detail_df=memo_history)
 
         # Get list of tasks that can be submitted
         valid_task_ids_to_submit_for_completion = list(pf_df[pf_df['acceptance']!=''].index)
@@ -517,6 +522,49 @@ class PostFiatTaskGenerationSystem:
             output_string = f'task ID {task_id_to_accept} is not in a valid state to submit for initial verification'
         
         return output_string
+    
+    # TODO: Refactor using existing methods
+    @staticmethod
+    def get_verification_df(account_memo_detail_df):
+        """Takes the account memo dataframe and converts into outstanding verification tasks.
+        
+        Args:
+            account_memo_detail_df: DataFrame containing account memo details
+        Returns:
+            DataFrame with verification requirements
+        """
+        all_memos = account_memo_detail_df.copy()  # TODO: This copy might be unnecessary
+
+        # Get rewarded task IDs to exclude
+        rewarded_tasks = all_memos[
+            all_memos['memo_data'].apply(lambda x: constants.TaskType.REWARD.value in str(x))
+        ]['memo_type'].unique()
+
+        # Get most recent memos excluding rewarded tasks
+        most_recent_memos = (all_memos[~all_memos['memo_type'].isin(rewarded_tasks)]
+                             .sort_values('datetime')
+                             .groupby('memo_type')
+                             .last()
+                             .copy())
+
+        # Map task IDs to original proposals
+        proposal_patterns = constants.TASK_PATTERNS[constants.TaskType.PROPOSAL]
+        task_id_to_original_task_map = (all_memos[
+            all_memos['memo_data'].apply(lambda x: any(pattern in str(x) for pattern in proposal_patterns))
+        ][['memo_data','memo_type','memo_format']]
+            .groupby('memo_type')
+            .first()['memo_data'])
+
+        # Filter for verification prompts
+        verification_requirements = (most_recent_memos[
+            most_recent_memos['memo_data'].apply(lambda x: constants.TaskType.VERIFICATION_PROMPT.value in str(x))
+        ][['memo_data','memo_format']]
+            .reset_index()
+            .copy())
+
+        verification_requirements['original_task'] = verification_requirements['memo_type'].map(task_id_to_original_task_map)
+
+        return verification_requirements
 
     def discord__final_submission(self, user_seed, user_name, task_id_to_submit, justification_string):
         """Submit final verification response for a task via Discord interface.
@@ -539,7 +587,7 @@ class PostFiatTaskGenerationSystem:
         
         # Get user's transaction history and outstanding verification tasks
         memo_history = self.generic_pft_utilities.get_account_memo_history(wallet_address).copy()
-        outstanding_verification = self.generic_pft_utilities.get_verification_df(account_memo_detail_df=memo_history)
+        outstanding_verification = self.get_verification_df(account_memo_detail_df=memo_history)
 
         # Get list of tasks that can be submitted
         valid_task_ids_to_submit_for_completion = list(outstanding_verification['memo_type'].unique())
@@ -591,7 +639,7 @@ class PostFiatTaskGenerationSystem:
         """
         # Get user's transaction history and context
         memo_history = self.generic_pft_utilities.get_account_memo_history(account_address=user_account)
-        full_user_context_string = self.generic_pft_utilities.get_full_user_context_string(
+        full_user_context_string = self.user_task_parser.get_full_user_context_string(
             account_address=user_account, 
             memo_history=memo_history
         )
@@ -971,7 +1019,6 @@ class PostFiatTaskGenerationSystem:
 
     def process_proposal_queue(self, memo_history: pd.DataFrame):
         """Process task requests and send resulting workflows with error handling and format consistency."""
-        TASKS_TO_GENERATE = constants.TASKS_TO_GENERATE
 
         try:
             # Get tasks that need processing
@@ -979,135 +1026,31 @@ class PostFiatTaskGenerationSystem:
             if unprocessed_pf_requests.empty:
                 return
                         
-            # Add request_id to track requests through the pipeline
-            unprocessed_pf_requests['request_id'] = unprocessed_pf_requests.groupby('user_account').cumcount()
+            # Create task map for batch processing
+            task_map = {}
+            for _, row in unprocessed_pf_requests.iterrows():
+                account_id = row['account']
+                task_id = row['memo_type']
+                user_request = row['most_recent_status'].replace(constants.TaskType.REQUEST_POST_FIAT.value, '').strip()
                 
-            # Map user contexts
-            context_mapper = {
-                account: self.generic_pft_utilities.get_full_user_context_string(account_address=account, memo_history=memo_history)
-                for account in unprocessed_pf_requests['user_account'].unique()
-            }
-            unprocessed_pf_requests['full_user_context'] = unprocessed_pf_requests['user_account'].map(context_mapper)
-            
-            logger.debug(f"PostFiatTaskManagement.process_proposal_queue: Generating {len(unprocessed_pf_requests)} task proposals")
-            # Generate task proposals
-            unprocessed_pf_requests['task_proposals'] = unprocessed_pf_requests.apply(
-                lambda row: self._generate_task_safely(
-                    user_address=row['user_account'], 
-                    user_context=row['full_user_context'], 
-                    user_request=row['most_recent_status'], 
-                    n_copies=TASKS_TO_GENERATE
-                ), 
-                axis=1
+                combined_key = self.task_generator.create_task_key(account_id, task_id)
+                task_map[combined_key] = user_request
+
+            # Process tasks using task generation system
+            output_df = self.task_generator.process_task_map_to_proposed_pf(
+                task_map=task_map,
+                model=constants.DEFAULT_OPENROUTER_MODEL,
+                get_google_doc=True,
+                get_historical_memos=True
             )
 
-            # logging
-            base_proposal_count = len(unprocessed_pf_requests)
-
-            # Remove rows with failed task generation
-            unprocessed_pf_requests = unprocessed_pf_requests[
-                unprocessed_pf_requests['task_proposals'].notna()
-            ]
-
-            # logging
-            valid_proposal_count = len(unprocessed_pf_requests)
-            logger.debug(f"PostFiatTaskManagement.process_proposal_queue: {valid_proposal_count} out of {base_proposal_count} task proposals are valid")
-
-            if unprocessed_pf_requests.empty:
-                logger.debug("PostFiatTaskManagement.process_proposal_queue: No valid task proposals generated. Returning...")
+            if output_df.empty:
+                logger.debug("PostFiatTaskManagement.process_proposal_queue: No valid tasks generated. Returning...")
                 return
             
-            # Extract task strings from proposals
-            unprocessed_pf_requests['task_string'] = unprocessed_pf_requests['task_proposals'].apply(
-                lambda x: x.get('n_task_output', '') if isinstance(x, dict) else ''
-            )
+            output_df['account_to_send_to'] = output_df['internal_name'].apply(lambda x: x.split('task_gen__')[-1].split('__')[0])
+            output_df['pft_to_send'] = 1
 
-            # Prepare API args for selection
-            unprocessed_pf_requests['final_api_arg'] = unprocessed_pf_requests.apply(
-                lambda row: self._phase_1_b__task_selection_api_args(
-                    task_string=row['task_string'],
-                    user_context=row['full_user_context']
-                ),
-                axis=1
-            )
-            
-            # Remove rows with failed API arg conversion
-            unprocessed_pf_requests = unprocessed_pf_requests[unprocessed_pf_requests['final_api_arg'].notna()]
-
-            # LOGGING
-            api_arg_count = len(unprocessed_pf_requests['final_api_arg'])
-            logger.debug(f"PostFiatTaskManagement.process_proposal_queue: {api_arg_count} out of {valid_proposal_count} task proposals have valid API args")
-            
-            if unprocessed_pf_requests.empty:
-                logger.debug("PostFiatTaskManagement.process_proposal_queue: No valid tasks after API conversion. Returning...")
-                return
-
-            # Get task selections
-            selection_mapper = unprocessed_pf_requests.set_index('hash')['final_api_arg'].to_dict()
-            async_df = self.openai_request_tool.create_writable_df_for_async_chat_completion(arg_async_map=selection_mapper)
-            async_df['output_selection'] = async_df['choices__message__content'].apply(self._parse_output_selection)
-
-            # Map selections back using hash
-            selected_choice = async_df.groupby('internal_name').first()['output_selection']
-            unprocessed_pf_requests['best_choice'] = unprocessed_pf_requests['hash'].map(selected_choice)
-
-            # Validate - best selection exists
-            if unprocessed_pf_requests['best_choice'].isna().any():
-                logger.debug("PostFiatTaskManagement.process_proposal_queue: Task selection failed - no best choice found")
-                return
-
-            # Validate - we have one selection per request
-            tasks_per_request = unprocessed_pf_requests.groupby(['user_account', 'request_id']).size()
-            if (tasks_per_request > 1).any():
-                logger.debug("PostFiatTaskManagement.process_proposal_queue: WARNING: Multiple tasks generated for single request")
-                # Keep only the first task for each request
-                unprocessed_pf_requests = unprocessed_pf_requests.groupby(['user_account', 'request_id']).first().reset_index()
-
-            # Continue processing with guaranteed single task per request
-            unprocessed_pf_requests['df_to_extract'] = unprocessed_pf_requests['task_proposals'].apply(
-                lambda x: x.get('full_api_output', pd.DataFrame())
-            )
-            unprocessed_pf_requests['best_choice_string'] = unprocessed_pf_requests['best_choice'].apply(
-                lambda x: f'OUTPUT {x}'
-            )
-
-            # Extract and validate task details
-            unprocessed_pf_requests['task_map'] = unprocessed_pf_requests.apply(
-                lambda x: self._extract_task_details(x['best_choice_string'], x['df_to_extract']), 
-                axis=1
-            )
-
-            # Log any requests that fell back to default task
-            fallback_requests = unprocessed_pf_requests[
-                unprocessed_pf_requests['task_map'].apply(
-                    lambda x: x['task'] == "Update and review your context document and ensure it is populated"
-                )
-            ]
-            if not fallback_requests.empty:
-                fallback_msg = "PostFiatTaskManagement.process_proposal_queue: Fallback to default task for the following requests:"
-                fallback_msg += f"\n {fallback_requests[['user_account', 'request_id']].values}"
-                logger.debug(fallback_msg)
-
-            # Prepare final task strings
-            unprocessed_pf_requests['task_string_to_send'] = constants.TaskType.PROPOSAL.value + unprocessed_pf_requests['task_map'].apply(
-                lambda x: x['task']
-            )
-
-            # Create memos with request tracking
-            def create_memo(row):
-                try:
-                    return self.generic_pft_utilities.construct_standardized_xrpl_memo(
-                        memo_data=row['task_string_to_send'],
-                        memo_format=row['memo_format'],
-                        memo_type=row['memo_type']
-                    )
-                except Exception as e:
-                    logger.error(f"PostFiatTaskManagement.process_proposal_queue: create_memo: Memo creation failed: {e}")
-                    return None
-
-            unprocessed_pf_requests['memo_to_send'] = unprocessed_pf_requests.apply(create_memo, axis=1)
-
-            # Send each task
             tasks_to_verify = set()  # Set of (user_account, memo_type, datetime) tuples
 
             # Spawn node wallet
@@ -1120,27 +1063,24 @@ class PostFiatTaskGenerationSystem:
             for _, row in unprocessed_pf_requests.iterrows():
 
                 try:
-                    if row['memo_to_send'] is None:
-                        continue
-                        
-                    if 'Update and review your context document' in row['task_string_to_send']:
-                        logger.debug(f"PostFiatTaskManagement.process_proposal_queue: Attempting fallback task generation for {row['user_account']}")
-                        try:
-                            task_string_to_send = self.generate_o1_task_one_shot_version(
-                                model_version='o1',
-                                user_account=row['user_account'],
-                                task_string_input=row['full_user_context']
-                            )
-                            memo_to_send = self.generic_pft_utilities.construct_standardized_xrpl_memo(
-                                memo_data=task_string_to_send,
-                                memo_format=row['memo_format'],
-                                memo_type=row['memo_type']
-                            )
-                        except Exception as e:
-                            logger.error(f"PostFiatTaskManagement.process_proposal_queue: Fallback task generation failed: {e}")
-                            continue
+                    task_id = row['task_id']
+                    internal_name = row['internal_name']
+                    
+                    # Parse account_id and task_id
+                    name_parts = internal_name.split('__')
+                    if name_parts[0] == 'task_gen':
+                        account_id = name_parts[1]
+                        final_task_id = name_parts[3]
                     else:
-                        memo_to_send = row['memo_to_send']
+                        account_id, final_task_id = self.task_generator.parse_task_key(internal_name)
+
+                    memo_data = row['pf_proposal_string']
+
+                    memo_to_send = self.generic_pft_utilities.construct_standardized_xrpl_memo(
+                        memo_data=memo_data,
+                        memo_format=self.node_config.node_name,
+                        memo_type=final_task_id
+                    )
 
                     tracking_tuple = (row['user_account'], row['memo_type'], row['datetime'])
 
@@ -1963,7 +1903,7 @@ class PostFiatTaskGenerationSystem:
     def generate_coaching_string_for_account(self, account_to_work = 'r3UHe45BzAVB3ENd21X9LeQngr4ofRJo5n'):
         
         memo_history = self.generic_pft_utilities.get_account_memo_history(account_address=account_to_work,pft_only=True)
-        full_context = self.generic_pft_utilities.get_full_user_context_string(account_address=account_to_work, memo_history=memo_history)
+        full_context = self.user_task_parser.get_full_user_context_string(account_address=account_to_work, memo_history=memo_history)
         simplified_rewards=memo_history[memo_history['memo_data'].apply(lambda x: 'reward' in x)].copy()
         simplified_rewards['simple_date']=pd.to_datetime(simplified_rewards['datetime'].apply(lambda x: x.strftime('%Y-%m-%d')))
         daily_ts = simplified_rewards[['pft_absolute_amount','simple_date']].groupby('simple_date').sum()
@@ -2031,7 +1971,7 @@ _________________________________
         formatted_date = now_eastern.strftime('%A, %B %d, %Y, %-I:%M %p')
         #formatted_date = 'Saturday, October 05, 2024, 10:02 AM'
         memo_history = self.generic_pft_utilities.get_account_memo_history(account_address=account_to_work,pft_only=True)
-        full_context = self.generic_pft_utilities.get_full_user_context_string(account_address=account_to_work, memo_history=memo_history)
+        full_context = self.user_task_parser.get_full_user_context_string(account_address=account_to_work, memo_history=memo_history)
         simplified_rewards=memo_history[memo_history['memo_data'].apply(lambda x: 'reward' in x)].copy()
         simplified_rewards['simple_date']=pd.to_datetime(simplified_rewards['datetime'].apply(lambda x: x.strftime('%Y-%m-%d')))
         daily_ts = simplified_rewards[['pft_absolute_amount','simple_date']].groupby('simple_date').sum()
@@ -2126,7 +2066,7 @@ _________________________________
         formatted_date = now_eastern.strftime('%A, %B %d, %Y, %-I:%M %p')
         #formatted_date = 'Saturday, October 05, 2024, 10:02 AM'
         memo_history = self.generic_pft_utilities.get_account_memo_history(account_address=account_to_work,pft_only=True)
-        full_context = self.generic_pft_utilities.get_full_user_context_string(account_address=account_to_work, memo_history=memo_history)
+        full_context = self.user_task_parser.get_full_user_context_string(account_address=account_to_work, memo_history=memo_history)
         simplified_rewards=memo_history[memo_history['memo_data'].apply(lambda x: 'reward' in x)].copy()
         simplified_rewards['simple_date']=pd.to_datetime(simplified_rewards['datetime'].apply(lambda x: x.strftime('%Y-%m-%d')))
         daily_ts = simplified_rewards[['pft_absolute_amount','simple_date']].groupby('simple_date').sum()
@@ -2223,7 +2163,7 @@ _________________________________
         formatted_date = now_eastern.strftime('%A, %B %d, %Y, %-I:%M %p')
         #formatted_date = 'Saturday, October 05, 2024, 10:02 AM'
         memo_history = self.generic_pft_utilities.get_account_memo_history(account_address=account_to_work,pft_only=True)
-        full_context = self.generic_pft_utilities.get_full_user_context_string(account_address=account_to_work, memo_history=memo_history)
+        full_context = self.user_task_parser.get_full_user_context_string(account_address=account_to_work, memo_history=memo_history)
         simplified_rewards=memo_history[memo_history['memo_data'].apply(lambda x: 'reward' in x)].copy()
         simplified_rewards['simple_date']=pd.to_datetime(simplified_rewards['datetime'].apply(lambda x: x.strftime('%Y-%m-%d')))
         daily_ts = simplified_rewards[['pft_absolute_amount','simple_date']].groupby('simple_date').sum()

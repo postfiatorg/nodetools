@@ -6,8 +6,8 @@ from cryptography.hazmat.primitives.hashes import SHA256
 from cryptography.fernet import Fernet
 import time
 from enum import Enum
-import nodetools.utilities.constants as constants
-import nodetools.utilities.configuration as config
+import nodetools.configuration.constants as constants
+import nodetools.configuration.configuration as config
 from nodetools.utilities.encryption import MessageEncryption
 
 CREDENTIALS_DB_FILENAME = "credentials.sqlite"

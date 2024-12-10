@@ -5,6 +5,7 @@ from nodetools.prompts.task_generation import (
     task_generation_one_shot_system_prompt
 )
 from nodetools.ai.openrouter import OpenRouterTool
+from nodetools.task_processing.user_context_parsing import UserTaskParser
 import pandas as pd
 import uuid
 import re
@@ -45,7 +46,7 @@ class NewTaskGeneration:
     
     # Example usage with an XRPL address
     account_address = 'rNC2hS269hTvMZwNakwHPkw4VeZNwzpS2E'
-    context = task_gen.get_full_user_context_string(
+    context = task_gen.user_task_parser.get_full_user_context_string(
         account_address=account_address,
         get_google_doc=True,
         get_historical_memos=True,
@@ -80,14 +81,13 @@ class NewTaskGeneration:
     
     _instance = None
     _initialized = False
-    _credential_manager = None
 
     def __new__(cls, *args, **kwargs):
         if cls._instance is None:
             cls._instance = super().__new__(cls)
         return cls._instance
 
-    def __init__(self, password=None):
+    def __init__(self):
         """
         Initialize NewTaskGeneration with CredentialManager and create GenericPFTUtilities instance.
         
@@ -95,13 +95,9 @@ class NewTaskGeneration:
             password (str, optional): Password for CredentialManager initialization. Required on first instance.
         """
         if not self.__class__._initialized:
-            if not self.__class__._credential_manager:
-                if password is None:
-                    raise ValueError("Password is required for first NewTaskGeneration instance")
-                self.__class__._credential_manager = CredentialManager(password=password)
-            
             self.generic_pft_utilities = GenericPFTUtilities()
             self.user_context = UserContext()
+            self.user_task_parser = UserTaskParser()
             self.__class__._initialized = True
 
     def extract_final_output(self, text):
@@ -254,7 +250,7 @@ class NewTaskGeneration:
             dict: Formatted API arguments for task generation
         """
         # Get full user context
-        user_context = self.get_full_user_context_string(
+        user_context = self.user_task_parser.get_full_user_context_string(
             account_address=user_account_address,
             get_google_doc=get_google_doc,
             get_historical_memos=get_historical_memos
@@ -281,129 +277,141 @@ class NewTaskGeneration:
         
         return api_args
 
-    def get_full_user_context_string(self, account_address, get_google_doc=True, get_historical_memos=True, n_task_context_history=20):
-        """
-        Get complete user context including memo history, task status, and Google doc content.
+#     def get_full_user_context_string(self, account_address, get_google_doc=True, get_historical_memos=True, n_task_context_history=20):
+#         """
+#         Get complete user context including memo history, task status, and Google doc content.
         
-        Args:
-            account_address (str): XRPL account address
-            get_google_doc (bool): Whether to fetch Google doc content
-            get_historical_memos (bool): Whether to fetch historical memos
-            n_task_context_history (int): Number of historical items to include
+#         Args:
+#             account_address (str): XRPL account address
+#             get_google_doc (bool): Whether to fetch Google doc content
+#             get_historical_memos (bool): Whether to fetch historical memos
+#             n_task_context_history (int): Number of historical items to include
             
-        Returns:
-            str: Formatted context string containing all user information
-        """
-        memo_history = self.generic_pft_utilities.get_account_memo_history(
-            account_address=account_address,
-            pft_only=False
-        )
+#         Returns:
+#             str: Formatted context string containing all user information
+#         """
+#         memo_history = self.generic_pft_utilities.get_account_memo_history(
+#             account_address=account_address,
+#             pft_only=False
+#         )
         
-        simple_user_memo_history = memo_history.sort_values('datetime')
-        simple_user_memo_history = simple_user_memo_history[~simple_user_memo_history['memo_data'].apply(
-            lambda x: ('CHUNK' in x) | ('WHISPER' in x) | ('chunk_' in x))].copy()
-        
-        memo_first = simple_user_memo_history.groupby('memo_type').first()
-        memo_last = simple_user_memo_history.groupby('memo_type').last()
+#         simple_user_memo_history = memo_history.sort_values('datetime')
 
-        first_incoming_memo = memo_first[['memo_data']]
-        last_incoming_memo = memo_last[['memo_data']]
-        first_incoming_memo = first_incoming_memo.loc[[i for i in first_incoming_memo.index if '__' in i]].copy()
-        last_incoming_memo = last_incoming_memo.loc[[i for i in last_incoming_memo.index if '__' in i]].copy()
+#         # Filter out MessageType memos 
+#         simple_user_memo_history = simple_user_memo_history[~simple_user_memo_history['memo_data'].apply(
+#             lambda x: ('CHUNK' in x) | ('WHISPER' in x) | ('chunk_' in x))].copy()
         
-        full_user_history = pd.concat([first_incoming_memo, last_incoming_memo], axis=1)
-        full_user_history.columns = ['initial_request', 'recent_status']
+#         # Get first and last memo for each memo_type to track task progression
+#         memo_first = simple_user_memo_history.groupby('memo_type').first()
+#         memo_last = simple_user_memo_history.groupby('memo_type').last()
+
+#         # Extract memo data for first and last
+#         first_incoming_memo = memo_first[['memo_data']]
+#         last_incoming_memo = memo_last[['memo_data']]
+
+#         # Filter to only include task-related memos (those containing '__')
+#         first_incoming_memo = first_incoming_memo.loc[[i for i in first_incoming_memo.index if '__' in i]].copy()
+#         last_incoming_memo = last_incoming_memo.loc[[i for i in last_incoming_memo.index if '__' in i]].copy()
         
-        memo_dexed = simple_user_memo_history.set_index('memo_type')
-        tasks_to_consider = memo_dexed.loc[full_user_history.index]
+#         # Combine first and last memos to show task progression
+#         full_user_history = pd.concat([first_incoming_memo, last_incoming_memo], axis=1)
+#         full_user_history.columns = ['initial_request', 'recent_status']
         
-        proposed_df = tasks_to_consider[tasks_to_consider['memo_data'].apply(
-            lambda x: 'PROPOSED PF ___' in x)][['memo_data']]['memo_data']
-        proposed_df = proposed_df.groupby('memo_type').last()
-        full_user_history['proposed_task'] = proposed_df
+#         # Index memos by type for easier lookup
+#         memo_dexed = simple_user_memo_history.set_index('memo_type')
+#         tasks_to_consider = memo_dexed.loc[full_user_history.index]
         
-        init_req = full_user_history['initial_request'].apply(lambda x: str(x).replace('REQUEST_POST_FIAT ___', 'User Requested:'))
-        prop_req = full_user_history['proposed_task'].apply(lambda x: str(x).replace('PROPOSED PF ___', 'System Proposed:'))
-        full_user_history['initial_task_detail'] = init_req + '__,' + prop_req
-
-        full_user_history['first_date'] = memo_first['datetime']
-        full_user_history['recent_date'] = memo_last['datetime']
+#         # Extract proposed tasks
+#         proposed_df = tasks_to_consider[tasks_to_consider['memo_data'].apply(
+#             lambda x: 'PROPOSED PF ___' in x)][['memo_data']]['memo_data']
+#         proposed_df = proposed_df.groupby('memo_type').last()
+#         full_user_history['proposed_task'] = proposed_df
         
-        proposal_block = full_user_history[full_user_history['recent_status'].apply(
-            lambda x: ('PROPOSED' in x) | ('ACCEPTANCE' in x))][['initial_task_detail', 'recent_status']]
+#         # Format task details by replacing system prefixes with readable labels
+#         init_req = full_user_history['initial_request'].apply(lambda x: str(x).replace('REQUEST_POST_FIAT ___', 'User Requested:'))
+#         prop_req = full_user_history['proposed_task'].apply(lambda x: str(x).replace('PROPOSED PF ___', 'System Proposed:'))
+#         full_user_history['initial_task_detail'] = init_req + '__,' + prop_req
+
+#         # Add timestamp information
+#         full_user_history['first_date'] = memo_first['datetime']
+#         full_user_history['recent_date'] = memo_last['datetime']
         
-        refusal_block = full_user_history[full_user_history['recent_status'].apply(
-            lambda x: ('REFUS' in x))][['initial_task_detail', 'recent_status', 'recent_date']].head(n_task_context_history)
+#         # Extract different task blocks based on status
+#         proposal_block = full_user_history[full_user_history['recent_status'].apply(
+#             lambda x: ('PROPOSED' in x) | ('ACCEPTANCE' in x))][['initial_task_detail', 'recent_status']]
         
-        verification_block = full_user_history[full_user_history['recent_status'].apply(
-            lambda x: "VERIFICATION" in x)].copy()
+#         refusal_block = full_user_history[full_user_history['recent_status'].apply(
+#             lambda x: ('REFUS' in x))][['initial_task_detail', 'recent_status', 'recent_date']].head(n_task_context_history)
         
-        reward_block = full_user_history[full_user_history['recent_status'].apply(
-            lambda x: 'REWARD' in x)].copy().head(n_task_context_history)
+#         verification_block = full_user_history[full_user_history['recent_status'].apply(
+#             lambda x: "VERIFICATION" in x)].copy()
         
-        proposal_string = proposal_block[['initial_task_detail', 'recent_status']].to_string()
-        refusal_string = refusal_block[['initial_task_detail', 'recent_status', 'recent_date']].to_string()
-        verification_string = verification_block[['initial_task_detail', 'recent_status', 'recent_date']].to_string()
-        reward_string = reward_block[['initial_task_detail', 'recent_status', 'recent_date']].to_string()
+#         reward_block = full_user_history[full_user_history['recent_status'].apply(
+#             lambda x: 'REWARD' in x)].copy().head(n_task_context_history)
         
-        core_element__google_doc_text = ''
-        if get_google_doc:
-            try:
-                google_url = self.generic_pft_utilities.get_latest_outgoing_context_doc_link(
-                    account_address=account_address, 
-                    memo_history=memo_history
-                )
-                core_element__google_doc_text = self.generic_pft_utilities.get_google_doc_text(google_url)
-            except:
-                print('failed retrieving user google doc')
-                pass
+#         proposal_string = proposal_block[['initial_task_detail', 'recent_status']].to_string()
+#         refusal_string = refusal_block[['initial_task_detail', 'recent_status', 'recent_date']].to_string()
+#         verification_string = verification_block[['initial_task_detail', 'recent_status', 'recent_date']].to_string()
+#         reward_string = reward_block[['initial_task_detail', 'recent_status', 'recent_date']].to_string()
+        
+#         core_element__google_doc_text = ''
+#         if get_google_doc:
+#             try:
+#                 google_url = self.generic_pft_utilities.get_latest_outgoing_context_doc_link(
+#                     account_address=account_address, 
+#                     memo_history=memo_history
+#                 )
+#                 core_element__google_doc_text = self.generic_pft_utilities.get_google_doc_text(google_url)
+#             except:
+#                 print('failed retrieving user google doc')
+#                 pass
 
-        core_element__user_log_history = ''
-        if get_historical_memos:
-            try:
-                core_element__user_log_history = self.generic_pft_utilities.get_recent_user_memos(
-                    account_address=account_address,
-                    num_messages=n_task_context_history
-                )
-            except:
-                pass
+#         core_element__user_log_history = ''
+#         if get_historical_memos:
+#             try:
+#                 core_element__user_log_history = self.generic_pft_utilities.get_recent_user_memos(
+#                     account_address=account_address,
+#                     num_messages=n_task_context_history
+#                 )
+#             except:
+#                 pass
 
-        return f"""
-***<<< ALL TASK GENERATION CONTEXT STARTS HERE >>>***
+#         return f"""
+# ***<<< ALL TASK GENERATION CONTEXT STARTS HERE >>>***
 
-These are the proposed and accepted tasks that the user has. This is their
-current work queue
-<<PROPOSED AND ACCEPTED TASKS START HERE>>
-{proposal_string}
-<<PROPOSED AND ACCEPTED TASKS ENDE HERE>>
+# These are the proposed and accepted tasks that the user has. This is their
+# current work queue
+# <<PROPOSED AND ACCEPTED TASKS START HERE>>
+# {proposal_string}
+# <<PROPOSED AND ACCEPTED TASKS ENDE HERE>>
 
-These are the tasks that the user has been proposed and has refused.
-The user has provided a refusal reason with each one. Only their most recent
-{n_task_context_history} refused tasks are showing 
-<<REFUSED TASKS START HERE >>
-{refusal_string}
-<<REFUSED TASKS END HERE>>
+# These are the tasks that the user has been proposed and has refused.
+# The user has provided a refusal reason with each one. Only their most recent
+# {n_task_context_history} refused tasks are showing 
+# <<REFUSED TASKS START HERE >>
+# {refusal_string}
+# <<REFUSED TASKS END HERE>>
 
-These are the tasks that the user has for pending verification.
-They need to submit details
-<<VERIFICATION TASKS START HERE>>
-{verification_string}
-<<VERIFICATION TASKS END HERE>>
+# These are the tasks that the user has for pending verification.
+# They need to submit details
+# <<VERIFICATION TASKS START HERE>>
+# {verification_string}
+# <<VERIFICATION TASKS END HERE>>
 
-<<REWARDED TASKS START HERE >>
-{reward_string}
-<<REWARDED TASKS END HERE >>
+# <<REWARDED TASKS START HERE >>
+# {reward_string}
+# <<REWARDED TASKS END HERE >>
 
-The following is the user's full planning document that they have assembled
-to inform task generation and planning
-<<USER PLANNING DOC STARTS HERE>>
-{core_element__google_doc_text}
-<<USER PLANNING DOC ENDS HERE>>
+# The following is the user's full planning document that they have assembled
+# to inform task generation and planning
+# <<USER PLANNING DOC STARTS HERE>>
+# {core_element__google_doc_text}
+# <<USER PLANNING DOC ENDS HERE>>
 
-The following is the users own comments regarding everything
-<<< USER COMMENTS AND LOGS START HERE>>
-{core_element__user_log_history}
-<<< USER COMMENTS AND LOGS END HERE>>
+# The following is the users own comments regarding everything
+# <<< USER COMMENTS AND LOGS START HERE>>
+# {core_element__user_log_history}
+# <<< USER COMMENTS AND LOGS END HERE>>
 
-***<<< ALL TASK GENERATION CONTEXT ENDS HERE >>>***
-"""
+# ***<<< ALL TASK GENERATION CONTEXT ENDS HERE >>>***
+# """
