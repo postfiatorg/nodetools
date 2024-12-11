@@ -23,6 +23,12 @@ from nodetools.configuration.configure_logger import configure_logger
 from pathlib import Path
 from dataclasses import dataclass
 import traceback
+from nodetools.chatbots.personas.odv import odv_system_prompt
+from nodetools.ai.openrouter import OpenRouterTool
+from nodetools.chatbots.personas.odv_sprint_planner import ODVSprintPlannerO1
+from nodetools.chatbots.personas.odv_context_doc_improvement import ODVContextDocImprover
+
+
     
 class MyClient(discord.Client):
     def __init__(self, *args, **kwargs):
@@ -42,6 +48,10 @@ class MyClient(discord.Client):
         self.default_openai_model = constants.DEFAULT_OPEN_AI_MODEL
         self.conversations = {}
         self.user_seeds = {}
+        self.doc_improvers = {}
+        self.sprint_planners = {}  # Dictionary: user_id -> ODVSprintPlanner instance
+        self.user_steps = {}       # Dictionary: user_id -> current step in the sprint process
+
         self.tree = app_commands.CommandTree(self)
 
     async def setup_hook(self):
@@ -53,6 +63,122 @@ class MyClient(discord.Client):
         logger.debug(f"MyClient.setup_hook: Slash commands synced to guild ID: {guild_id}")
 
         self.bg_task = self.loop.create_task(self.transaction_checker())
+
+        @self.tree.command(name="odv_sprint", description="Start an ODV sprint planning session")
+        async def odv_sprint(interaction: discord.Interaction):
+            user_id = interaction.user.id
+
+            if user_id not in self.user_seeds:
+                await interaction.response.send_message(
+                    "You must store a seed using /pf_store_seed before starting an ODV sprint planning session.", 
+                    ephemeral=False
+                )
+                return
+
+            seed = self.user_seeds[user_id]
+            wallet = self.generic_pft_utilities.spawn_wallet_from_seed(seed=seed)
+
+            initiation_check_success = await self._check_initiation_rite(
+                interaction=interaction,
+                wallet_address=wallet.address
+            )
+            if not initiation_check_success:
+                await interaction.response.send_message("You must perform the initiation rite first. Run /pf_initiate to do so.", ephemeral=False)
+                return
+
+            # Defer early
+            await interaction.response.defer(ephemeral=False)
+
+            odv_planner = ODVSprintPlannerO1(account_address=wallet.classic_address)
+            self.sprint_planners[user_id] = odv_planner
+
+            # Potentially long operation
+            initial_response = odv_planner.get_response("Please provide your context analysis.")
+
+            # Use the helper function to send the possibly long response
+            await self.send_long_interaction_response(interaction, f"**ODV Sprint Planning Initialized**\n\n{initial_response}", ephemeral=False)
+
+
+        @self.tree.command(name="odv_sprint_reply", description="Continue the ODV sprint planning session")
+        @app_commands.describe(message="Your next input to ODV")
+        async def odv_sprint_reply(interaction: discord.Interaction, message: str):
+            user_id = interaction.user.id
+
+            if user_id not in self.sprint_planners:
+                await interaction.response.send_message("No active ODV sprint planning session. Start one with /odv_sprint.", ephemeral=False)
+                return
+
+            odv_planner = self.sprint_planners[user_id]
+
+            await interaction.response.defer(ephemeral=False)
+            response = odv_planner.get_response(message)
+            await self.send_long_interaction_response(interaction, response, ephemeral=False)
+
+
+        # Inside MyClient.setup_hook or a similar initialization section in your MyClient class
+        @self.tree.command(name="odv_context_doc", description="Start an ODV context document improvement session")
+        async def odv_context_doc(interaction: discord.Interaction):
+            user_id = interaction.user.id
+
+            # Check if the user has a stored seed
+            if user_id not in self.user_seeds:
+                await interaction.response.send_message(
+                    "You must store a seed using /pf_store_seed before starting an ODV context document improvement session.", 
+                    ephemeral=False
+                )
+                return
+
+            seed = self.user_seeds[user_id]
+            wallet = self.generic_pft_utilities.spawn_wallet_from_seed(seed=seed)
+
+            # Check initiation status
+            initiation_check_success = await self._check_initiation_rite(
+                interaction=interaction,
+                wallet_address=wallet.address
+            )
+            if not initiation_check_success:
+                await interaction.response.send_message("You must perform the initiation rite first. Run /pf_initiate to do so.", ephemeral=False)
+                return
+
+            # Defer early so Discord knows we're working
+            await interaction.response.defer(ephemeral=False)
+
+            # Initialize the ODVContextDocImprover
+            doc_improver = ODVContextDocImprover(account_address=wallet.classic_address)
+
+            # Ensure you have a dictionary to store doc improvers per user
+            # For example:
+            if not hasattr(self, 'doc_improvers'):
+                self.doc_improvers = {}
+
+            self.doc_improvers[user_id] = doc_improver
+
+            # Potentially long operation: getting the initial suggestion
+            initial_response = doc_improver.get_response("Please provide your first improvement suggestion.")
+
+            # Use the helper function to send the possibly long response
+            await self.send_long_interaction_response(
+                interaction, 
+                f"**ODV Context Document Improvement Initialized**\n\n{initial_response}", 
+                ephemeral=False
+            )
+
+        @self.tree.command(name="odv_context_doc_reply", description="Continue the ODV context document improvement session")
+        @app_commands.describe(message="Your next input to ODV")
+        async def odv_context_doc_reply(interaction: discord.Interaction, message: str):
+            user_id = interaction.user.id
+
+            # Check if we have a doc improver session in progress
+            if not hasattr(self, 'doc_improvers') or user_id not in self.doc_improvers:
+                await interaction.response.send_message("No active ODV context document improvement session. Start one with /odv_context_doc.", ephemeral=False)
+                return
+
+            doc_improver = self.doc_improvers[user_id]
+
+            await interaction.response.defer(ephemeral=False)
+            response = doc_improver.get_response(message)
+            await self.send_long_interaction_response(interaction, response, ephemeral=False)
+
 
         @self.tree.command(name="pf_send", description="Open a transaction form")
         async def pf_send(interaction: Interaction):
@@ -1588,6 +1714,23 @@ Note: XRP wallets need 15 XRP to transact.
                 to_send = long_message
                 long_message = ''
             await channel.send(to_send)
+
+    async def send_long_interaction_response(self, interaction: discord.Interaction, content: str, ephemeral: bool = True):
+        max_length = 1900
+        lines = content.split('\n')
+        current_chunk = ""
+
+        for line in lines:
+            if len(current_chunk) + len(line) + 1 > max_length:
+                # Send the current chunk
+                await interaction.followup.send(current_chunk.strip(), ephemeral=ephemeral)
+                current_chunk = line + "\n"
+            else:
+                current_chunk += line + "\n"
+
+        # Send any remaining content
+        if current_chunk.strip():
+            await interaction.followup.send(current_chunk.strip(), ephemeral=ephemeral)
         
     async def send_long_message(self, message, long_message):
         sent_messages = []
