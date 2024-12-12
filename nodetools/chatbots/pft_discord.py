@@ -2586,7 +2586,7 @@ def init_services():
 if __name__ == "__main__":
     # Initialize credential manager
     password = getpass.getpass("Enter your password: ")
-    cred_manager = CredentialManager(password)
+    cred_manager = CredentialManager(password=password)
 
     # Initialize performance monitor
     monitor = PerformanceMonitor(time_window=60)

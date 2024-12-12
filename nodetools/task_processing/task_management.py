@@ -63,7 +63,7 @@ class PostFiatTaskGenerationSystem:
             self.openai_request_tool= OpenAIRequestTool()
             self.generic_pft_utilities = GenericPFTUtilities()
             self.db_connection_manager = DBConnectionManager()
-            self.message_encryption = MessageEncryption.get_instance()
+            self.message_encryption = MessageEncryption(pft_utilities=self.generic_pft_utilities)
             self.user_task_parser = UserTaskParser(
                 task_management_system=self,
                 generic_pft_utilities=self.generic_pft_utilities
@@ -1207,7 +1207,6 @@ class PostFiatTaskGenerationSystem:
             logger.debug(f"PostFiatTaskGenerationSystem.process_proposal_queue: Sending {len(unprocessed_pf_requests)} tasks")
             
             for _, row in output_df.iterrows():
-                logger.debug(f"row keys: {row.index.tolist()}")
                 try:
                     memo_to_send = self.generic_pft_utilities.construct_standardized_xrpl_memo(
                         memo_data=row['pf_proposal_string'],

@@ -1,20 +1,20 @@
-from cryptography.fernet import Fernet
+from typing import Optional, Union, ClassVar
 import base64
 import hashlib
-from typing import Optional, Union, ClassVar
-from xrpl.core import addresscodec
-from xrpl.core.keypairs.ed25519 import ED25519
+from cryptography.fernet import Fernet
 import nacl.bindings
 import nacl.signing
 import pandas as pd
-import nodetools.configuration.constants as constants
-from loguru import logger
-from nodetools.utilities.base import BaseUtilities
+from xrpl.core import addresscodec
+from xrpl.core.keypairs.ed25519 import ED25519
+from nodetools.protocols.generic_pft_utilities import GenericPFTUtilities
 import nodetools.configuration.configuration as config
+import nodetools.configuration.constants as constants
+from nodetools.utilities.ecdh import ECDHUtils
 import re
-import traceback
+from loguru import logger
 
-class MessageEncryption(BaseUtilities):
+class MessageEncryption:
     """Handles encryption/decryption of messages using ECDH-derived shared secrets"""
 
     _instance: ClassVar[Optional['MessageEncryption']] = None
@@ -26,24 +26,12 @@ class MessageEncryption(BaseUtilities):
             cls._instance = super().__new__(cls)
         return cls._instance
 
-    def __init__(self, pft_utilities=None):
-        """Initialize with dependencies."""
-        if pft_utilities is not None:
-            self.pft_utilities = pft_utilities
-            logger.debug("MessageEncryption: Updated PFT utilities reference")
-
+    def __init__(self, pft_utilities: GenericPFTUtilities):
         if not self.__class__._initialized:
-            super().__init__()
+            self.pft_utilities = pft_utilities
             self._auto_handshake_wallets = set()  # Store addresses that should auto-respond to handshakes
             self._handshake_cache = {}  # Cache of addresses to public keys
             self.__class__._initialized = True
-
-    @classmethod
-    def get_instance(cls, pft_utilities=None) -> 'MessageEncryption':
-        """Get or create MessageEncryption instance."""
-        if cls._instance is None or pft_utilities is not None:
-            cls._instance = cls(pft_utilities)
-        return cls._instance
     
     def get_auto_handshake_addresses(self) -> set[str]:
         """Returns a set of registered auto-handshake addresses"""
@@ -106,21 +94,17 @@ class MessageEncryption(BaseUtilities):
         Returns:
             Decrypted message or None if decryption fails
         """
-        try:
-            # Ensure shared_secret is bytes
-            if isinstance(shared_secret, str):
-                shared_secret = shared_secret.encode()
+        # Ensure shared_secret is bytes
+        if isinstance(shared_secret, str):
+            shared_secret = shared_secret.encode()
 
-            # Generate a Fernet key from the shared secret
-            key = base64.urlsafe_b64encode(hashlib.sha256(shared_secret).digest())
-            fernet = Fernet(key)
+        # Generate a Fernet key from the shared secret
+        key = base64.urlsafe_b64encode(hashlib.sha256(shared_secret).digest())
+        fernet = Fernet(key)
 
-            # Decrypt the message
-            decrypted_bytes = fernet.decrypt(encrypted_content.encode())
-            return decrypted_bytes.decode()
-
-        except Exception:
-            return None
+        # Decrypt the message
+        decrypted_bytes = fernet.decrypt(encrypted_content.encode())
+        return decrypted_bytes.decode()
         
     @staticmethod
     def process_encrypted_message(message: str, shared_secret: bytes) -> str:
@@ -134,6 +118,9 @@ class MessageEncryption(BaseUtilities):
         Returns:
             Decrypted message if encrypted and decryption succeeds,
             original message otherwise
+
+        Raises:
+            ValueError: If the message fails decryption
         """
         if not MessageEncryption.is_encrypted(message):
             return message
@@ -141,10 +128,6 @@ class MessageEncryption(BaseUtilities):
         encrypted_content = message.replace(MessageEncryption.WHISPER_PREFIX, '')
         # logger.debug(f"MessageEncryption.process_encrypted_message: Decrypting {encrypted_content}...")
         decrypted_message = MessageEncryption.decrypt_message(encrypted_content, shared_secret)
-
-        if decrypted_message is None:
-            logger.error(f"MessageEncryption.process_encrypted_message: Decryption failed for {message}")
-            return f"[Decryption failed] {message}"
 
         return f"[Decrypted] {decrypted_message}"
     
@@ -162,18 +145,6 @@ class MessageEncryption(BaseUtilities):
         """
         encrypted_content = MessageEncryption.encrypt_message(message, shared_secret)
         return f"{MessageEncryption.WHISPER_PREFIX}{encrypted_content}"
-    
-    @staticmethod
-    def _get_raw_entropy(wallet_seed: str) -> bytes:
-        """Returns the raw entropy bytes from the specified wallet secret"""
-        decoded_seed = addresscodec.decode_seed(wallet_seed)
-        return decoded_seed[0]
-
-    @staticmethod
-    def _get_ecdh_public_key(wallet_seed: str):
-        raw_entropy = MessageEncryption._get_raw_entropy(wallet_seed)
-        ecdh_public_key, _ = ED25519.derive_keypair(raw_entropy, is_validator=False)
-        return ecdh_public_key
 
     @staticmethod
     def encrypt_memo(memo: str, shared_secret: str) -> str:
@@ -200,87 +171,13 @@ class MessageEncryption(BaseUtilities):
     
     @staticmethod
     def get_ecdh_public_key_from_seed(wallet_seed: str) -> str:
-        """
-        Get ECDH public key directly from a wallet seed
-        
-        Args:
-            wallet_seed: The wallet seed to derive the key from
-            
-        Returns:
-            str: The ECDH public key in hex format
-            
-        Raises:
-            ValueError: If wallet_seed is invalid
-        """
-        try:
-            raw_entropy = MessageEncryption._get_raw_entropy(wallet_seed)
-            public_key, _ = ED25519.derive_keypair(raw_entropy, is_validator=False)
-            return public_key
-        except Exception as e:
-            logger.error(f"MessageEncryption.get_ecdh_public_key_from_seed: Failed to derive ECDH public key: {e}")
-            raise ValueError(f"Failed to derive ECDH public key: {e}") from e
+        """Get ECDH public key directly from a wallet seed"""
+        return ECDHUtils.get_ecdh_public_key_from_seed(wallet_seed)
     
     @staticmethod
     def get_shared_secret(received_public_key: str, channel_private_key: str) -> bytes:
-        """
-        Derive a shared secret using ECDH
-        
-        Args:
-            received_public_key: public key received from another party
-            channel_private_key: Seed for the wallet to derive the shared secret
-
-        Returns:
-            bytes: The derived shared secret
-
-        Raises:
-            ValueError: if received_public_key is invalid or channel_private_key is invalid
-        """
-        try:
-            raw_entropy = MessageEncryption._get_raw_entropy(channel_private_key)
-            return MessageEncryption.derive_shared_secret(public_key_hex=received_public_key, seed_bytes=raw_entropy)
-        except Exception as e:
-            logger.error(f"MessageEncryption.get_shared_secret: Failed to derive shared secret: {e}")
-            raise ValueError(f"Failed to derive shared secret: {e}") from e
-        
-    @staticmethod
-    def derive_shared_secret(public_key_hex: str, seed_bytes: bytes) -> bytes:
-        """
-        Derive a shared secret using ECDH
-        Args:
-            public_key_hex: their public key in hex
-            seed_bytes: original entropy/seed bytes (required for ED25519)
-        Returns:
-            bytes: The shared secret
-        """
-        # First derive the ED25519 keypair using XRPL's method
-        public_key_raw, private_key_raw = ED25519.derive_keypair(seed_bytes, is_validator=False)
-        
-        # Convert private key to bytes and remove ED prefix
-        private_key_bytes = bytes.fromhex(private_key_raw)
-        if len(private_key_bytes) == 33 and private_key_bytes[0] == 0xED:
-            private_key_bytes = private_key_bytes[1:]  # Remove the ED prefix
-        
-        # Convert public key to bytes and remove ED prefix
-        public_key_self_bytes = bytes.fromhex(public_key_raw)
-        if len(public_key_self_bytes) == 33 and public_key_self_bytes[0] == 0xED:
-            public_key_self_bytes = public_key_self_bytes[1:]  # Remove the ED prefix
-        
-        # Combine private and public key for NaCl format (64 bytes)
-        private_key_combined = private_key_bytes + public_key_self_bytes
-        
-        # Convert their public key
-        public_key_bytes = bytes.fromhex(public_key_hex)
-        if len(public_key_bytes) == 33 and public_key_bytes[0] == 0xED:
-            public_key_bytes = public_key_bytes[1:]  # Remove the ED prefix
-        
-        # Convert ED25519 keys to Curve25519
-        private_curve = nacl.bindings.crypto_sign_ed25519_sk_to_curve25519(private_key_combined)
-        public_curve = nacl.bindings.crypto_sign_ed25519_pk_to_curve25519(public_key_bytes)
-        
-        # Use raw X25519 function
-        shared_secret = nacl.bindings.crypto_scalarmult(private_curve, public_curve)
-
-        return shared_secret
+        """Derive a shared secret using ECDH"""
+        return ECDHUtils.get_shared_secret(received_public_key, channel_private_key)
     
     def register_auto_handshake_wallet(self, wallet_address: str):
         """Register a wallet address for automatic handshake responses."""

@@ -8,7 +8,7 @@ import time
 from enum import Enum
 import nodetools.configuration.constants as constants
 import nodetools.configuration.configuration as config
-from nodetools.utilities.encryption import MessageEncryption
+from nodetools.utilities.ecdh import ECDHUtils
 
 CREDENTIALS_DB_FILENAME = "credentials.sqlite"
 BACKUP_SUFFIX = ".sqlite_backup"
@@ -40,9 +40,9 @@ class CredentialManager:
     _instance = None  # ensures we only have one instance
     _initialized = False  # ensures we only initialize once
 
-    def __new__(cls, password=None):
+    def __new__(cls, *args, **kwargs):
         if cls._instance is None:
-            if password is None:
+            if kwargs.get('password') is None:
                 raise ValueError("Password is required for first CredentialManager instance")
             cls._instance = super().__new__(cls)
         return cls._instance
@@ -55,7 +55,6 @@ class CredentialManager:
             self.encryption_key = self._derive_encryption_key(password)
             self._key_expiry = time.time() + KEY_EXPIRY if KEY_EXPIRY >= 0 else float('inf')
             self._initialize_database()
-            self.message_encryption = MessageEncryption.get_instance()
             self.__class__._initialized = True
 
     def _check_key_expiry(self):
@@ -173,7 +172,7 @@ class CredentialManager:
         """Returns ECDH public key as hex string"""
         secret_key = SecretType.get_secret_key(secret_type)
         wallet_secret = self.get_credential(secret_key)
-        return MessageEncryption.get_ecdh_public_key_from_seed(wallet_secret)
+        return ECDHUtils.get_ecdh_public_key_from_seed(wallet_secret)
 
     def get_shared_secret(self, received_key: str, secret_type: SecretType) -> bytes: 
         """
@@ -192,7 +191,7 @@ class CredentialManager:
         try:
             secret_key = SecretType.get_secret_key(secret_type)
             wallet_secret = self.get_credential(secret_key)
-            return MessageEncryption.get_shared_secret(received_key, wallet_secret)
+            return ECDHUtils.get_shared_secret(received_key, wallet_secret)
         except Exception as e:
             raise ValueError(f"Failed to derive shared secret: {e}") from e
     

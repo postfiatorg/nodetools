@@ -30,14 +30,13 @@ from nodetools.utilities.db_manager import DBConnectionManager
 from nodetools.utilities.credentials import CredentialManager
 import nodetools.configuration.constants as constants
 import nodetools.configuration.configuration as config
-from nodetools.utilities.base import BaseUtilities
 from nodetools.utilities.exceptions import *
 from loguru import logger
 import traceback
 
 nest_asyncio.apply()
 
-class GenericPFTUtilities(BaseUtilities):
+class GenericPFTUtilities:
     """Handles general PFT utilities and operations"""
     _instance = None
     _initialized = False
@@ -49,7 +48,6 @@ class GenericPFTUtilities(BaseUtilities):
 
     def __init__(self):
         if not self.__class__._initialized:
-            super().__init__()
             # Get network and node configurations
             self.network_config = config.get_network_config()
             self.node_config = config.get_node_config()
@@ -70,7 +68,7 @@ class GenericPFTUtilities(BaseUtilities):
             self.credential_manager = CredentialManager()
             self.open_ai_request_tool = OpenAIRequestTool()
             self.monitor = PerformanceMonitor()
-            self.message_encryption = MessageEncryption.get_instance(pft_utilities=self)
+            self.message_encryption = MessageEncryption(pft_utilities=self)
             self.establish_post_fiat_tx_cache_as_hash_unique()  # TODO: Examine this
             self._holder_df_lock = threading.Lock()
             self._post_fiat_holder_df = None
@@ -727,10 +725,6 @@ class GenericPFTUtilities(BaseUtilities):
         The channel private key is the wallet secret.
         """
         return self.message_encryption.get_shared_secret(received_public_key, channel_private_key)
-    
-    def process_encrypted_message(self, message: str, shared_secret: str):
-        """Process an encrypted message"""
-        return self.message_encryption.process_encrypted_message(message, shared_secret)
 
     def send_memo(self, 
             wallet_seed_or_wallet: Union[str, xrpl.wallet.Wallet], 
@@ -1111,8 +1105,11 @@ class GenericPFTUtilities(BaseUtilities):
                     channel_private_key=channel_private_key
                 )
                 # logger.debug(f"GenericPFTUtilities.process_memo_data: Got shared secret for {channel_address} and {channel_counterparty}")
-
-                processed_data = self.message_encryption.process_encrypted_message(processed_data, shared_secret)
+                try:
+                    processed_data = self.message_encryption.process_encrypted_message(processed_data, shared_secret)
+                except Exception as e:
+                    logger.error(f"GenericPFTUtilities.process_memo_data: Error decrypting message {memo_type} with counterparty {channel_counterparty}: {e}")
+                    return f"[Decryption Failed] {processed_data}"
 
             # logger.debug(f"GenericPFTUtilities.process_memo_data: Decrypted data: {processed_data}")
                 
