@@ -16,7 +16,7 @@ KEY_EXPIRY = -1  # No expiration by default
 
 def get_credentials_directory():
     """Returns the path to the credentials directory, creating it if it doesn't exist"""
-    creds_dir = Path.home().joinpath("postfiatcreds")
+    creds_dir = constants.CONFIG_DIR
     creds_dir.mkdir(exist_ok=True)
     return creds_dir
 

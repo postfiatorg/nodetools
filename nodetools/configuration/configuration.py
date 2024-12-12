@@ -1,6 +1,10 @@
 from dataclasses import dataclass
 from typing import Optional, List
 from loguru import logger
+import json
+import os
+from pathlib import Path
+import nodetools.configuration.constants as constants
 
 @dataclass
 class NetworkConfig:
@@ -94,4 +98,28 @@ def get_network_config() -> NetworkConfig:
 
 def get_node_config() -> NodeConfig:
     """Get current node configuration based on runtime settings"""
-    return TESTNET_NODE if RuntimeConfig.USE_TESTNET else MAINNET_NODE
+    config_dir = constants.CONFIG_DIR
+    config_dir.mkdir(exist_ok=True)
+    network = 'testnet' if RuntimeConfig.USE_TESTNET else 'mainnet'
+    config_file = config_dir / f"pft_node_{network}_config.json"
+    
+    if not config_file.exists():
+        # Fall back to default configs temporarily
+        logger.warning(f"No configuration file found at {config_file}, using default configuration")
+        return constants.TESTNET_NODE if RuntimeConfig.USE_TESTNET else constants.MAINNET_NODE
+    
+    return load_node_config(config_file)
+
+def load_node_config(config_path: str | Path) -> NodeConfig:
+    """Load node configuration from JSON file"""
+    with open(config_path, 'r') as file:
+        config_data = json.load(file)
+    return NodeConfig(
+        node_name=config_data['node_name'],
+        node_address=config_data['node_address'],
+        remembrancer_name=config_data.get('remembrancer_name'),
+        remembrancer_address=config_data.get('remembrancer_address'),
+        discord_guild_id=config_data.get('discord_guild_id'),
+        discord_activity_channel_id=config_data.get('discord_activity_channel_id'),
+        auto_handshake_addresses=set(config_data.get('auto_handshake_addresses', []))
+    )

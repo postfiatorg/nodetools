@@ -349,23 +349,6 @@ class GenericPFTUtilities(BaseUtilities):
         )
 
     @staticmethod
-    def classify_task_string(string: str) -> str:
-        """Classifies a task string using TaskType enum patterns.
-        
-        Args:
-            string: The string to classify
-            
-        Returns:
-            str: The name of the task type or 'UNKNOWN'
-        """
-
-        for task_type, patterns in constants.TASK_PATTERNS.items():
-            if any(pattern in string for pattern in patterns):
-                return task_type.name
-
-        return 'UNKNOWN'
-
-    @staticmethod
     def generate_custom_id():
         """ These are the custom IDs generated for each task that is generated
         in a Post Fiat Node """ 
@@ -1129,9 +1112,7 @@ class GenericPFTUtilities(BaseUtilities):
                 )
                 # logger.debug(f"GenericPFTUtilities.process_memo_data: Got shared secret for {channel_address} and {channel_counterparty}")
 
-                # Remove WHISPER__ prefix and decrypt
-                processed_data = processed_data.replace('WHISPER__', '', 1)
-                processed_data = self.message_encryption.decrypt_message(processed_data, shared_secret)
+                processed_data = self.message_encryption.process_encrypted_message(processed_data, shared_secret)
 
             # logger.debug(f"GenericPFTUtilities.process_memo_data: Decrypted data: {processed_data}")
                 
@@ -1244,52 +1225,6 @@ class GenericPFTUtilities(BaseUtilities):
         except Exception as e:
             logger.error(f"GenericPFTUtilities.get_all_account_compressed_messages: Error processing memo data for {account_address}: {e}")
             return pd.DataFrame()
-    
-    # TODO: Replace with is_valid_id (reference pftpyclient/task_manager/basic_tasks.py)
-    def determine_if_map_is_task_id(self,memo_dict):
-        """ task ID detection 
-        """
-        full_memo_string = str(memo_dict)
-        task_id_pattern = re.compile(r'(\d{4}-\d{2}-\d{2}_\d{2}:\d{2}(?:__[A-Z0-9]{4})?)')
-        has_task_id = False
-        if re.search(task_id_pattern, full_memo_string):
-            return True
-        
-        if has_task_id:
-            return True
-        return False
-    
-    # TODO: Replace with sync_tasks (reference pftpyclient/task_manager/basic_tasks.py)
-    def convert_all_account_info_into_simplified_task_frame(self, account_memo_detail_df):
-        """Convert account transaction history into a simplified DataFrame of task information.
-        Returns empty DataFrame if no tasks found.
-        """
-        # Return immediately if no tasks found
-        if account_memo_detail_df.empty:
-            return pd.DataFrame()
-
-        simplified_task_frame = account_memo_detail_df[
-            account_memo_detail_df['converted_memos'].apply(lambda x: self.determine_if_map_is_task_id(x))
-        ].copy()
-
-        # Return immediately if no tasks found
-        if simplified_task_frame.empty:
-            return pd.DataFrame()
-
-        def add_field_to_map(xmap, field, field_value):
-            xmap[field] = field_value
-            return xmap
-        
-        for xfield in ['hash','datetime']:
-            simplified_task_frame['converted_memos'] = simplified_task_frame.apply(
-                lambda x: add_field_to_map(x['converted_memos'],
-                xfield,x[xfield]),
-                axis=1
-            )
-        core_task_df = pd.DataFrame(list(simplified_task_frame['converted_memos'])).copy()
-        core_task_df['task_type'] = core_task_df['MemoData'].apply(lambda x: self.classify_task_string(x))
-
-        return core_task_df
 
     def establish_post_fiat_tx_cache_as_hash_unique(self):
         dbconnx = self.db_connection_manager.spawn_sqlalchemy_db_connection_for_user(username=self.node_name)

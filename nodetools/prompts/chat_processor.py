@@ -1,21 +1,30 @@
 # THIS IS THE FOUNDATION HW r46SUhCzyGE4KwBnKQ6LmDmJcECCqdKy4q
-from nodetools.utilities.generic_pft_utilities import GenericPFTUtilities
-from nodetools.ai.openai import OpenAIRequestTool
 from nodetools.chatbots.personas.odv import odv_system_prompt
 from nodetools.utilities.credentials import CredentialManager
 from nodetools.task_processing.user_context_parsing import UserTaskParser
+from nodetools.protocols.task_management import PostFiatTaskGenerationSystem
+from nodetools.protocols.generic_pft_utilities import GenericPFTUtilities
+from nodetools.protocols.openai import OpenAIRequestTool
 import nodetools.configuration.configuration as config
 from loguru import logger
 import pandas as pd
 
 class ChatProcessor:
-    def __init__(self):
+    def __init__(
+            self,
+            task_management_system: PostFiatTaskGenerationSystem,
+            generic_pft_utilities: GenericPFTUtilities,
+            openai_request_tool: OpenAIRequestTool,
+        ):
         self.network_config = config.get_network_config()
         self.node_config = config.get_node_config()
         self.cred_manager = CredentialManager()
-        self.generic_pft_utilities = GenericPFTUtilities()
-        self.openai_request_tool = OpenAIRequestTool()
-        self.user_task_parser = UserTaskParser()
+        self.generic_pft_utilities = generic_pft_utilities
+        self.openai_request_tool = openai_request_tool
+        self.user_task_parser = UserTaskParser(
+            task_management_system=task_management_system,
+            generic_pft_utilities=generic_pft_utilities
+        )
 
     def _filter_unresponded_messages(self, messages_df: pd.DataFrame) -> pd.DataFrame:
         """Filter out messages that have already been responded to."""
@@ -35,6 +44,9 @@ class ChatProcessor:
             (messages_df['direction'] == 'INCOMING') &
             (~messages_df['memo_type'].isin(original_memo_types))
         ].copy()
+
+        # # debugging
+        # filtered_df.to_csv('chat_processor_filtered_df.csv')
         
         # logger.debug("=== Final filtered messages ===")
         # logger.debug(f"Remaining memo_types:\n{filtered_df['memo_type'].tolist()}")

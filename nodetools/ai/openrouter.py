@@ -125,7 +125,7 @@ class OpenRouterTool:
         tasks = [self.rate_limited_request(job_name, args) for job_name, args in arg_async_map.items()]
         return await asyncio.gather(*tasks)
 
-    def create_writable_df_for_async_chat_completion(self, arg_async_map):
+    def create_writable_df_for_async_chat_completion(self, arg_async_map: dict) -> pd.DataFrame:
         """Create DataFrame for async chat completion results"""
         nest_asyncio.apply()
         loop = asyncio.get_event_loop()

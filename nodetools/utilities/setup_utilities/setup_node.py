@@ -1,10 +1,14 @@
-from nodetools.utilities.credentials import CredentialManager
+from nodetools.utilities.credentials import CredentialManager, get_credentials_directory
+from xrpl.wallet import Wallet
 import getpass
+import json
+from pathlib import Path
+import xrpl
 
-def setup_credentials():        
-    print("\nCredential Setup Script")
+def setup_node():        
+    print("\nPostFiat Node Setup")
     print("======================")
-    print("This script will help you set up the required credentials for the PFT Discord bot.")
+    print("This script will help you set up your node configuration and credentials.")
 
     # Get network type first
     while True:
@@ -13,7 +17,7 @@ def setup_credentials():
             break
         print("Please enter either 'testnet' or 'mainnet'")
 
-    # Get node name first
+    # Get node name first - this will be used for both credentials and config
     print(f"\nNext, you'll need to specify your node name.")
     print("This will be used to identify your node's credentials.")
     if network == 'testnet':
@@ -41,8 +45,8 @@ def setup_credentials():
     has_remembrancer = input("\nDo you have a remembrancer wallet for your node? (y/n): ").strip().lower() == 'y'
     has_discord = input("Do you want to set up a Discord guild? (y/n): ").strip().lower() == 'y'
 
-    # Define the required credentials
     network_suffix = '_testnet' if network == 'testnet' else ''
+
     required_credentials = {
         f'{node_name}{network_suffix}__v1xrpsecret': 'Your PFT Foundation XRP Secret',
         f'{node_name}{network_suffix}_postgresconnstring': 'PostgreSQL connection string'
@@ -87,6 +91,11 @@ def setup_credentials():
 
     # Collect credentials into a dictionary
     credentials_dict = {}
+
+    config = {
+        'node_name': f"{node_name}{network_suffix}",
+        'auto_handshake_addresses': []
+    }
     
     # Collect and encrypt each credential
     for cred_name, description in required_credentials.items():
@@ -127,6 +136,30 @@ def setup_credentials():
                 else:
                     print("Credential cannot be empty. Please try again.")
     
+    # Set up node address from main wallet
+    node_wallet = xrpl.wallet.Wallet.from_seed(credentials_dict[f'{node_name}{network_suffix}__v1xrpsecret'])
+    config['node_address'] = node_wallet.classic_address
+
+    # If remembrancer credentials were collected, add to config
+    if has_remembrancer:
+        remembrancer_wallet = xrpl.wallet.Wallet.from_seed(seed=credentials_dict[f'{node_name}{network_suffix}_remembrancer__v1xrpsecret'])
+        config['remembrancer_name'] = f"{node_name}{network_suffix}_remembrancer"
+        config['remembrancer_address'] = remembrancer_wallet.classic_address
+
+    # If Discord was set up, add guild configuration
+    if has_discord:
+        print("\nDiscord Configuration")
+        print("====================")
+        config['discord_guild_id'] = int(input("Enter Discord guild ID: ").strip())
+        config['discord_activity_channel_id'] = int(input("Enter Discord activity channel ID: ").strip())
+
+    # Save node configuration
+    config_dir = get_credentials_directory()
+    config_file = config_dir / f"pft_node_{'testnet' if network == 'testnet' else 'mainnet'}_config.json"
+
+    with open(config_file, 'w') as f:
+        json.dump(config, f, indent=2)
+
     # Store all credentials at once
     try:
         cm.enter_and_encrypt_credential(credentials_dict)
@@ -138,4 +171,7 @@ def setup_credentials():
         print(f"\nError storing credentials: {str(e)}")
 
 if __name__ == "__main__":
-    setup_credentials()
+    try:
+        setup_node()
+    except KeyboardInterrupt:
+        print("\nOperation cancelled.")

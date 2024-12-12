@@ -1,14 +1,17 @@
-from nodetools.utilities.generic_pft_utilities import GenericPFTUtilities
-from nodetools.utilities.credentials import CredentialManager
+from nodetools.protocols.generic_pft_utilities import GenericPFTUtilities
+from nodetools.protocols.task_management import PostFiatTaskGenerationSystem
+from nodetools.protocols.openrouter import OpenRouterTool
 from nodetools.prompts.task_generation import (
     task_generation_one_shot_user_prompt,
     task_generation_one_shot_system_prompt
 )
-from nodetools.ai.openrouter import OpenRouterTool
 from nodetools.task_processing.user_context_parsing import UserTaskParser
 import pandas as pd
 import uuid
 import re
+from loguru import logger
+import nodetools.configuration.constants as constants
+from typing import Optional
 
 class UserContext:
     def __init__(self, nCompressedHistory=20, nRewards=20, nRefused=20, nTasks=10):
@@ -87,7 +90,12 @@ class NewTaskGeneration:
             cls._instance = super().__new__(cls)
         return cls._instance
 
-    def __init__(self):
+    def __init__(
+            self,
+            task_management_system: PostFiatTaskGenerationSystem,
+            generic_pft_utilities: GenericPFTUtilities,
+            openrouter_tool: OpenRouterTool
+        ):
         """
         Initialize NewTaskGeneration with CredentialManager and create GenericPFTUtilities instance.
         
@@ -95,9 +103,13 @@ class NewTaskGeneration:
             password (str, optional): Password for CredentialManager initialization. Required on first instance.
         """
         if not self.__class__._initialized:
-            self.generic_pft_utilities = GenericPFTUtilities()
+            self.generic_pft_utilities = generic_pft_utilities
             self.user_context = UserContext()
-            self.user_task_parser = UserTaskParser()
+            self.openrouter_tool = openrouter_tool
+            self.user_task_parser = UserTaskParser(
+                task_management_system=task_management_system,
+                generic_pft_utilities=generic_pft_utilities
+            )
             self.__class__._initialized = True
 
     def extract_final_output(self, text):
@@ -128,8 +140,8 @@ class NewTaskGeneration:
         Args:
             task_map (dict): Map of combined account/task IDs to task requests
                 Example: {
-                    "account_id__rUWuJJLLSH5TUdajVqsHx7M59Vj3P7giQV__task_id__task_id123": "a task please",
-                    "account_id__rJzZLYK6JTg9NG1UA8g3D6fnJwd6vh3N4u__task_id__task_id234": "a planning task please"
+                    "rUWuJJLLSH5TUdajVqsHx7M59Vj3P7giQV___task_id123": "a task please",
+                    "rJzZLYK6JTg9NG1UA8g3D6fnJwd6vh3N4u___task_id234": "a planning task please"
                 }
             model (str): Model identifier string (default: "anthropic/claude-3.5-sonnet:beta")
             get_google_doc (bool): Whether to fetch Google doc content
@@ -146,12 +158,18 @@ class NewTaskGeneration:
             get_historical_memos=get_historical_memos
         )
         
-        # Filter out invalid outputs and create proposal strings
-        output_df = output_df[output_df['content'].apply(lambda x: self.extract_final_output(x)) != 'NO OUTPUT'].copy()
-        output_df['pf_proposal_string'] = 'PROPOSED PF ___ ' + output_df['content'].apply(lambda x: self.extract_final_output(x)) + ' .. 900'
-        output_df['reward'] = 900
-        output_df['account_to_send_to']=output_df['internal_name'].apply(lambda x: x.split('task_gen__')[-1:][0].split('__')[0])
-        output_df['pft_to_send']=1
+        # Filter out invalid outputs
+        output_df = output_df[
+            output_df['content'].apply(lambda x: self.extract_final_output(x)) != 'NO OUTPUT'
+        ].copy()
+        
+        # Set proposal strings, reward amounts, PFT amounts
+        REWARD_AMOUNT = 900  # TODO: Make this dynamic
+        output_df['pf_proposal_string'] = constants.TaskType.PROPOSAL.value + output_df['content'].apply(
+            lambda x: self.extract_final_output(x)
+        ) + ' .. ' + str(REWARD_AMOUNT)
+        output_df['reward'] = REWARD_AMOUNT
+        output_df['pft_to_send'] = 1  # TODO: Tie this to transaction_requirements.get_pft_requirement
         
         return output_df
 
@@ -164,35 +182,43 @@ class NewTaskGeneration:
             task_id (str): The task identifier
             
         Returns:
-            str: Combined key in format "account_id__{accountId}__task_id__{task_id}"
+            str: Combined key in format "{accountId}___{task_id}"
         """
-        return f"account_id__{account_id}__task_id__{task_id}"
+        # NOTE: This needs 3 underscores to be able to correctly parse the task ID afterwards
+        return f"{account_id}___{task_id}"
 
     def parse_task_key(self, task_key):
         """
         Parse a combined task key to extract account ID and task ID.
         
         Args:
-            task_key (str): Combined key in format "account_id__{accountId}__task_id__{task_id}"
+            task_key (str): Combined key in format "{accountId}___{task_id}"
             
         Returns:
             tuple: (account_id, task_id)
         """
-        parts = task_key.split("__")
-        account_id = parts[1]
-        task_id = parts[3]
-        return account_id, task_id
+        parts = task_key.split("___")
+        if len(parts) < 2:
+            logger.error(f"Invalid task key format: {task_key}")
+            return None, None
+        return parts[0], parts[1]
 
-    def run_batch_task_generation(self, task_map, model="anthropic/claude-3.5-sonnet:beta", get_google_doc=True, get_historical_memos=True):
+    def run_batch_task_generation(
+            self,
+            task_map: dict,
+            model: Optional[str] = constants.DEFAULT_OPENROUTER_MODEL,
+            get_google_doc: bool = True,
+            get_historical_memos: bool = True
+        ):
         """
         Run batch task generation for multiple accounts asynchronously.
         
         Args:
             task_map (dict): Map of combined account/task IDs to task requests
-                Keys should be in format "account_id__{accountId}__task_id__{task_id}"
+                Keys should be in format "{accountId}___{task_id}" generated by self.create_task_key
                 Example: {
-                    "account_id__rUWuJJLLSH5TUdajVqsHx7M59Vj3P7giQV__task_id__123": "a task please",
-                    "account_id__rJzZLYK6JTg9NG1UA8g3D6fnJwd6vh3N4u__task_id__456": "next task please"
+                    "rUWuJJLLSH5TUdajVqsHx7M59Vj3P7giQV___task_id123": "a task please",
+                    "rJzZLYK6JTg9NG1UA8g3D6fnJwd6vh3N4u___task_id234": "a planning task please"
                 }
             model (str): Model identifier string (default: "anthropic/claude-3.5-sonnet:beta")
             get_google_doc (bool): Whether to fetch Google doc content
@@ -201,17 +227,14 @@ class NewTaskGeneration:
         Returns:
             pd.DataFrame: Results of the batch task generation with task IDs included
         """
-        # Initialize OpenRouterTool
-        openrouter = OpenRouterTool()
-        
         # Create arg_async_map
         arg_async_map = {}
         for task_key, task_request in task_map.items():
-            # Extract account_id and task_id from the combined key
-            account_id, task_id = self.parse_task_key(task_key)
+            # Extract account_id from the combined key
+            account_id, _ = self.parse_task_key(task_key)
             
-            # Generate unique job hash incorporating both IDs
-            job_hash = f'task_gen__{account_id}__{task_id}__{uuid.uuid4()}'
+            # Generate unique job hash
+            job_hash = f'{task_key}___{uuid.uuid4()}'
             
             # Get API args for this account
             api_args = self.construct_task_generation_api_args(
@@ -226,16 +249,21 @@ class NewTaskGeneration:
             arg_async_map[job_hash] = api_args
         
         # Run async batch job and get results
-        results_df = openrouter.create_writable_df_for_async_chat_completion(arg_async_map=arg_async_map)
+        results_df = self.openrouter_tool.create_writable_df_for_async_chat_completion(arg_async_map=arg_async_map)
         
-        # Extract task IDs from internal_name column and add as new column
-        results_df['task_id'] = results_df['internal_name'].apply(
-            lambda x: x.split('__')[2] if len(x.split('__')) > 2 else None
-        )
+        # Re-parse task keys and account addresses
+        results_df['user_account'], results_df['task_id'] = zip(*results_df['internal_name'].apply(self.parse_task_key))
         
         return results_df
 
-    def construct_task_generation_api_args(self, user_account_address, task_request, model, get_google_doc=True, get_historical_memos=True):
+    def construct_task_generation_api_args(
+            self,
+            user_account_address: str,
+            task_request: str,
+            model: str,
+            get_google_doc: bool = True,
+            get_historical_memos: bool = True
+        ):
         """
         Construct API arguments for task generation using user context and task request.
         
@@ -276,142 +304,3 @@ class NewTaskGeneration:
         }
         
         return api_args
-
-#     def get_full_user_context_string(self, account_address, get_google_doc=True, get_historical_memos=True, n_task_context_history=20):
-#         """
-#         Get complete user context including memo history, task status, and Google doc content.
-        
-#         Args:
-#             account_address (str): XRPL account address
-#             get_google_doc (bool): Whether to fetch Google doc content
-#             get_historical_memos (bool): Whether to fetch historical memos
-#             n_task_context_history (int): Number of historical items to include
-            
-#         Returns:
-#             str: Formatted context string containing all user information
-#         """
-#         memo_history = self.generic_pft_utilities.get_account_memo_history(
-#             account_address=account_address,
-#             pft_only=False
-#         )
-        
-#         simple_user_memo_history = memo_history.sort_values('datetime')
-
-#         # Filter out MessageType memos 
-#         simple_user_memo_history = simple_user_memo_history[~simple_user_memo_history['memo_data'].apply(
-#             lambda x: ('CHUNK' in x) | ('WHISPER' in x) | ('chunk_' in x))].copy()
-        
-#         # Get first and last memo for each memo_type to track task progression
-#         memo_first = simple_user_memo_history.groupby('memo_type').first()
-#         memo_last = simple_user_memo_history.groupby('memo_type').last()
-
-#         # Extract memo data for first and last
-#         first_incoming_memo = memo_first[['memo_data']]
-#         last_incoming_memo = memo_last[['memo_data']]
-
-#         # Filter to only include task-related memos (those containing '__')
-#         first_incoming_memo = first_incoming_memo.loc[[i for i in first_incoming_memo.index if '__' in i]].copy()
-#         last_incoming_memo = last_incoming_memo.loc[[i for i in last_incoming_memo.index if '__' in i]].copy()
-        
-#         # Combine first and last memos to show task progression
-#         full_user_history = pd.concat([first_incoming_memo, last_incoming_memo], axis=1)
-#         full_user_history.columns = ['initial_request', 'recent_status']
-        
-#         # Index memos by type for easier lookup
-#         memo_dexed = simple_user_memo_history.set_index('memo_type')
-#         tasks_to_consider = memo_dexed.loc[full_user_history.index]
-        
-#         # Extract proposed tasks
-#         proposed_df = tasks_to_consider[tasks_to_consider['memo_data'].apply(
-#             lambda x: 'PROPOSED PF ___' in x)][['memo_data']]['memo_data']
-#         proposed_df = proposed_df.groupby('memo_type').last()
-#         full_user_history['proposed_task'] = proposed_df
-        
-#         # Format task details by replacing system prefixes with readable labels
-#         init_req = full_user_history['initial_request'].apply(lambda x: str(x).replace('REQUEST_POST_FIAT ___', 'User Requested:'))
-#         prop_req = full_user_history['proposed_task'].apply(lambda x: str(x).replace('PROPOSED PF ___', 'System Proposed:'))
-#         full_user_history['initial_task_detail'] = init_req + '__,' + prop_req
-
-#         # Add timestamp information
-#         full_user_history['first_date'] = memo_first['datetime']
-#         full_user_history['recent_date'] = memo_last['datetime']
-        
-#         # Extract different task blocks based on status
-#         proposal_block = full_user_history[full_user_history['recent_status'].apply(
-#             lambda x: ('PROPOSED' in x) | ('ACCEPTANCE' in x))][['initial_task_detail', 'recent_status']]
-        
-#         refusal_block = full_user_history[full_user_history['recent_status'].apply(
-#             lambda x: ('REFUS' in x))][['initial_task_detail', 'recent_status', 'recent_date']].head(n_task_context_history)
-        
-#         verification_block = full_user_history[full_user_history['recent_status'].apply(
-#             lambda x: "VERIFICATION" in x)].copy()
-        
-#         reward_block = full_user_history[full_user_history['recent_status'].apply(
-#             lambda x: 'REWARD' in x)].copy().head(n_task_context_history)
-        
-#         proposal_string = proposal_block[['initial_task_detail', 'recent_status']].to_string()
-#         refusal_string = refusal_block[['initial_task_detail', 'recent_status', 'recent_date']].to_string()
-#         verification_string = verification_block[['initial_task_detail', 'recent_status', 'recent_date']].to_string()
-#         reward_string = reward_block[['initial_task_detail', 'recent_status', 'recent_date']].to_string()
-        
-#         core_element__google_doc_text = ''
-#         if get_google_doc:
-#             try:
-#                 google_url = self.generic_pft_utilities.get_latest_outgoing_context_doc_link(
-#                     account_address=account_address, 
-#                     memo_history=memo_history
-#                 )
-#                 core_element__google_doc_text = self.generic_pft_utilities.get_google_doc_text(google_url)
-#             except:
-#                 print('failed retrieving user google doc')
-#                 pass
-
-#         core_element__user_log_history = ''
-#         if get_historical_memos:
-#             try:
-#                 core_element__user_log_history = self.generic_pft_utilities.get_recent_user_memos(
-#                     account_address=account_address,
-#                     num_messages=n_task_context_history
-#                 )
-#             except:
-#                 pass
-
-#         return f"""
-# ***<<< ALL TASK GENERATION CONTEXT STARTS HERE >>>***
-
-# These are the proposed and accepted tasks that the user has. This is their
-# current work queue
-# <<PROPOSED AND ACCEPTED TASKS START HERE>>
-# {proposal_string}
-# <<PROPOSED AND ACCEPTED TASKS ENDE HERE>>
-
-# These are the tasks that the user has been proposed and has refused.
-# The user has provided a refusal reason with each one. Only their most recent
-# {n_task_context_history} refused tasks are showing 
-# <<REFUSED TASKS START HERE >>
-# {refusal_string}
-# <<REFUSED TASKS END HERE>>
-
-# These are the tasks that the user has for pending verification.
-# They need to submit details
-# <<VERIFICATION TASKS START HERE>>
-# {verification_string}
-# <<VERIFICATION TASKS END HERE>>
-
-# <<REWARDED TASKS START HERE >>
-# {reward_string}
-# <<REWARDED TASKS END HERE >>
-
-# The following is the user's full planning document that they have assembled
-# to inform task generation and planning
-# <<USER PLANNING DOC STARTS HERE>>
-# {core_element__google_doc_text}
-# <<USER PLANNING DOC ENDS HERE>>
-
-# The following is the users own comments regarding everything
-# <<< USER COMMENTS AND LOGS START HERE>>
-# {core_element__user_log_history}
-# <<< USER COMMENTS AND LOGS END HERE>>
-
-# ***<<< ALL TASK GENERATION CONTEXT ENDS HERE >>>***
-# """

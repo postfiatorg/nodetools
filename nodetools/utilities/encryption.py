@@ -12,6 +12,7 @@ from loguru import logger
 from nodetools.utilities.base import BaseUtilities
 import nodetools.configuration.configuration as config
 import re
+import traceback
 
 class MessageEncryption(BaseUtilities):
     """Handles encryption/decryption of messages using ECDH-derived shared secrets"""
@@ -118,8 +119,7 @@ class MessageEncryption(BaseUtilities):
             decrypted_bytes = fernet.decrypt(encrypted_content.encode())
             return decrypted_bytes.decode()
 
-        except Exception as e:
-            logger.error(f"Error decrypting message: {e}")
+        except Exception:
             return None
         
     @staticmethod
@@ -139,6 +139,7 @@ class MessageEncryption(BaseUtilities):
             return message
         
         encrypted_content = message.replace(MessageEncryption.WHISPER_PREFIX, '')
+        # logger.debug(f"MessageEncryption.process_encrypted_message: Decrypting {encrypted_content}...")
         decrypted_message = MessageEncryption.decrypt_message(encrypted_content, shared_secret)
 
         if decrypted_message is None:

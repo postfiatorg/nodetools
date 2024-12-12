@@ -3,8 +3,8 @@ from nodetools.ai.anthropic import AnthropicTool
 from nodetools.utilities.generic_pft_utilities import GenericPFTUtilities
 from nodetools.ai.openai import OpenAIRequestTool
 from nodetools.utilities.db_manager import DBConnectionManager
-from nodetools.utilities.credentials import CredentialManager
 from nodetools.task_processing.user_context_parsing import UserTaskParser
+from nodetools.task_processing.task_management import PostFiatTaskGenerationSystem
 import pandas as pd
 import numpy as np
 
@@ -20,13 +20,16 @@ class CorbanuChatBot:
     def __init__(self):
         if not self.__class__._initialized:
             self.db_connection_manager = DBConnectionManager()
-            self.user_task_parser = UserTaskParser()
             self.default_open_ai_model = 'chatgpt-4o-latest'
             self.open_ai_request_tool = OpenAIRequestTool()
             self.angron_map = self.generate_most_recent_angron_map()
             self.anthropic_api = AnthropicTool(max_concurrent_requests=2, requests_per_minute=30)
             self.generic_pft_utilities = GenericPFTUtilities(node_name='postfiatfoundation')
             self.fulgrim_context = self.load_fulgrim_context()
+            self.user_task_parser = UserTaskParser(
+                task_management_system=PostFiatTaskGenerationSystem(),
+                generic_pft_utilities=self.generic_pft_utilities
+            )
             self.__class__._initialized = True
 
     def generate_most_recent_angron_map(self):

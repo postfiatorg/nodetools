@@ -1,5 +1,8 @@
 from enum import Enum
 from decimal import Decimal
+from pathlib import Path
+
+CONFIG_DIR = Path.home().joinpath("postfiatcreds")
 
 # Super Users
 DISCORD_SUPER_USER_IDS = [402536023483088896, 471510026696261632]

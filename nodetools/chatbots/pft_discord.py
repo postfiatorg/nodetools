@@ -42,7 +42,10 @@ class MyClient(discord.Client):
         self.openai_request_tool = OpenAIRequestTool()
         self.generic_pft_utilities = GenericPFTUtilities()
         self.post_fiat_task_generation_system = PostFiatTaskGenerationSystem()
-        self.user_task_parser = UserTaskParser()
+        self.user_task_parser = UserTaskParser(
+            task_management_system=self.post_fiat_task_generation_system,
+            generic_pft_utilities=self.generic_pft_utilities
+        )
 
         # Set network-specific attributes
         self.default_openai_model = constants.DEFAULT_OPEN_AI_MODEL
@@ -279,31 +282,22 @@ class MyClient(discord.Client):
                 await interaction.response.send_message("You have no tasks to accept.", ephemeral=True)
                 return
 
-            # Get proposal acceptance pairs
-            pf_df = generic_pft_utilities.get_accepted_proposals(
-                account_memo_detail_df=memo_history, 
-                include_pending=True
-            )
+            # Get pending proposals
+            pf_df = post_fiat_task_generation_system.get_pending_proposals(account=memo_history)
 
             # Return immediately if proposal acceptance pairs are empty
             if pf_df.empty:
                 await interaction.response.send_message("You have no tasks to accept.", ephemeral=True)
                 return
 
-            # Filter out tasks that have already been accepted
-            eligible_tasks = pf_df[pf_df['acceptance'] == ''].copy()
-
-            map_of_eligible_tasks = eligible_tasks['proposal']
-
-            # If there are no non-accepted tasks, notify the user
-            if map_of_eligible_tasks.empty:
-                await interaction.response.send_message("You have no tasks to accept.", ephemeral=True)
-                return
-
             # Create dropdown options based on the non-accepted tasks
             options = [
-                SelectOption(label=task_id, description=proposal[:100], value=task_id)
-                for task_id, proposal in map_of_eligible_tasks.items()
+                SelectOption(
+                    label=task_id, 
+                    description=str(pf_df.loc[task_id, 'proposal'])[:100],  # get just the proposal text
+                    value=task_id
+                )
+                for task_id in pf_df.index
             ]
 
             # Create the Select menu
@@ -354,7 +348,7 @@ class MyClient(discord.Client):
             # Define the callback for when a user selects an option
             async def select_callback(interaction: discord.Interaction):
                 selected_task_id = select.values[0]
-                task_text = map_of_eligible_tasks[selected_task_id]
+                task_text = str(pf_df.loc[selected_task_id, 'proposal'])  # Get just the proposal text
                 # Open the modal to get the acceptance string with the task text pre-populated
                 await interaction.response.send_modal(AcceptanceModal(
                     task_id=selected_task_id,
@@ -395,14 +389,11 @@ class MyClient(discord.Client):
                 await interaction.response.send_message("You must perform the initiation rite first. Run /pf_initiate to do so.", ephemeral=True)
                 return
             
-            # Fetch the tasks that are not yet accepted or refused
+            # Fetch account history
             memo_history = generic_pft_utilities.get_account_memo_history(account_address=wallet.address).copy()
 
-            # Get proposal refusal pairs
-            pf_df = generic_pft_utilities.get_proposal_refusal_pairs(
-                account_memo_detail_df=memo_history, 
-                exclude_refused=True
-            )
+            # Get pending proposals
+            pf_df = post_fiat_task_generation_system.get_refuseable_proposals(account=memo_history)
 
             # Return immediately if proposal refusal pairs are empty
             if pf_df.empty:
@@ -715,7 +706,9 @@ class MyClient(discord.Client):
 
             try:
                 # Get the unformatted output message
-                output_message = generic_pft_utilities.create_full_outstanding_pft_string(account_address=wallet.address)
+                output_message = self.create_full_outstanding_pft_string(account_address=wallet.address)
+
+                logger.debug(f"MyClient.pf_outstanding: Output message: {output_message}")
                 
                 # Format the message using the new formatting function
                 formatted_chunks = self.format_tasks_for_discord(output_message)
@@ -728,6 +721,8 @@ class MyClient(discord.Client):
                     await interaction.followup.send(chunk, ephemeral=True)
 
             except Exception as e:
+                logger.error(f"MyClient.pf_outstanding: Error fetching outstanding tasks: {str(e)}")
+                logger.error(traceback.format_exc())
                 await interaction.followup.send(
                     f"An error occurred while fetching your outstanding tasks: {str(e)}", 
                     ephemeral=True
@@ -1086,7 +1081,7 @@ class MyClient(discord.Client):
             # Fetch the tasks that are accepted but not completed
             memo_history = generic_pft_utilities.get_account_memo_history(wallet.address).copy()
 
-            pf_df = generic_pft_utilities.get_accepted_proposals(account_memo_detail_df=memo_history)
+            pf_df = post_fiat_task_generation_system.get_accepted_proposals(account=memo_history)
 
             # Return immediately if proposal acceptance pairs are empty
             if pf_df.empty:
@@ -1457,7 +1452,7 @@ Note: XRP wallets need 15 XRP to transact.
                 await interaction.response.send_message("You have no tasks in the verification queue.", ephemeral=True)
                 return
 
-            outstanding_verification = generic_pft_utilities.get_verification_df(account_memo_detail_df=memo_history)
+            outstanding_verification = post_fiat_task_generation_system.get_verification_proposals(account=memo_history)
             
             # If there are no tasks in the verification queue, notify the user
             if outstanding_verification.empty:
@@ -1466,8 +1461,12 @@ Note: XRP wallets need 15 XRP to transact.
 
             # Create dropdown options based on the tasks in the verification queue
             options = [
-                SelectOption(label=task_id, description=memo_data.replace(constants.TaskType.VERIFICATION_PROMPT.value,'')[:100], value=task_id)
-                for task_id, memo_data in zip(outstanding_verification['memo_type'], outstanding_verification['memo_data'])
+                SelectOption(
+                    label=task_id, 
+                    description=verification[:100], 
+                    value=task_id
+                )
+                for task_id, verification in zip(outstanding_verification.index, outstanding_verification['verification'])
             ]
 
             # Create the Select menu
@@ -1518,7 +1517,7 @@ Note: XRP wallets need 15 XRP to transact.
             # Define the callback for when a user selects an option
             async def select_callback(interaction: discord.Interaction):
                 selected_task_id = select.values[0]
-                task_text = outstanding_verification[outstanding_verification['memo_type'] == selected_task_id]['memo_data'].values[0]
+                task_text = outstanding_verification.loc[selected_task_id, 'verification']
                 # Open the modal to get the verification justification with the task text pre-populated
                 await interaction.response.send_modal(VerificationModal(
                     task_id=selected_task_id,
@@ -1554,7 +1553,7 @@ Note: XRP wallets need 15 XRP to transact.
         Returns:
             bool: True if check passes (can proceed), False if should block
         """
-        memo_history = self.generic_pft_utilities.get_account_memo_history(
+        memo_history = generic_pft_utilities.get_account_memo_history(
             account_address=wallet_address, 
             pft_only=False
         )
@@ -1953,7 +1952,7 @@ Note: XRP wallets need 15 XRP to transact.
                         return
 
                     # Get user's full context
-                    memo_history = self.generic_pft_utilities.get_account_memo_history(account_address=wallet_address)
+                    memo_history = generic_pft_utilities.get_account_memo_history(account_address=wallet_address)
                     full_context = self.user_task_parser.get_full_user_context_string(account_address=wallet_address, memo_history=memo_history)
                     
                     # Get chat history
@@ -2172,7 +2171,7 @@ My specific question/request is: {user_query}"""
             logger.debug(f"MyClient.pf_outstanding: Spawning wallet to fetch tasks for {message.author.name}")
             wallet = generic_pft_utilities.spawn_wallet_from_seed(seed)
             wallet_address = wallet.classic_address
-            output_message = generic_pft_utilities.create_full_outstanding_pft_string(account_address=wallet_address)
+            output_message = self.create_full_outstanding_pft_string(account_address=wallet_address)
             await self.send_long_escaped_message(message, output_message)
 
     def generate_basic_balance_info_string(self, address: str, owns_wallet: bool = True) -> str:
@@ -2188,7 +2187,7 @@ My specific question/request is: {user_query}"""
         account_info = AccountInfo(address=address)
 
         try:
-            memo_history = self.generic_pft_utilities.get_account_memo_history(account_address=address)
+            memo_history = generic_pft_utilities.get_account_memo_history(account_address=address)
 
             if not memo_history.empty:
 
@@ -2239,34 +2238,21 @@ My specific question/request is: {user_query}"""
     
     def format_tasks_for_discord(self, input_text: str):
         """
-        Format task list for Discord with proper formatting and emoji indicators
-        Returns a list of formatted chunks ready for Discord sending
+        Format task list for Discord with proper formatting and emoji indicators.
+        Handles three sections: NEW TASKS, ACCEPTED TASKS, and TASKS PENDING VERIFICATION.
+        Returns a list of formatted chunks ready for Discord sending.
         """
         # Handle empty input
-        if not input_text or input_text.strip() == "OUTSTANDING TASKS":
-            return ["```ansi\n\u001b[1;33m=== OUTSTANDING TASKS ===\u001b[0m\n\u001b[0;37mNo outstanding tasks found.\u001b[0m\n```"]
+        if not input_text or input_text.strip() == "":
+            return ["```ansi\n\u001b[1;33m=== TASK STATUS ===\u001b[0m\n\u001b[0;37mNo tasks found.\u001b[0m\n```"]
 
-        # Split into main sections first
-        if "VERIFICATION REQUIREMENTS" in input_text:
-            tasks_section, verification_section = input_text.split("VERIFICATION REQUIREMENTS", 1)
-        else:
-            tasks_section, verification_section = input_text, ""
-
-        # Check if tasks section is empty (just the header)
-        tasks_section = tasks_section.strip()
-        if tasks_section == "OUTSTANDING TASKS":
-            return ["```ansi\n\u001b[1;33m=== OUTSTANDING TASKS ===\u001b[0m\n\u001b[0;37mNo outstanding tasks found.\u001b[0m\n```"]
-        
-        # Process tasks - remove the header line and split remaining tasks
-        tasks_lines = tasks_section.strip().split('\n', 1)[1]  # Skip the "OUTSTANDING TASKS" header
-        tasks = tasks_lines.split('--------------------------------------------------')
-        tasks = [t.strip() for t in tasks if t.strip()]  # Remove empty tasks and whitespace
-        
-        # Initialize formatted output parts
+        # Split into sections
+        sections = input_text.split('\n')
+        current_section = None
         formatted_parts = []
-        current_chunk = ["```ansi\n\u001b[1;33m=== OUTSTANDING TASKS ===\u001b[0m\n"]
+        current_chunk = ["```ansi"]
         current_chunk_size = len(current_chunk[0])
-        
+
         def add_to_chunks(content):
             nonlocal current_chunk, current_chunk_size
             content_size = len(content) + 1  # +1 for newline
@@ -2274,104 +2260,110 @@ My specific question/request is: {user_query}"""
             if current_chunk_size + content_size > 1900:
                 current_chunk.append("```")
                 formatted_parts.append("\n".join(current_chunk))
-                current_chunk = ["```ansi\n"]
+                current_chunk = ["```ansi"]
                 current_chunk_size = len(current_chunk[0])
                 
             current_chunk.append(content)
             current_chunk_size += content_size
-        
-        # Process tasks
-        for task in tasks:
-            if not task.strip():
-                continue
-                
-            task_id_match = re.search(r'Task ID: ([0-9A-Za-z\-_:]+)', task)
-            proposal_match = re.search(r'Proposal: (.+?)(?=\nAcceptance:|$)', task, re.DOTALL)
-            acceptance_match = re.search(r'Acceptance: ?(.*?)(?=\n|$)', task, re.DOTALL)
-            priority_match = re.search(r'\.\. (\d+)', task)
-            
-            if not all([task_id_match, proposal_match, acceptance_match, priority_match]):
-                continue
-                
-            datetime_str = task_id_match.group(1).split('__')[0]
+
+        def format_task_id(task_id: str) -> tuple[str, str]:
+            """Format task ID and extract date"""
             try:
+                datetime_str = task_id.split('__')[0]
                 date_obj = datetime.datetime.strptime(datetime_str, '%Y-%m-%d_%H:%M')
                 formatted_date = date_obj.strftime('%d %b %Y %H:%M')
-            except ValueError:
-                formatted_date = datetime_str
-
-            # Format acceptance status
-            acceptance_text = acceptance_match.group(1).strip()
-            acceptance_display = acceptance_text if acceptance_text else "(Pending)"
-            
-            # Format task components
-            task_parts = [
-                f"\u001b[1;36m📌 Task {task_id_match.group(1)}\u001b[0m",
-                f"\u001b[0;37mDate: {formatted_date}\u001b[0m",
-                f"\u001b[0;32mPriority: {priority_match.group(1)}\u001b[0m",
-                f"\u001b[1;37mProposal:\u001b[0m\n{proposal_match.group(1).strip()}",
-                f"\u001b[1;37mAcceptance:\u001b[0m\n{acceptance_display}",
-                "─" * 50
-            ]
-            
-            # Add each part to chunks
-            for part in task_parts:
-                add_to_chunks(part)
-
-        # Process verification section if it exists
-        if verification_section:
-            add_to_chunks("\n")  # Add spacing
-            add_to_chunks(f"\u001b[1;33m=== VERIFICATION REQUIREMENTS ===\u001b[0m")
-            
-            # Process each verification requirement
-            v_tasks = verification_section.split('--------------------------------------------------')
-            for vtask in v_tasks:
-                if not vtask.strip():
-                    continue
-                    
-                v_task_id_match = re.search(r'Task ID: ([0-9A-Za-z\-_:]+)', vtask)
-                v_prompt_match = re.search(r'Verification Prompt: (.+?)(?=\nOriginal Task:|$)', vtask, re.DOTALL)
-                v_original_match = re.search(r'Original Task: (.+?)(?=\n|$)', vtask, re.DOTALL)
-                
-                if not all([v_task_id_match, v_prompt_match]):
-                    continue
-                    
-                datetime_str = v_task_id_match.group(1).split('__')[0]
-                try:
-                    date_obj = datetime.datetime.strptime(datetime_str, '%Y-%m-%d_%H:%M')
-                    formatted_date = date_obj.strftime('%d %b %Y %H:%M')
-                except ValueError:
-                    formatted_date = datetime_str
-                
-                v_parts = [
-                    f"\u001b[1;36mTask {v_task_id_match.group(1)}\u001b[0m",
-                    f"\u001b[0;37mDate: {formatted_date}\u001b[0m",
-                    f"\u001b[1;37mPrompt:\u001b[0m\n{v_original_match.group(1).strip().replace(constants.TaskType.PROPOSAL.value, '')}",
-                    f"\u001b[1;37mVerification Prompt:\u001b[0m\n{v_prompt_match.group(1).strip().replace(constants.TaskType.VERIFICATION_PROMPT.value, '')}",
-                    "─" * 50
-                ]
-                
-                for part in v_parts:
-                    add_to_chunks(part)
+                return task_id, formatted_date
+            except (ValueError, IndexError):
+                return task_id, task_id
         
+        # Process input text line by line
+        task_data = {}
+        for line in sections:
+            line = line.strip()
+            if not line:
+                continue
+
+            # Check for section headers
+            if line in ["NEW TASKS", "ACCEPTED TASKS", "TASKS PENDING VERIFICATION"]:
+                if current_section:  # Add spacing between sections
+                    add_to_chunks("")
+                current_section = line
+                add_to_chunks(f"\u001b[1;33m=== {current_section} ===\u001b[0m")
+                continue
+
+            # Process task information
+            if line.startswith("Task ID: "):
+                task_id = line.replace("Task ID: ", "").strip()
+                task_data = {"id": task_id}
+                task_id, formatted_date = format_task_id(task_id)
+                add_to_chunks(f"\u001b[1;36m📌 Task {task_id}\u001b[0m")
+                add_to_chunks(f"\u001b[0;37mDate: {formatted_date}\u001b[0m")
+                continue
+
+            if line.startswith("Proposal: "):
+                proposal = line.replace("Proposal: ", "").strip()
+                proposal = proposal.replace("PROPOSED PF ___", "").strip()
+                priority_match = re.search(r'\.\. (\d+)$', proposal)
+                if priority_match:
+                    priority = priority_match.group(1)
+                    proposal = proposal.replace(f".. {priority}", "").strip()
+                    add_to_chunks(f"\u001b[0;32mPriority: {priority}\u001b[0m")
+                add_to_chunks(f"\u001b[1;37mProposal:\u001b[0m\n{proposal}")
+                continue
+
+            if line.startswith("Acceptance: "):
+                acceptance = line.replace("Acceptance: ", "").strip()
+                add_to_chunks(f"\u001b[1;37mAcceptance:\u001b[0m\n{acceptance}")
+                continue
+
+            if line.startswith("Verification Prompt: "):
+                verification = line.replace("Verification Prompt: ", "").strip()
+                add_to_chunks(f"\u001b[1;37mVerification Prompt:\u001b[0m\n{verification}")
+                continue
+
+            if line.startswith("-" * 10):  # Separator line
+                add_to_chunks("─" * 50)
+                continue
+
         # Finalize last chunk
         current_chunk.append("```")
         formatted_parts.append("\n".join(current_chunk))
         
         return formatted_parts
-    
-    def format_outstanding_tasks(self, outstanding_task_df):
+        
+    def format_pending_tasks(self, pending_proposals_df):
         """
-        Convert outstanding_task_df to a more legible string format for AI tools.
+        Convert pending_proposals_df to a more legible string format for Discord.
         
         Args:
-            outstanding_task_df: DataFrame containing outstanding tasks
+            pending_proposals_df: DataFrame containing pending proposals
+            
+        Returns:
+            Formatted string representation of the pending proposals
+        """
+        formatted_tasks = []
+        for idx, row in pending_proposals_df.iterrows():
+            task_str = f"Task ID: {idx}\n"
+            task_str += f"Proposal: {row['proposal']}\n"
+            task_str += "-" * 50  # Separator
+            formatted_tasks.append(task_str)
+        
+        formatted_task_string =  "\n".join(formatted_tasks)
+        output_string="NEW TASKS\n" + formatted_task_string
+        return output_string
+
+    def format_accepted_tasks(self, accepted_proposals_df):
+        """
+        Convert accepted_proposals_df to a legible string format for Discord.
+        
+        Args:
+            accepted_proposals_df: DataFrame containing outstanding tasks
             
         Returns:
             Formatted string representation of the tasks
         """
         formatted_tasks = []
-        for idx, row in outstanding_task_df.iterrows():
+        for idx, row in accepted_proposals_df.iterrows():
             task_str = f"Task ID: {idx}\n"
             task_str += f"Proposal: {row['proposal']}\n"
             task_str += f"Acceptance: {row['acceptance']}\n"
@@ -2379,26 +2371,24 @@ My specific question/request is: {user_query}"""
             formatted_tasks.append(task_str)
         
         formatted_task_string =  "\n".join(formatted_tasks)
-        output_string="""OUTSTANDING TASKS
-    """+formatted_task_string
+        output_string="ACCEPTED TASKS\n" + formatted_task_string
         return output_string
     
-    def format_outstanding_verification_df(self, verification_requirements):
+    def format_verification_tasks(self, verification_proposals_df):
         """
         Format the verification_requirements dataframe into a string.
 
         Args:
-        verification_requirements (pd.DataFrame): DataFrame containing columns 
-                                                'memo_type', 'memo_data', 'memo_format', and 'original_task'
+            verification_proposals_df (pd.DataFrame): DataFrame containing tasks pending verification
 
         Returns:
         str: Formatted string of verification requirements
         """
-        formatted_output = "VERIFICATION REQUIREMENTS\n"
-        for _, row in verification_requirements.iterrows():
-            formatted_output += f"Task ID: {row['memo_type']}\n"
-            formatted_output += f"Verification Prompt: {row['memo_data']}\n"
-            formatted_output += f"Original Task: {row['original_task']}\n"
+        formatted_output = "TASKS PENDING VERIFICATION\n"
+        for idx, row in verification_proposals_df.iterrows():
+            formatted_output += f"Task ID: {idx}\n"
+            formatted_output += f"Proposal: {row['proposal']}\n"
+            formatted_output += f"Verification Prompt: {row['verification']}\n"
             formatted_output += "-" * 50 + "\n"
         return formatted_output
     
@@ -2407,21 +2397,20 @@ My specific question/request is: {user_query}"""
         This takes in an account address and outputs the current state of its outstanding tasks.
         Returns empty string for accounts with no PFT-related transactions.
         """ 
-        memo_history = self.get_account_memo_history(account_address=account_address, pft_only=True)
+        memo_history = generic_pft_utilities.get_account_memo_history(account_address=account_address, pft_only=True)
         if memo_history.empty:
             return ""
         
         memo_history.sort_values('datetime', inplace=True)
-        outstanding_task_df = self.get_accepted_proposals(
-            account_memo_detail_df=memo_history, 
-            include_pending=True,
-            include_submitted_for_verification=False,
-            include_rewarded=False
-        )
-        task_string = self.format_outstanding_tasks(outstanding_task_df)
-        verification_df = self.post_fiat_task_generation_system.get_verification_df(account_memo_detail_df=memo_history)
-        verification_string = self.format_outstanding_verification_df(verification_requirements=verification_df)
-        full_postfiat_outstanding_string=f"{task_string}\n{verification_string}"
+        pending_proposals = post_fiat_task_generation_system.get_pending_proposals(account=memo_history)
+        accepted_proposals = post_fiat_task_generation_system.get_accepted_proposals(account=memo_history)
+        verification_proposals = post_fiat_task_generation_system.get_verification_proposals(account=memo_history)
+
+        pending_string = self.format_pending_tasks(pending_proposals)
+        accepted_string = self.format_accepted_tasks(accepted_proposals)
+        verification_string = self.format_verification_tasks(verification_proposals)
+
+        full_postfiat_outstanding_string=f"{pending_string}\n{accepted_string}\n{verification_string}"
         return full_postfiat_outstanding_string
 
     def _calculate_weekly_reward_totals(self, specific_rewards):

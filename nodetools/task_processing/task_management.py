@@ -1,5 +1,6 @@
-import pandas as pd
+
 from nodetools.ai.openai import OpenAIRequestTool
+from nodetools.ai.openrouter import OpenRouterTool
 from nodetools.prompts import task_generation
 from nodetools.prompts.initiation_rite import phase_4__system
 from nodetools.prompts.initiation_rite import phase_4__user
@@ -36,6 +37,13 @@ class PostFiatTaskGenerationSystem:
     _instance = None
     _initialized = False
 
+    STATE_COLUMN_MAP = {
+        constants.TaskType.ACCEPTANCE: 'acceptance',
+        constants.TaskType.REFUSAL: 'refusal',
+        constants.TaskType.VERIFICATION_PROMPT: 'verification',
+        constants.TaskType.REWARD: 'reward'
+    }
+
     def __new__(cls, *args, **kwargs):
         if cls._instance is None:
             cls._instance = super().__new__(cls)
@@ -51,14 +59,26 @@ class PostFiatTaskGenerationSystem:
 
             # Initialize components
             self.cred_manager = CredentialManager()
+            self.openrouter_tool = OpenRouterTool()
             self.openai_request_tool= OpenAIRequestTool()
             self.generic_pft_utilities = GenericPFTUtilities()
             self.db_connection_manager = DBConnectionManager()
             self.message_encryption = MessageEncryption.get_instance()
-            self.user_task_parser = UserTaskParser()
-            self.chat_processor = ChatProcessor()
+            self.user_task_parser = UserTaskParser(
+                task_management_system=self,
+                generic_pft_utilities=self.generic_pft_utilities
+            )
+            self.chat_processor = ChatProcessor(
+                task_management_system=self,
+                generic_pft_utilities=self.generic_pft_utilities,
+                openai_request_tool=self.openai_request_tool,
+            )
             self.monitor = PerformanceMonitor()
-            self.task_generator = NewTaskGeneration()
+            self.task_generator = NewTaskGeneration(
+                task_management_system=self,
+                generic_pft_utilities=self.generic_pft_utilities,
+                openrouter_tool=self.openrouter_tool
+            )
             self.stop_threads = False
             self.default_model = constants.DEFAULT_OPEN_AI_MODEL
 
@@ -191,7 +211,7 @@ class PostFiatTaskGenerationSystem:
             logger.error(f"PostFiatTaskGenerationSystem.discord__initiation_rite: Failed to send initial PFT grant to {wallet.classic_address}")
         
         return response
-
+    
     def discord__update_google_doc_link(self, user_seed: str, google_doc_link: str, username: str):
         """Update the user's Google Doc link."""
         wallet = self.generic_pft_utilities.spawn_wallet_from_seed(seed=user_seed)
@@ -225,6 +245,248 @@ class PostFiatTaskGenerationSystem:
             raise Exception(f"Failed to extract justification: {e}")
         
         return {'reward': reward, 'justification': justification}
+    
+    @staticmethod
+    def classify_task_string(string: str) -> str:
+        """Classifies a task string using TaskType enum patterns.
+        
+        Args:
+            string: The string to classify
+            
+        Returns:
+            str: The name of the task type or 'UNKNOWN'
+        """
+
+        for task_type, patterns in constants.TASK_PATTERNS.items():
+            if any(pattern in string for pattern in patterns):
+                return task_type.name
+
+        return 'UNKNOWN'
+    
+    @staticmethod
+    def is_valid_id(memo_dict):
+        """Check if memo contains a valid task ID in format YYYY-MM-DD_HH:MM or YYYY-MM-DD_HH:MM__XXXX."""
+        full_memo_string = str(memo_dict)
+        task_id_pattern = re.compile(r'(\d{4}-\d{2}-\d{2}_\d{2}:\d{2}(?:__[A-Z0-9]{4})?)')
+        return bool(re.search(task_id_pattern, full_memo_string))
+    
+    @staticmethod
+    def filter_tasks(account_memo_detail_df):
+        """Filter account transaction history into a simplified DataFrame of task information.
+        Returns empty DataFrame if no tasks found.
+        """
+        # Return immediately if no tasks found
+        if account_memo_detail_df.empty:
+            return pd.DataFrame()
+
+        simplified_task_frame = account_memo_detail_df[
+            account_memo_detail_df['converted_memos'].apply(lambda x: PostFiatTaskGenerationSystem.is_valid_id(x))
+        ].copy()
+
+        # Return immediately if no tasks found
+        if simplified_task_frame.empty:
+            return pd.DataFrame()
+
+        def add_field_to_map(xmap, field, field_value):
+            xmap[field] = field_value
+            return xmap
+        
+        for xfield in ['hash','datetime']:
+            simplified_task_frame['converted_memos'] = simplified_task_frame.apply(
+                lambda x: add_field_to_map(x['converted_memos'],
+                xfield,x[xfield]),
+                axis=1
+            )
+        core_task_df = pd.DataFrame(list(simplified_task_frame['converted_memos'])).copy()
+        core_task_df['task_type'] = core_task_df['MemoData'].apply(
+            lambda x: PostFiatTaskGenerationSystem.classify_task_string(x)
+        )
+
+        return core_task_df
+
+    def get_task_state_pairs(self, account_memo_detail_df):
+        """Convert account info into a DataFrame of proposed tasks and their latest state changes.
+        
+        Args:
+            account_memo_detail_df: DataFrame containing account memo details
+            
+        Returns:
+            DataFrame with columns:
+                - proposal: The proposed task text
+                - latest_state: The most recent state change (acceptance/refusal/verification/reward)
+                - state_type: The type of the latest state (TaskType enum)
+        """
+        task_frame = self.filter_tasks(
+            account_memo_detail_df=account_memo_detail_df.sort_values('datetime')
+        )
+
+        if task_frame.empty:
+            return pd.DataFrame()
+
+        # Rename columns for clarity
+        task_frame.rename(columns={
+            'MemoType': 'task_id',
+            'MemoData': 'full_output',
+            'MemoFormat': 'user_account'
+        }, inplace=True)
+
+        # Get proposals
+        proposals = task_frame[
+            task_frame['task_type']==constants.TaskType.PROPOSAL.name
+        ].groupby('task_id').first()['full_output']
+
+        # Get latest state changes (including verification and rewards)
+        state_changes = task_frame[
+            (task_frame['task_type'].isin([
+                constants.TaskType.ACCEPTANCE.name,
+                constants.TaskType.REFUSAL.name,
+                constants.TaskType.VERIFICATION_PROMPT.name,
+                constants.TaskType.REWARD.name
+            ]))
+        ].groupby('task_id').last()[['full_output','task_type', 'datetime']]
+
+        # Start with all proposals
+        task_pairs = pd.DataFrame({'proposal': proposals})
+
+        # For each task id, if there's no state change, it's in PROPOSAL state
+        all_task_ids = task_pairs.index
+        task_pairs['state_type'] = pd.Series(
+            constants.TaskType.PROPOSAL.name, 
+            index=all_task_ids
+        )
+
+        # Update state types and other fields where we have state changes
+        task_pairs.loc[state_changes.index, 'state_type'] = state_changes['task_type']
+        task_pairs['latest_state'] = state_changes['full_output']
+        task_pairs['datetime'] = state_changes['datetime']
+        
+        # Fill any missing values
+        task_pairs['latest_state'] = task_pairs['latest_state'].fillna('')
+        task_pairs['datetime'] = task_pairs['datetime'].fillna(pd.NaT)
+
+        return task_pairs
+    
+    def get_proposals_by_state(
+            self, 
+            account: Union[str, pd.DataFrame], 
+            state_type: constants.TaskType
+        ):
+        """Get proposals filtered by their state.
+    
+        Args:
+        account: Either an XRPL account address string or a DataFrame containing memo history.
+            If string, memo history will be fetched for that address.
+            If DataFrame, it must contain memo history in the expected format & filtered for the account in question.
+        state_type: TaskType enum value to filter by (e.g. TaskType.PROPOSAL for pending proposals)
+             
+        Returns:
+            DataFrame with columns based on state:
+                - proposal: The proposed task text (always present)
+                - current_state: The state-specific text (except for PROPOSAL)
+            Indexed by task_id.
+        """
+        # Handle input type
+        if isinstance(account, str):
+            account_memo_detail_df = self.generic_pft_utilities.get_account_memo_history(account_address=account)
+        else:
+            account_memo_detail_df = account
+
+        # Get base task pairs
+        task_pairs = self.get_task_state_pairs(account_memo_detail_df)
+
+        if task_pairs.empty:
+            return pd.DataFrame()
+
+        if state_type == constants.TaskType.PROPOSAL:
+            # Handle pending proposals (only those with PROPOSAL state type)
+            filtered_proposals = task_pairs[
+                task_pairs['state_type'] == constants.TaskType.PROPOSAL.name
+            ][['proposal']]
+
+            filtered_proposals['proposal'] = filtered_proposals['proposal'].apply(
+                lambda x: str(x).replace(constants.TaskType.PROPOSAL.value, '').replace('nan', '')
+            )
+
+            return filtered_proposals
+        
+        # Filter to requested state
+        filtered_proposals = task_pairs[
+            task_pairs['state_type'] == state_type.name
+        ][['proposal', 'latest_state']].copy()
+        
+        # Clean up text content
+        filtered_proposals['latest_state'] = filtered_proposals['latest_state'].apply(
+            lambda x: str(x).replace(state_type.value, '').replace('nan', '')
+        )
+        filtered_proposals['proposal'] = filtered_proposals['proposal'].apply(
+            lambda x: str(x).replace(constants.TaskType.PROPOSAL.value, '').replace('nan', '')
+        )
+
+        return filtered_proposals
+    
+    def get_pending_proposals(self, account: Union[str, pd.DataFrame]):
+        """Get proposals that have not yet been accepted or refused."""
+        return self.get_proposals_by_state(account, state_type=constants.TaskType.PROPOSAL)
+
+    def get_accepted_proposals(self, account: Union[str, pd.DataFrame]):
+        """Get accepted proposals"""
+        proposals = self.get_proposals_by_state(account, state_type=constants.TaskType.ACCEPTANCE)
+        if not proposals.empty:
+            proposals.rename(columns={'latest_state': self.STATE_COLUMN_MAP[constants.TaskType.ACCEPTANCE]}, inplace=True)
+        return proposals
+    
+    def get_verification_proposals(self, account: Union[str, pd.DataFrame]):
+        """Get verification proposals"""
+        proposals = self.get_proposals_by_state(account, state_type=constants.TaskType.VERIFICATION_PROMPT)
+        if not proposals.empty:
+            proposals.rename(columns={'latest_state': self.STATE_COLUMN_MAP[constants.TaskType.VERIFICATION_PROMPT]}, inplace=True)
+        return proposals
+
+    def get_rewarded_proposals(self, account: Union[str, pd.DataFrame]):
+        """Get rewarded proposals"""
+        proposals = self.get_proposals_by_state(account, state_type=constants.TaskType.REWARD)
+        if not proposals.empty:
+            proposals.rename(columns={'latest_state': self.STATE_COLUMN_MAP[constants.TaskType.REWARD]}, inplace=True)
+        return proposals
+
+    def get_refused_proposals(self, account: Union[str, pd.DataFrame]):
+        """Get refused proposals"""
+        proposals = self.get_proposals_by_state(account, state_type=constants.TaskType.REFUSAL)
+        if not proposals.empty:
+            proposals.rename(columns={'latest_state': self.STATE_COLUMN_MAP[constants.TaskType.REFUSAL]}, inplace=True)
+        return proposals
+
+    def get_refuseable_proposals(self, account: Union[str, pd.DataFrame]):
+        """Get all proposals that are in a valid state to be refused.
+        
+        This includes:
+        - Pending proposals
+        - Accepted proposals
+        - Verification proposals
+        
+        Does not include proposals that have already been refused or rewarded.
+        
+        Args:
+            account: Either an XRPL account address string or a DataFrame containing memo history.
+                
+        Returns:
+            DataFrame with columns:
+                - proposal: The proposed task text
+            Indexed by task_id.
+        """
+        # Get all proposals in refuseable states
+        pending = self.get_proposals_by_state(account, state_type=constants.TaskType.PROPOSAL)
+        accepted = self.get_proposals_by_state(account, state_type=constants.TaskType.ACCEPTANCE)
+        verification = self.get_proposals_by_state(account, state_type=constants.TaskType.VERIFICATION_PROMPT)
+        
+        # Combine all proposals, keeping only the proposal text column
+        all_proposals = pd.concat([
+            pending[['proposal']],
+            accepted[['proposal']],
+            verification[['proposal']]
+        ])
+        
+        return all_proposals.drop_duplicates()
 
     def process_initiation_queue(self, memo_history: pd.DataFrame):
         """Process and send rewards for valid initiation rites that haven't been rewarded yet."""
@@ -364,48 +626,26 @@ class PostFiatTaskGenerationSystem:
         # Initialize wallet 
         logger.debug(f'PostFiatTaskGenerationSystem.discord__task_acceptance: Spawning wallet for user {user_name} to accept task {task_id_to_accept}')
         wallet = self.generic_pft_utilities.spawn_wallet_from_seed(seed=user_seed)
-        wallet_address = wallet.classic_address
 
-        logger.debug(f"PostFiatTaskGenerationSystem.discord__task_acceptance: User {user_name} ({wallet_address}) has accepted task {task_id_to_accept}: {acceptance_string}")
-
-        # Get all transactions and filter for pending proposals
-        memo_history = self.generic_pft_utilities.get_account_memo_history(wallet_address).copy()
-        pf_df = self.generic_pft_utilities.get_accepted_proposals(
-            account_memo_detail_df=memo_history,
-            include_pending=True
+        acceptance_memo = self.generic_pft_utilities.construct_standardized_xrpl_memo(
+            memo_data=constants.TaskType.ACCEPTANCE.value + acceptance_string, 
+            memo_format=user_name, 
+            memo_type=task_id_to_accept
+        )
+        
+        response = self.generic_pft_utilities.send_memo(
+            wallet_seed_or_wallet=wallet,
+            destination=self.node_address,
+            memo=acceptance_memo,
+            username=user_name
         )
 
-        # Get list of tasks that can be accepted (pending proposals)
-        valid_task_ids_to_accept= list(pf_df[pf_df['acceptance']==''].index)
+        if not self.generic_pft_utilities.verify_transaction_response(response):
+            logger.error(f"PostFiatTaskGenerationSystem.discord__task_acceptance: Failed to send acceptance memo to node from {wallet.address}")
 
-        if task_id_to_accept in valid_task_ids_to_accept:
-            logger.debug('PostFiatTaskGenerationSystem.discord__task_acceptance: valid task ID proceeding to accept')
-
-            formatted_acceptance_string = constants.TaskType.ACCEPTANCE.value + acceptance_string
-
-            acceptance_memo = self.generic_pft_utilities.construct_standardized_xrpl_memo(
-                memo_data=formatted_acceptance_string, 
-                memo_format=user_name, 
-                memo_type=task_id_to_accept
-            )
-            
-            response = self.generic_pft_utilities.send_memo(
-                wallet_seed_or_wallet=wallet,
-                destination=self.node_address,
-                memo=acceptance_memo,
-                username=user_name
-            )
-
-            if not self.generic_pft_utilities.verify_transaction_response(response):
-                logger.error(f"PostFiatTaskGenerationSystem.discord__task_acceptance: Failed to send acceptance memo to node from {wallet.address}")
-
-            # Extract transaction info from last response
-            transaction_info = self.generic_pft_utilities.extract_transaction_info_from_response_object(response)
-            output_string = transaction_info['clean_string']
-
-        else:
-            logger.debug('PostFiatTaskGenerationSystem.discord__task_acceptance: task ID already accepted or not valid')
-            output_string = 'task ID already accepted or not valid'
+        # Extract transaction info from last response
+        transaction_info = self.generic_pft_utilities.extract_transaction_info_from_response_object(response)
+        output_string = transaction_info['clean_string']
 
         return output_string
 
@@ -424,45 +664,27 @@ class PostFiatTaskGenerationSystem:
         # Initialize wallet
         logger.debug(f'PostFiatTaskGenerationSystem.discord__task_refusal: Spawning wallet for user {user_name} to refuse task {task_id_to_refuse}')
         wallet = self.generic_pft_utilities.spawn_wallet_from_seed(seed=user_seed)
-        wallet_address = wallet.classic_address
 
-        logger.debug(f"PostFiatTaskGenerationSystem.discord__task_refusal: User {user_name} ({wallet_address}) has refused task {task_id_to_refuse}: {refusal_string}")
-
-        # Get all transactions and filter for pending proposals
-        memo_history = self.generic_pft_utilities.get_account_memo_history(wallet_address).copy()
-        pf_df = self.generic_pft_utilities.get_proposal_refusal_pairs(
-            account_memo_detail_df=memo_history,
-            exclude_refused=True
+        refusal_memo= self.generic_pft_utilities.construct_standardized_xrpl_memo(
+            memo_data=constants.TaskType.REFUSAL.value + refusal_string, 
+            memo_format=user_name, 
+            memo_type=task_id_to_refuse
         )
 
-        # Get list of tasks that can be refused (proposals without refusals)
-        # TODO: Also filter out tasks that have been rewarded
-        valid_task_ids_to_refuse = list(pf_df.index)
+        response = self.generic_pft_utilities.send_memo(
+            wallet_seed_or_wallet=wallet,
+            destination=self.node_address,
+            memo=refusal_memo,
+            username=user_name
+        )
 
-        if task_id_to_refuse in valid_task_ids_to_refuse:
-            logger.debug('PostFiatTaskGenerationSystem.discord__task_refusal: valid task ID proceeding to refuse')
-            formatted_refusal_string = constants.TaskType.REFUSAL.value + refusal_string
-            refusal_memo= self.generic_pft_utilities.construct_standardized_xrpl_memo(
-                memo_data=formatted_refusal_string, 
-                memo_format=user_name, 
-                memo_type=task_id_to_refuse
-            )
-            response = self.generic_pft_utilities.send_memo(
-                wallet_seed_or_wallet=wallet,
-                destination=self.node_address,
-                memo=refusal_memo,
-                username=user_name
-            )
+        if not self.generic_pft_utilities.verify_transaction_response(response):
+            logger.error(f"PostFiatTaskGenerationSystem.discord__task_refusal: Failed to send refusal memo to node from {wallet.address}")
 
-            if not self.generic_pft_utilities.verify_transaction_response(response):
-                logger.error(f"PostFiatTaskGenerationSystem.discord__task_refusal: Failed to send refusal memo to node from {wallet.address}")
+        # Extract transaction info from last response
+        transaction_info = self.generic_pft_utilities.extract_transaction_info_from_response_object(response)
+        output_string = transaction_info['clean_string']
 
-            # Extract transaction info from last response
-            transaction_info = self.generic_pft_utilities.extract_transaction_info_from_response_object(response)
-            output_string = transaction_info['clean_string']
-        else:
-            logger.debug('PostFiatTaskGenerationSystem.discord__task_refusal: task ID already accepted or not valid')
-            output_string = 'task ID already accepted or not valid'
         return output_string
 
     def discord__initial_submission(self, user_seed, user_name, task_id_to_accept, initial_completion_string):
@@ -479,92 +701,31 @@ class PostFiatTaskGenerationSystem:
         """
         # Initialize user wallet
         logger.debug(f'PostFiatTaskManagement.discord__initial_submission: Spawning wallet for user {user_name} to submit initial completion for task {task_id_to_accept}')
-        wallet= self.generic_pft_utilities.spawn_wallet_from_seed(seed=user_seed)
-        wallet_address = wallet.classic_address
+        wallet = self.generic_pft_utilities.spawn_wallet_from_seed(seed=user_seed)
 
-        logger.debug(f'PostFiatTaskManagement.discord__initial_submission: User {user_name} ({wallet_address}) is submitting initial completion for task {task_id_to_accept}: {initial_completion_string}')
-        
-        # Get user's transaction history and accepted tasks
-        memo_history = self.generic_pft_utilities.get_account_memo_history(wallet_address).copy()
-        pf_df = self.generic_pft_utilities.get_accepted_proposals(account_memo_detail_df=memo_history)
+        # Format completion memo
+        completion_memo= self.generic_pft_utilities.construct_standardized_xrpl_memo(
+            memo_data=constants.TaskType.TASK_OUTPUT.value + initial_completion_string, 
+            memo_format=user_name, 
+            memo_type=task_id_to_accept
+        )
 
-        # Get list of tasks that can be submitted
-        valid_task_ids_to_submit_for_completion = list(pf_df[pf_df['acceptance']!=''].index)
+        # Send completion memo transaction
+        response = self.generic_pft_utilities.send_memo(
+            wallet_seed_or_wallet=wallet,
+            destination=self.node_address,
+            memo=completion_memo,
+            username=user_name
+        )
 
-        # Check if task is valid for submission
-        if task_id_to_accept in valid_task_ids_to_submit_for_completion:
-            logger.debug(f'PostFiatTaskManagement.discord__initial_submission: valid task ID {task_id_to_accept}, proceeding to submit for completion')
-            
-            # Format completion memo
-            formatted_completed_justification_string = constants.TaskType.TASK_OUTPUT.value + initial_completion_string
-            completion_memo= self.generic_pft_utilities.construct_standardized_xrpl_memo(
-                memo_data=formatted_completed_justification_string, 
-                memo_format=user_name, 
-                memo_type=task_id_to_accept
-            )
+        if not self.generic_pft_utilities.verify_transaction_response(response):
+            logger.error(f"PostFiatTaskManagement.discord__initial_submission: Failed to send completion memo to node from {wallet.address}")
 
-            # Send completion memo transaction
-            response = self.generic_pft_utilities.send_memo(
-                wallet_seed_or_wallet=wallet,
-                destination=self.node_address,
-                memo=completion_memo,
-                username=user_name
-            )
+        # Extract and return transaction info from last response
+        transaction_info = self.generic_pft_utilities.extract_transaction_info_from_response_object(response)
+        output_string = transaction_info['clean_string']
 
-            if not self.generic_pft_utilities.verify_transaction_response(response):
-                logger.error(f"PostFiatTaskManagement.discord__initial_submission: Failed to send completion memo to node from {wallet.address}")
-
-            # Extract and return transaction info from last response
-            transaction_info = self.generic_pft_utilities.extract_transaction_info_from_response_object(response)
-            output_string = transaction_info['clean_string']
-        else:
-            logger.debug(f'PostFiatTaskManagement.discord__initial_submission: task ID {task_id_to_accept} is not in a valid state to submit for initial verification')
-            output_string = f'task ID {task_id_to_accept} is not in a valid state to submit for initial verification'
-        
         return output_string
-    
-    # TODO: Refactor using existing methods
-    @staticmethod
-    def get_verification_df(account_memo_detail_df):
-        """Takes the account memo dataframe and converts into outstanding verification tasks.
-        
-        Args:
-            account_memo_detail_df: DataFrame containing account memo details
-        Returns:
-            DataFrame with verification requirements
-        """
-        all_memos = account_memo_detail_df.copy()  # TODO: This copy might be unnecessary
-
-        # Get rewarded task IDs to exclude
-        rewarded_tasks = all_memos[
-            all_memos['memo_data'].apply(lambda x: constants.TaskType.REWARD.value in str(x))
-        ]['memo_type'].unique()
-
-        # Get most recent memos excluding rewarded tasks
-        most_recent_memos = (all_memos[~all_memos['memo_type'].isin(rewarded_tasks)]
-                             .sort_values('datetime')
-                             .groupby('memo_type')
-                             .last()
-                             .copy())
-
-        # Map task IDs to original proposals
-        proposal_patterns = constants.TASK_PATTERNS[constants.TaskType.PROPOSAL]
-        task_id_to_original_task_map = (all_memos[
-            all_memos['memo_data'].apply(lambda x: any(pattern in str(x) for pattern in proposal_patterns))
-        ][['memo_data','memo_type','memo_format']]
-            .groupby('memo_type')
-            .first()['memo_data'])
-
-        # Filter for verification prompts
-        verification_requirements = (most_recent_memos[
-            most_recent_memos['memo_data'].apply(lambda x: constants.TaskType.VERIFICATION_PROMPT.value in str(x))
-        ][['memo_data','memo_format']]
-            .reset_index()
-            .copy())
-
-        verification_requirements['original_task'] = verification_requirements['memo_type'].map(task_id_to_original_task_map)
-
-        return verification_requirements
 
     def discord__final_submission(self, user_seed, user_name, task_id_to_submit, justification_string):
         """Submit final verification response for a task via Discord interface.
@@ -581,44 +742,29 @@ class PostFiatTaskGenerationSystem:
         # Initializer user wallet
         logger.debug(f'PostFiatTaskManagement.discord__final_submission: Spawning wallet for user {user_name} to submit final verification for task {task_id_to_submit}')
         wallet = self.generic_pft_utilities.spawn_wallet_from_seed(seed=user_seed)
-        wallet_address = wallet.classic_address
 
-        logger.debug(f'PostFiatTaskManagement.discord__final_submission: User {user_name} ({wallet_address}) is submitting final verification for task {task_id_to_submit}: {justification_string}')
-        
-        # Get user's transaction history and outstanding verification tasks
-        memo_history = self.generic_pft_utilities.get_account_memo_history(wallet_address).copy()
-        outstanding_verification = self.get_verification_df(account_memo_detail_df=memo_history)
+        # Format verification response memo
+        completion_memo = self.generic_pft_utilities.construct_standardized_xrpl_memo(
+            memo_data=constants.TaskType.VERIFICATION_RESPONSE.value + justification_string, 
+            memo_format=user_name, 
+            memo_type=task_id_to_submit
+        )
 
-        # Get list of tasks that can be submitted
-        valid_task_ids_to_submit_for_completion = list(outstanding_verification['memo_type'].unique())
+        # Send verification response memo transaction
+        response = self.generic_pft_utilities.send_memo(
+            wallet_seed_or_wallet=wallet,
+            destination=self.node_address,
+            memo=completion_memo,
+            username=user_name
+        )
 
-        # Check if task is valid for submission
-        if task_id_to_submit in valid_task_ids_to_submit_for_completion:
-            # Format verification response memo
-            formatted_completed_justification_string = constants.TaskType.VERIFICATION_RESPONSE.value + justification_string
-            completion_memo = self.generic_pft_utilities.construct_standardized_xrpl_memo(
-                memo_data=formatted_completed_justification_string, 
-                memo_format=user_name, 
-                memo_type=task_id_to_submit
-            )
+        if not self.generic_pft_utilities.verify_transaction_response(response):
+            logger.error(f"PostFiatTaskManagement.discord__final_submission: Failed to send verification memo to node from {wallet.address}")
 
-            # Send verification response memo transaction
-            response = self.generic_pft_utilities.send_memo(
-                wallet_seed_or_wallet=wallet,
-                destination=self.node_address,
-                memo=completion_memo,
-                username=user_name
-            )
+        # Extract and return transaction info from last response
+        transaction_info = self.generic_pft_utilities.extract_transaction_info_from_response_object(response)
+        output_string = transaction_info['clean_string']
 
-            if not self.generic_pft_utilities.verify_transaction_response(response):
-                logger.error(f"PostFiatTaskManagement.discord__final_submission: Failed to send verification memo to node from {wallet.address}")
-
-            # Extract and return transaction info from last response
-            transaction_info = self.generic_pft_utilities.extract_transaction_info_from_response_object(response)
-            output_string = transaction_info['clean_string']
-        else:
-            logger.debug(f'PostFiatTaskManagement.discord__final_submission: task ID {task_id_to_submit} is not a valid task for completion')
-            output_string = f'task ID {task_id_to_submit} is not in a verification state'
         return output_string
 
     def generate_o1_task_one_shot_version(
@@ -1025,7 +1171,7 @@ class PostFiatTaskGenerationSystem:
             unprocessed_pf_requests = self.filter_unprocessed_pf_requests(memo_history=memo_history)
             if unprocessed_pf_requests.empty:
                 return
-                        
+            
             # Create task map for batch processing
             task_map = {}
             for _, row in unprocessed_pf_requests.iterrows():
@@ -1044,13 +1190,12 @@ class PostFiatTaskGenerationSystem:
                 get_historical_memos=True
             )
 
+            output_df.to_csv('output_df.csv')  # debugging
+
             if output_df.empty:
                 logger.debug("PostFiatTaskManagement.process_proposal_queue: No valid tasks generated. Returning...")
                 return
             
-            output_df['account_to_send_to'] = output_df['internal_name'].apply(lambda x: x.split('task_gen__')[-1].split('__')[0])
-            output_df['pft_to_send'] = 1
-
             tasks_to_verify = set()  # Set of (user_account, memo_type, datetime) tuples
 
             # Spawn node wallet
@@ -1060,42 +1205,31 @@ class PostFiatTaskGenerationSystem:
             )
 
             logger.debug(f"PostFiatTaskGenerationSystem.process_proposal_queue: Sending {len(unprocessed_pf_requests)} tasks")
-            for _, row in unprocessed_pf_requests.iterrows():
-
+            
+            for _, row in output_df.iterrows():
+                logger.debug(f"row keys: {row.index.tolist()}")
                 try:
-                    task_id = row['task_id']
-                    internal_name = row['internal_name']
-                    
-                    # Parse account_id and task_id
-                    name_parts = internal_name.split('__')
-                    if name_parts[0] == 'task_gen':
-                        account_id = name_parts[1]
-                        final_task_id = name_parts[3]
-                    else:
-                        account_id, final_task_id = self.task_generator.parse_task_key(internal_name)
-
-                    memo_data = row['pf_proposal_string']
-
                     memo_to_send = self.generic_pft_utilities.construct_standardized_xrpl_memo(
-                        memo_data=memo_data,
+                        memo_data=row['pf_proposal_string'],
                         memo_format=self.node_config.node_name,
-                        memo_type=final_task_id
+                        memo_type=row['task_id']
                     )
 
-                    tracking_tuple = (row['user_account'], row['memo_type'], row['datetime'])
+                    tracking_tuple = (row['user_account'], row['task_id'], row['write_time'])
 
                     # Send and track task
                     _ = self.generic_pft_utilities.process_queue_transaction(
                         wallet=node_wallet,
                         memo=memo_to_send,
                         destination=row['user_account'],
-                        pft_amount=1,
+                        pft_amount=row['pft_to_send'],
                         tracking_set=tasks_to_verify,
                         tracking_tuple=tracking_tuple
                     )
 
                 except Exception as e:
-                    logger.error(f"PostFiatTaskManagement.process_proposal_queue: Failed to process task for {row['user_account']}, request {row['request_id']}: {e}")
+                    logger.error(f"PostFiatTaskManagement.process_proposal_queue: Failed to process task for {row['user_account']}: {e}")
+                    logger.error(traceback.format_exc())
                     continue
 
             # Define verification predicate for tasks
@@ -1116,6 +1250,7 @@ class PostFiatTaskGenerationSystem:
                     
         except Exception as e:
             logger.error(f"PostFiatTaskManagement.process_proposal_queue: Task queue processing failed: {e}")
+            logger.error(traceback.format_exc())
 
     def _construct_api_arg_for_verification(self, original_task, completion_justification):
         """Construct API arguments for generating verification questions."""
