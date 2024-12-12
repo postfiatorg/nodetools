@@ -1108,7 +1108,7 @@ class GenericPFTUtilities:
                 try:
                     processed_data = self.message_encryption.process_encrypted_message(processed_data, shared_secret)
                 except Exception as e:
-                    logger.error(f"GenericPFTUtilities.process_memo_data: Error decrypting message {memo_type} with counterparty {channel_counterparty}: {e}")
+                    logger.error(f"GenericPFTUtilities.process_memo_data: Error decrypting message {memo_type} with counterparty {channel_counterparty}: {processed_data}")
                     return f"[Decryption Failed] {processed_data}"
 
             # logger.debug(f"GenericPFTUtilities.process_memo_data: Decrypted data: {processed_data}")

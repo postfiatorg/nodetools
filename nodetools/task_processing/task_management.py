@@ -1190,8 +1190,6 @@ class PostFiatTaskGenerationSystem:
                 get_historical_memos=True
             )
 
-            output_df.to_csv('output_df.csv')  # debugging
-
             if output_df.empty:
                 logger.debug("PostFiatTaskManagement.process_proposal_queue: No valid tasks generated. Returning...")
                 return

@@ -69,6 +69,19 @@ class OpenRouterTool:
             temperature=temperature
         )
         return completion.choices[0].message.content
+    
+    async def generate_simple_text_output_async(self, model, messages, max_tokens=None, temperature=None):
+        """
+        Async version of generate_simple_text_output
+        """
+        completion = await self.async_client.chat.completions.create(
+            extra_headers=self._prepare_headers(),
+            model=model,
+            messages=messages,
+            max_tokens=max_tokens,
+            temperature=temperature
+        )
+        return completion.choices[0].message.content
 
     def generate_dataframe(self, model, messages, max_tokens=None, temperature=None):
         """Generate a DataFrame containing the response and metadata"""
