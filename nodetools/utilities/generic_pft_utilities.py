@@ -1581,6 +1581,7 @@ class GenericPFTUtilities:
     @staticmethod
     def retrieve_xrp_address_from_google_doc(google_doc_text):
         """ Retrieves the XRP address from the google doc """
+        # NOTE: legacy method, unclear if we'll need it
         # Split the text into lines
         lines = google_doc_text.split('\n')      
 
@@ -1614,15 +1615,15 @@ class GenericPFTUtilities:
         if "Status code: 401" in google_doc_text:
             raise GoogleDocIsNotSharedException(google_doc_link)
         
-        # Check 4: google doc contains the correct XRP address at the top
-        wallet_at_front_of_doc = self.retrieve_xrp_address_from_google_doc(google_doc_text)
-        logger.debug(f"wallet_at_front_of_doc: {wallet_at_front_of_doc}")
-        if wallet_at_front_of_doc != wallet.classic_address:
-            raise GoogleDocDoesNotContainXrpAddressException(wallet.classic_address)
+        # # Check 4: google doc contains the correct XRP address at the top
+        # wallet_at_front_of_doc = self.retrieve_xrp_address_from_google_doc(google_doc_text)
+        # logger.debug(f"wallet_at_front_of_doc: {wallet_at_front_of_doc}")
+        # if wallet_at_front_of_doc != wallet.classic_address:
+        #     raise GoogleDocDoesNotContainXrpAddressException(wallet.classic_address)
         
-        # Check 5: XRP address has a balance
-        if self.get_xrp_balance(wallet.classic_address) == 0:
-            raise GoogleDocIsNotFundedException(google_doc_link)
+        # # Check 5: XRP address has a balance
+        # if self.get_xrp_balance(wallet.classic_address) == 0:
+        #     raise GoogleDocIsNotFundedException(google_doc_link)
     
     def handle_google_doc(self, wallet: xrpl.wallet.Wallet, google_doc_link: str, username: str):
         """

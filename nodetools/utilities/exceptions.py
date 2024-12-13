@@ -10,15 +10,15 @@ class InvalidGoogleDocException(Exception):
     def __init__(self, google_url):
         super().__init__(f"Invalid Google Doc URL: {google_url}")
 
-class GoogleDocDoesNotContainXrpAddressException(Exception):
-    """ This exception is raised when the google doc does not contain the XRP address """
-    def __init__(self, xrp_address):
-        super().__init__(f"Google Doc does not contain expected XRP address: {xrp_address}")
+# class GoogleDocDoesNotContainXrpAddressException(Exception):
+#     """ This exception is raised when the google doc does not contain the XRP address """
+#     def __init__(self, xrp_address):
+#         super().__init__(f"Google Doc does not contain expected XRP address: {xrp_address}")
 
-class GoogleDocIsNotFundedException(Exception):
-    """ This exception is raised when the google doc's XRP address is not funded """
-    def __init__(self, google_url):
-        super().__init__(f"Google Doc's XRP address is not funded: {google_url}")
+# class GoogleDocIsNotFundedException(Exception):
+#     """ This exception is raised when the google doc's XRP address is not funded """
+#     def __init__(self, google_url):
+#         super().__init__(f"Google Doc's XRP address is not funded: {google_url}")
 
 class GoogleDocIsNotSharedException(Exception):
     """ This exception is raised when the google doc is not shared """

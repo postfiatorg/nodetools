@@ -1405,7 +1405,7 @@ class PostFiatTaskGenerationSystem:
                     & (txn_df['memo_type'] == memo_type)
                     # & (txn_df['datetime'] > request_time)
                 ]
-                return not prompt_txns.empty and prompt_txns['datetime'].max() > request_time
+                return not prompt_txns.empty # and prompt_txns['datetime'].max() > request_time
             
             # Use generic verification loop
             _ = self.generic_pft_utilities.verify_transactions(
@@ -1724,7 +1724,7 @@ class PostFiatTaskGenerationSystem:
                         & (txn_df['memo_type'] == memo_type)
                         # & (txn_df['datetime'] >= request_time)
                     ]
-                    return not reward_txns.empty and reward_txns['datetime'].max() > request_time
+                    return not reward_txns.empty # and reward_txns['datetime'].max() > request_time
 
                 # Use generic verification loop
                 _ = self.generic_pft_utilities.verify_transactions(
@@ -1807,7 +1807,7 @@ class PostFiatTaskGenerationSystem:
                         & (txn_df['account'].isin(auto_handshake_addresses))
                         & (txn_df['destination'] == user_account)
                     ]
-                    return not handshake_txns.empty and handshake_txns['datetime'].max() > request_time
+                    return not handshake_txns.empty
 
                 # Use generic verification loop
                 _ = self.generic_pft_utilities.verify_transactions(

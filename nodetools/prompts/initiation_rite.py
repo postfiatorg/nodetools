@@ -13,7 +13,7 @@ phase_4__user = f""" The user has given the following response to the question
 
 USER RESPONSE STARTS HERE
 ___USER_INITIATION_RITE___
-USER RESPOSNE ENDS HERE
+USER RESPONSE ENDS HERE
 
 Your job is to first extract the Objective and convert it into a short sentence
 Then extract whether or not the user committed and convert it into either "Committed" or "Not Committed"
