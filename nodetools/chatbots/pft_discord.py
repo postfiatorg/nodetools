@@ -24,8 +24,8 @@ from pathlib import Path
 from dataclasses import dataclass
 import traceback
 from nodetools.chatbots.personas.odv import odv_system_prompt
-from nodetools.chatbots.personas.odv_sprint_planner import ODVSprintPlannerO1
-from nodetools.chatbots.personas.odv_context_doc_improvement import ODVContextDocImprover
+from nodetools.chatbots.odv_sprint_planner import ODVSprintPlannerO1
+from nodetools.chatbots.odv_context_doc_improvement import ODVContextDocImprover
 from nodetools.ai.openrouter import OpenRouterTool
 
 class MyClient(discord.Client):

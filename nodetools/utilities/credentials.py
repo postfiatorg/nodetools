@@ -42,7 +42,10 @@ class CredentialManager:
 
     def __new__(cls, *args, **kwargs):
         if cls._instance is None:
-            if kwargs.get('password') is None:
+            password = kwargs.get('password')
+            if args:
+                password = args[0]
+            if password is None:
                 raise ValueError("Password is required for first CredentialManager instance")
             cls._instance = super().__new__(cls)
         return cls._instance

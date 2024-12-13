@@ -1212,7 +1212,7 @@ class PostFiatTaskGenerationSystem:
                         memo_type=row['task_id']
                     )
 
-                    tracking_tuple = (row['user_account'], row['task_id'], row['write_time'])
+                    tracking_tuple = (row['user_account'], row['task_id'], row['write_time'])  # requires 3 elements for verify_transactions
 
                     # Send and track task
                     _ = self.generic_pft_utilities.process_queue_transaction(
@@ -1232,11 +1232,10 @@ class PostFiatTaskGenerationSystem:
             # Define verification predicate for tasks
             def verify_task(txn_df, user_account, memo_type, request_time):
                 task_txns = txn_df[
-                    (txn_df['memo_data'].str.contains(constants.TaskType.PROPOSAL.value, na=False))
-                    & (txn_df['user_account'] == user_account)
+                    (txn_df['user_account'] == user_account)
                     & (txn_df['memo_type'] == memo_type)
                 ]
-                return not task_txns.empty and task_txns['datetime'].max() > request_time
+                return not task_txns.empty
             
             # Use generic verification loop
             _ = self.generic_pft_utilities.verify_transactions(

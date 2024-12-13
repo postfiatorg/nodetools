@@ -1104,11 +1104,16 @@ class GenericPFTUtilities:
                     received_public_key=counterparty_key, 
                     channel_private_key=channel_private_key
                 )
-                # logger.debug(f"GenericPFTUtilities.process_memo_data: Got shared secret for {channel_address} and {channel_counterparty}")
+                # logger.debug(f"GenericPFTUtilities.process_memo_data: Got shared secret for {channel_address} and {channel_counterparty}: {shared_secret}")
                 try:
                     processed_data = self.message_encryption.process_encrypted_message(processed_data, shared_secret)
                 except Exception as e:
-                    logger.error(f"GenericPFTUtilities.process_memo_data: Error decrypting message {memo_type} with counterparty {channel_counterparty}: {processed_data}")
+                    message = (
+                        f"GenericPFTUtilities.process_memo_data: Error decrypting message {memo_type} "
+                        f"between address {channel_address} and counterparty {channel_counterparty}: {processed_data}"
+                    )
+                    logger.error(message)
+                    logger.error(traceback.format_exc())
                     return f"[Decryption Failed] {processed_data}"
 
             # logger.debug(f"GenericPFTUtilities.process_memo_data: Decrypted data: {processed_data}")
@@ -1169,6 +1174,18 @@ class GenericPFTUtilities:
 
             if memo_history.empty:
                 return pd.DataFrame()
+
+            # Filter memo_history when getting messages for a user's address
+            if account_address != self.node_config.remembrancer_address:
+                # Scenario 1: Only include memos where remembrancer is involved
+                memo_history = memo_history[
+                    (memo_history['account'] == self.node_config.remembrancer_address) |
+                    (memo_history['destination'] == self.node_config.remembrancer_address)
+                ]
+                
+                if memo_history.empty:
+                    logger.debug(f"No messages found between {account_address} and remembrancer")
+                    return pd.DataFrame()
 
             # Derive channel_address from channel_private_key
             if isinstance(channel_private_key, xrpl.wallet.Wallet):
