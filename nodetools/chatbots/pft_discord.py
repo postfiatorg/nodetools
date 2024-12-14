@@ -102,11 +102,14 @@ class MyClient(discord.Client):
                     pft_utils=self.generic_pft_utilities
                 )
                 self.sprint_planners[user_id] = odv_planner
+                logger.debug(f"MyClient.odv_sprint: Initialized ODV sprint planner for {interaction.user.name}")
 
                 # Potentially long operation
-                initial_response = odv_planner.get_response("Please provide your context analysis.")
+                logger.debug(f"MyClient.odv_sprint: Getting initial response for {interaction.user.name}")
+                initial_response = await odv_planner.get_response_async("Please provide your context analysis.")
 
                 # Use the helper function to send the possibly long response
+                logger.debug(f"MyClient.odv_sprint: Sending initial response for {interaction.user.name}")
                 await self.send_long_interaction_response(
                     interaction, 
                     f"**ODV Sprint Planning Initialized**\n\n{initial_response}", 
@@ -131,12 +134,15 @@ class MyClient(discord.Client):
                 )
                 return
 
-            odv_planner = self.sprint_planners[user_id]
+            odv_planner: ODVSprintPlannerO1 = self.sprint_planners[user_id]
+            logger.debug(f"MyClient.odv_sprint_reply: Continuing ODV sprint planning session for {interaction.user.name}")
             await interaction.response.defer(ephemeral=True)
 
             try:
                 # Now using async version
+                logger.debug(f"MyClient.odv_sprint_reply: Getting response for {interaction.user.name}")
                 response = await odv_planner.get_response_async(message)
+                logger.debug(f"MyClient.odv_sprint_reply: Response received for {interaction.user.name}")
                 await self.send_long_interaction_response(interaction, response, ephemeral=True)
             except Exception as e:
                 logger.error(f"Error in odv_sprint_reply: {str(e)}")
@@ -190,9 +196,12 @@ class MyClient(discord.Client):
                     self.doc_improvers = {}
 
                 self.doc_improvers[user_id] = doc_improver
+                logger.debug(f"MyClient.odv_context_doc: Initialized ODV context document improver for {interaction.user.name}")
 
                 # Potentially long operation: getting the initial suggestion
+                logger.debug(f"MyClient.odv_context_doc: Getting initial response for {interaction.user.name}")
                 initial_response = await doc_improver.get_response_async("Please provide your first improvement suggestion.")
+                logger.debug(f"MyClient.odv_context_doc: Sending initial response for {interaction.user.name}")
 
                 # Use the helper function to send the possibly long response
                 await self.send_long_interaction_response(
@@ -220,11 +229,14 @@ class MyClient(discord.Client):
                 )
                 return
 
-            doc_improver = self.doc_improvers[user_id]
+            doc_improver: ODVContextDocImprover = self.doc_improvers[user_id]
+            logger.debug(f"MyClient.odv_context_doc_reply: Continuing ODV context document improvement session for {interaction.user.name}")
             await interaction.response.defer(ephemeral=True)
 
             try:
+                logger.debug(f"MyClient.odv_context_doc_reply: Getting response for {interaction.user.name}")
                 response = await doc_improver.get_response_async(message)
+                logger.debug(f"MyClient.odv_context_doc_reply: Response received for {interaction.user.name}")
                 await self.send_long_interaction_response(interaction, response, ephemeral=True)
             except Exception as e:
                 logger.error(f"Error in odv_context_doc_reply: {str(e)}")
