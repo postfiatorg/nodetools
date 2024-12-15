@@ -33,7 +33,7 @@ class CorbanuChatBot:
             self.__class__._initialized = True
 
     def generate_most_recent_angron_map(self):
-        dbconnx = self.db_connection_manager.spawn_sqlalchemy_db_connection_for_user(username='agti_corp')
+        dbconnx = self.db_connection_manager.spawn_sqlalchemy_db_connection_for_user(username='sigildb')
         most_recent_spm_signal = pd.read_sql('spm_signals', dbconnx).tail(1)
         xdf = most_recent_spm_signal.transpose()
         angron_map = xdf[xdf.columns[0]]
@@ -41,7 +41,7 @@ class CorbanuChatBot:
         return angron_map
 
     def load_fulgrim_context(self):
-        dbconnx = self.db_connection_manager.spawn_sqlalchemy_db_connection_for_user(username='agti_corp')
+        dbconnx = self.db_connection_manager.spawn_sqlalchemy_db_connection_for_user(username='sigildb')
         most_recent_spm_signal = pd.read_sql('fulgrim__signal_write', dbconnx).tail(1)
         fulgrim_context = list(most_recent_spm_signal['content'])[0]
         return fulgrim_context
