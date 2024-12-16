@@ -27,6 +27,7 @@ from nodetools.chatbots.personas.odv import odv_system_prompt
 from nodetools.chatbots.odv_sprint_planner import ODVSprintPlannerO1
 from nodetools.chatbots.odv_context_doc_improvement import ODVContextDocImprover
 from nodetools.ai.openrouter import OpenRouterTool
+from nodetools.chatbots.corbanu_beta import CorbanuChatBot
 
 class MyClient(discord.Client):
     def __init__(self, *args, **kwargs):
@@ -53,8 +54,24 @@ class MyClient(discord.Client):
         self.doc_improvers = {}
         self.sprint_planners = {}  # Dictionary: user_id -> ODVSprintPlanner instance
         self.user_steps = {}       # Dictionary: user_id -> current step in the sprint process
+        self.user_questions = {}
 
         self.tree = app_commands.CommandTree(self)
+
+    def chunk_message(self, message, max_length=1900):
+            """Split a message into multiple parts to avoid exceeding Discord's 2000-char limit."""
+            lines = message.split('\n')
+            chunks = []
+            current_chunk = ""
+            for line in lines:
+                if len(current_chunk) + len(line) + 1 > max_length:
+                    chunks.append(current_chunk.strip())
+                    current_chunk = line + "\n"
+                else:
+                    current_chunk += line + "\n"
+            if current_chunk.strip():
+                chunks.append(current_chunk.strip())
+            return chunks
 
     async def setup_hook(self):
         """Sets up the slash commands for the bot and initiates background tasks."""
@@ -244,6 +261,356 @@ class MyClient(discord.Client):
                     f"An error occurred: {str(e)}", 
                     ephemeral=True
                 )
+
+# In your MyClient.__init__ method or somewhere appropriate:
+
+
+        # In the corbanu_offering command:
+        @self.tree.command(name="corbanu_offering", description="Generate a Corbanu offering")
+        async def corbanu_offering(interaction: discord.Interaction):
+            user_id = interaction.user.id
+
+            # Check if the user has a stored seed
+            if user_id not in self.user_seeds:
+                await interaction.response.send_message(
+                    "You must store a seed using /pf_store_seed before using this command.",
+                    ephemeral=True
+                )
+                return
+
+            seed = self.user_seeds[user_id]
+            wallet = self.generic_pft_utilities.spawn_wallet_from_seed(seed=seed)
+
+            # Check initiation status
+            initiation_check_success = await self._check_initiation_rite(
+                interaction=interaction,
+                wallet_address=wallet.classic_address
+            )
+            if not initiation_check_success:
+                await interaction.response.send_message(
+                    "You must perform the initiation rite first. Run /pf_initiate to do so.", 
+                    ephemeral=True
+                )
+                return
+
+            # Defer the response since generating the Corbanu offering might take time
+            await interaction.response.defer(ephemeral=True)
+
+            try:
+                # Initialize the CorbanuChatBot instance
+                corbanu = CorbanuChatBot(
+                    account_address=wallet.classic_address,
+                    openrouter=self.openrouter,
+                    user_context_parser=self.user_task_parser,
+                    pft_utils=self.generic_pft_utilities
+                )
+
+                # Retrieve the user's recent conversation messages
+                conversation_history = self.conversations.get(user_id, [])
+                recent_messages = conversation_history[-5:]
+                user_chat_history = "\n".join(
+                    f"{msg['role'].upper()}: {msg['content']}" for msg in recent_messages
+                )
+                user_context = corbanu.user_context_parser.get_full_user_context_string(account_address=wallet.classic_address,
+                                                                         get_google_doc=True,
+                                                                         get_historical_memos=True,
+                                                                         n_task_context_history=20)
+                # Generate an O1 question as the Corbanu offering using actual recent user chat history
+                question = corbanu.generate_o1_question(user_chat_history=user_chat_history,user_context=user_context)
+
+                # Store the question so we can use it in /corbanu_reply
+                self.user_questions[user_id] = question
+
+                await interaction.followup.send(
+                    f"Corbanu Offering (O1 Question):\n\n{question}",
+                    ephemeral=True
+                )
+
+            except Exception as e:
+                logger.error(f"Error in corbanu_offering: {str(e)}")
+                await interaction.followup.send(
+                    f"An error occurred while generating Corbanu offering: {str(e)}", 
+                    ephemeral=True
+                )
+
+        @self.tree.command(name="corbanu_reply", description="Reply to the last Corbanu offering")
+        @app_commands.describe(answer="Your answer to the last Corbanu question")
+        async def corbanu_reply(interaction: discord.Interaction, answer: str):
+            user_id = interaction.user.id
+
+            if user_id not in self.user_seeds:
+                await interaction.response.send_message(
+                    "You must store a seed using /pf_store_seed before using this command.",
+                    ephemeral=True
+                )
+                return
+
+            seed = self.user_seeds[user_id]
+            wallet = self.generic_pft_utilities.spawn_wallet_from_seed(seed=seed)
+
+            # Check initiation
+            initiation_check_success = await self._check_initiation_rite(
+                interaction=interaction,
+                wallet_address=wallet.classic_address
+            )
+            if not initiation_check_success:
+                await interaction.response.send_message(
+                    "You must perform the initiation rite first. Run /pf_initiate to do so.",
+                    ephemeral=True
+                )
+                return
+
+            if user_id not in self.user_questions:
+                await interaction.response.send_message(
+                    "No Corbanu question found. Please use /corbanu_offering first.",
+                    ephemeral=True
+                )
+                return
+
+            await interaction.response.defer(ephemeral=True)
+
+            try:
+                question = self.user_questions[user_id]
+                corbanu = CorbanuChatBot(
+                    account_address=wallet.classic_address,
+                    openrouter=self.openrouter,
+                    user_context_parser=self.user_task_parser,
+                    pft_utils=self.generic_pft_utilities
+                )
+
+                scoring = corbanu.generate_user_question_scoring_output(
+                    original_question=question,
+                    user_answer=answer,
+                    account_address=wallet.classic_address
+                )
+
+                reward_value = scoring.get('reward_value', 0)
+                reward_description = scoring.get('reward_description', 'No description')
+
+                full_message = (f"CORBANU_OFFERING\n"
+                                f"Q: {question}\n\n"
+                                f"A: {answer}\n\n"
+                                f"Reward: {reward_value} PFT\n"
+                                f"{reward_description}")
+
+                # Send a short summary to the user in Discord
+                summary_chunks = self.chunk_message(f"**Corbanu Summary**\n{full_message}")
+                for chunk in summary_chunks:
+                    await interaction.followup.send(chunk, ephemeral=True)
+
+                # Now the user will send the Q&A to the remembrancer
+                # Similar to pf_log, we need to ensure a handshake if encrypt=True
+                encrypt = True  # We assume we always encrypt the Q&A to the remembrancer.
+                user_name = interaction.user.name
+                message_obj = await interaction.followup.send(
+                    "Preparing to send Q&A to the remembrancer...",
+                    ephemeral=True,
+                    wait=True
+                )
+
+                if encrypt:
+                    handshake_success, user_key, counterparty_key, message_obj = await self._ensure_handshake(
+                        interaction=interaction,
+                        seed=seed,
+                        counterparty=self.remembrancer,
+                        username=user_name,
+                        command_name="corbanu_reply",
+                        message_obj=message_obj
+                    )
+                    if not handshake_success:
+                        return
+                    
+                    await message_obj.edit(content="Handshake verified. Proceeding to send memo...")
+
+                # Send Q&A from user wallet to remembrancer
+                response = self.generic_pft_utilities.send_memo(
+                    wallet_seed_or_wallet=wallet,
+                    username=user_name,
+                    destination=self.remembrancer,
+                    memo=full_message,
+                    chunk=True,
+                    compress=True,
+                    encrypt=encrypt,
+                    pft_amount=Decimal(0)  # No PFT here, just sending the message
+                )
+
+                # Verify that the large message was successfully sent
+                # response may be a list if chunked; take last element
+                last_response = response[-1] if isinstance(response, list) else response
+                if not self.generic_pft_utilities.verify_transaction_response(last_response):
+                    await message_obj.edit(content="Failed to send Q&A message to remembrancer.")
+                    return
+
+                transaction_info = self.generic_pft_utilities.extract_transaction_info_from_response_object(
+                    response=last_response
+                )
+                clean_string = transaction_info['clean_string']
+
+                await message_obj.edit(
+                    content=f"Q&A message sent to remembrancer successfully. Last chunk details:\n{clean_string}"
+                )
+
+                # Now send the reward from the node to the user
+                foundation_seed = self.generic_pft_utilities.credential_manager.get_credential(
+                    f"{self.node_config.node_name}__v1xrpsecret"
+                )
+                foundation_wallet = self.generic_pft_utilities.spawn_wallet_from_seed(foundation_seed)
+
+                short_reward_message = "Corbanu Reward"
+                reward_tx = self.generic_pft_utilities.send_memo(
+                    wallet_seed_or_wallet=foundation_wallet,
+                    destination=wallet.classic_address,
+                    memo=short_reward_message,
+                    username="Corbanu",
+                    chunk=False,
+                    compress=False,
+                    encrypt=False,
+                    pft_amount=Decimal(reward_value)
+                )
+
+                if not self.generic_pft_utilities.verify_transaction_response(reward_tx):
+                    await interaction.followup.send("Failed to send reward transaction.", ephemeral=True)
+                    return
+
+                # Confirm reward sent
+                reward_info = self.generic_pft_utilities.extract_transaction_info_from_response_object(
+                    reward_tx
+                )
+                reward_clean_string = reward_info['clean_string']
+
+                reward_chunks = self.chunk_message(f"Reward transaction sent successfully:\n{reward_clean_string}")
+                for chunk in reward_chunks:
+                    await interaction.followup.send(chunk, ephemeral=True)
+
+                # Clear stored question
+                del self.user_questions[user_id]
+
+            except Exception as e:
+                logger.error(f"Error in corbanu_reply: {str(e)}")
+                error_chunks = self.chunk_message(f"An error occurred while processing your reply: {str(e)}")
+                for chunk in error_chunks:
+                    await interaction.followup.send(chunk, ephemeral=True)
+
+        @self.tree.command(name="corbanu_request", description="Send a request to Corbanu and get a response from Angron or Fulgrim")
+        @app_commands.describe(message="Your message to Corbanu")
+        async def corbanu_request(interaction: discord.Interaction, message: str):
+            user_id = interaction.user.id
+
+            # Check if the user has a stored seed
+            if user_id not in self.user_seeds:
+                await interaction.response.send_message(
+                    "You must store a seed using /pf_store_seed before using this command.",
+                    ephemeral=True
+                )
+                return
+
+            seed = self.user_seeds[user_id]
+            wallet = self.generic_pft_utilities.spawn_wallet_from_seed(seed=seed)
+
+            # Check initiation status
+            initiation_check_success = await self._check_initiation_rite(
+                interaction=interaction,
+                wallet_address=wallet.classic_address
+            )
+            if not initiation_check_success:
+                await interaction.response.send_message(
+                    "You must perform the initiation rite first. Run /pf_initiate to do so.", 
+                    ephemeral=True
+                )
+                return
+
+            # Defer since response might be long
+            await interaction.response.defer(ephemeral=True)
+
+            try:
+                # Add the user message to their conversation history
+                if user_id not in self.conversations:
+                    self.conversations[user_id] = []
+
+                self.conversations[user_id].append({"role": "user", "content": message})
+
+                # Create CorbanuChatBot instance
+                corbanu = CorbanuChatBot(
+                    account_address=wallet.classic_address,
+                    openrouter=self.openrouter,
+                    user_context_parser=self.user_task_parser,
+                    pft_utils=self.generic_pft_utilities
+                )
+
+                # Get Corbanu's response asynchronously
+                response = await corbanu.get_response_async(message)
+
+                # Chunk the response if needed and send to user
+                response_chunks = self.chunk_message(response)
+                for chunk in response_chunks:
+                    await interaction.followup.send(chunk, ephemeral=True)
+
+                # Append Corbanu's response to conversation history
+                self.conversations[user_id].append({"role": "assistant", "content": response})
+
+                # Combine USER MESSAGE + CORBANU RESPONSE
+                combined_message = f"USER MESSAGE:\n{message}\n\nCORBANU RESPONSE:\n{response}"
+
+                # Summarize the combined message before sending to remembrancer
+                summarized_message = await corbanu.summarize_text(combined_message, max_length=900)
+
+                encrypt = True
+                user_name = interaction.user.name
+
+                # Notify user we're sending to remembrancer
+                message_obj = await interaction.followup.send(
+                    "Sending the Q&A record (summarized) to the remembrancer...",
+                    ephemeral=True,
+                    wait=True
+                )
+
+                # Ensure handshake
+                if encrypt:
+                    handshake_success, user_key, counterparty_key, message_obj = await self._ensure_handshake(
+                        interaction=interaction,
+                        seed=seed,
+                        counterparty=self.remembrancer,
+                        username=user_name,
+                        command_name="corbanu_request",
+                        message_obj=message_obj
+                    )
+                    if not handshake_success:
+                        return
+                    
+                    await message_obj.edit(content="Handshake verified. Proceeding to send memo...")
+
+                # Send summarized message from user's wallet to remembrancer
+                send_response = self.generic_pft_utilities.send_memo(
+                    wallet_seed_or_wallet=wallet,
+                    username=user_name,
+                    destination=self.remembrancer,
+                    memo=summarized_message,
+                    chunk=True,
+                    compress=True,
+                    encrypt=encrypt,
+                    pft_amount=Decimal(0)
+                )
+
+                # Verify transaction
+                last_response = send_response[-1] if isinstance(send_response, list) else send_response
+                if not self.generic_pft_utilities.verify_transaction_response(last_response):
+                    await message_obj.edit(content="Failed to send the summarized Q&A record to remembrancer.")
+                    return
+
+                transaction_info = self.generic_pft_utilities.extract_transaction_info_from_response_object(last_response)
+                clean_string = transaction_info['clean_string']
+
+                await message_obj.edit(
+                    content=f"Summarized Q&A record sent to remembrancer successfully. Last chunk details:\n{clean_string}"
+                )
+
+            except Exception as e:
+                logger.error(f"Error in corbanu_request: {str(e)}")
+                error_chunks = self.chunk_message(f"An error occurred: {str(e)}")
+                for chunk in error_chunks:
+                    await interaction.followup.send(chunk, ephemeral=True)
+
+
 
         @self.tree.command(name="pf_send", description="Open a transaction form")
         async def pf_send(interaction: Interaction):
