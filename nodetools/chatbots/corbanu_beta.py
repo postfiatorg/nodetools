@@ -22,7 +22,12 @@ from loguru import logger
 import pandas as pd
 import re
 import asyncio
+import traceback
+from decimal import Decimal
+from datetime import datetime, timedelta, timezone
 import json
+from typing import Optional
+import nodetools.configuration.constants as constants
 
 class CorbanuChatBot:
     def __init__(
@@ -44,14 +49,18 @@ class CorbanuChatBot:
         
         # Get user context once
         memo_history = self.pft_utils.get_account_memo_history(account_address=account_address)
-        self.user_context = self.user_context_parser.get_full_user_context_string(
+        self.user_context = self.get_corbanu_context(
             account_address=account_address,
             memo_history=memo_history
         )
+        self.GOOGLE_DOC_TEXT_CHAR_LIMIT = 10000
 
         # Initialize market data
         self.angron_map = self._generate_most_recent_angron_map()
         self.fulgrim_context = self._load_fulgrim_context()
+
+        self.MAX_PER_OFFERING_REWARD_VALUE = 3000
+        self.MAX_DAILY_REWARD_VALUE = 9000
 
     def _generate_most_recent_angron_map(self):
         """Get most recent SPM signal data"""
@@ -175,13 +184,16 @@ class CorbanuChatBot:
             logger.error(f"Error in conversation classification: {str(e)}")
             return pd.DataFrame()
 
-    def generate_o1_question(self, account_address: str = '', user_chat_history: str = '', user_context: str = '') -> str:
+    async def generate_question(self) -> str:
         """Generate initial question for user"""
-        prompt = o1_question_user_prompt.replace('__full_user_context__', user_context)
-        prompt = prompt.replace('__user_chat_history__', user_chat_history)
+
+        prompt = o1_question_user_prompt.replace('__full_user_context__', self.user_context)
+        # prompt = prompt.replace('__user_chat_history__', user_chat_history)
+
+        logger.debug(f"CorbanuChatBot.generate_question: prompt: {prompt}")
 
         try:
-            return self.openrouter.generate_simple_text_output(
+            return await self.openrouter.generate_simple_text_output_async(
                 model="anthropic/claude-3.5-sonnet:beta",
                 messages=[
                     {"role": "system", "content": o1_question_system_prompt},
@@ -193,44 +205,46 @@ class CorbanuChatBot:
             logger.error(f"Error generating question: {str(e)}")
             return ""
 
-    def generate_user_specific_question(
-            self,
-            account_address: str = '',
-            user_chat_history: str = '',
-            user_specific_offering: str = ''
-    ) -> str:
-        """Generate follow-up question based on user's specific offering"""
-        prompt = user_specific_question_user_prompt.replace('__full_user_context__', self.user_context)
-        prompt = prompt.replace('__user_chat_history__', user_chat_history)
-        prompt = prompt.replace('__user_specific_offering__', user_specific_offering)
+    # # NOTE: Not used anywhere
+    # def generate_user_specific_question(
+    #         self,
+    #         account_address: str = '',
+    #         user_chat_history: str = '',
+    #         user_specific_offering: str = ''
+    # ) -> str:
+    #     """Generate follow-up question based on user's specific offering"""
+    #     prompt = user_specific_question_user_prompt.replace('__full_user_context__', self.user_context)
+    #     prompt = prompt.replace('__user_chat_history__', user_chat_history)
+    #     prompt = prompt.replace('__user_specific_offering__', user_specific_offering)
 
-        try:
-            return self.openrouter.generate_simple_text_output(
-                model=self.model,
-                messages=[
-                    {"role": "system", "content": user_specific_question_system_prompt},
-                    {"role": "user", "content": prompt}
-                ],
-                temperature=0
-            )
-        except Exception as e:
-            logger.error(f"Error generating specific question: {str(e)}")
-            return ""
+    #     try:
+    #         return self.openrouter.generate_simple_text_output(
+    #             model=self.model,
+    #             messages=[
+    #                 {"role": "system", "content": user_specific_question_system_prompt},
+    #                 {"role": "user", "content": prompt}
+    #             ],
+    #             temperature=0
+    #         )
+    #     except Exception as e:
+    #         logger.error(f"Error generating specific question: {str(e)}")
+    #         return ""
 
-    def generate_user_question_scoring_output(
+    async def generate_user_question_scoring_output(
             self,
             original_question: str,
             user_answer: str,
             account_address: str
     ) -> dict:
         """Score user's answer to generate appropriate reward"""
+        logger.debug(f"MyClient.corbanu_reply: Generating scoring output for {account_address}.")
         prompt = corbanu_scoring_user_prompt.replace('__full_user_context__', self.user_context)
         prompt = prompt.replace('__user_conversation__', '')
         prompt = prompt.replace('__original_question__', original_question)
         prompt = prompt.replace('__user_answer__', user_answer)
 
         try:
-            response = self.openrouter.generate_simple_text_output(
+            response = await self.openrouter.generate_simple_text_output_async(
                 model=self.model,
                 messages=[
                     {"role": "system", "content": corbanu_scoring_system_prompt},
@@ -238,14 +252,18 @@ class CorbanuChatBot:
                 ],
                 temperature=0
             )
+            logger.debug(f"MyClient.corbanu_reply: Scoring output for {account_address}: {response}")
             return self._parse_scoring_output(response)
+
         except Exception as e:
             logger.error(f"Error in scoring: {str(e)}")
+            logger.error(traceback.format_exc())
             return {"reward_value": 1, "reward_description": "Error in scoring process"}
 
     def _parse_scoring_output(self, scoring_string: str) -> dict:
         """Parse scoring output into structured format"""
         try:
+            logger.debug(f"MyClient.corbanu_reply: Parsing scoring output: {scoring_string}")
             value_match = re.search(r'\|\s*REWARD VALUE\s*\|\s*(\d+)\s*\|', scoring_string)
             desc_match = re.search(r'\|\s*REWARD DESCRIPTION\s*\|\s*([^|]+)\|', scoring_string)
             
@@ -302,3 +320,137 @@ class CorbanuChatBot:
             logger.error(f"Error summarizing text: {str(e)}")
             # Fallback to a simple truncation if something goes wrong
             return text[:max_length]
+        
+    def check_daily_reward_limit(self, account_address: str) -> Decimal:
+        """
+        Check how much reward capacity remains for the user within the daily limit.
+        
+        Args:
+            user_wallet_address: The user's wallet address
+            
+        Returns:
+            Decimal: Remaining reward capacity (0 if limit exceeded)
+        """
+        try:            
+            # Get last 24 hours of memos
+            memo_history = self.pft_utils.get_account_memo_history(account_address=account_address)
+
+            # Add PFT amount column to the full DataFrame first
+            def try_get_pft_absolute_amount(x):
+                try:
+                    # Parse JSON if it's a string
+                    if isinstance(x, str):
+                        x = json.loads(x)
+                    return int(x['DeliverMax']['value'])
+                except:
+                    return 0
+                
+            memo_history['amount_pft'] = memo_history['tx_json'].apply(try_get_pft_absolute_amount)
+
+            # Calculate 24 hours ago timestamp in UTC
+            utc_now = datetime.now(timezone.utc)
+            cutoff_time = utc_now - timedelta(hours=24)
+
+            # Ensure datetime column is timezone-aware before comparison
+            memo_history['datetime'] = pd.to_datetime(memo_history['datetime']).dt.tz_localize('UTC')
+
+            # Filter for Corbanu rewards sent to this user in the last 24 hours
+            corbanu_rewards = memo_history[
+                (memo_history['destination'] == account_address) & 
+                (memo_history['memo_data'].str.contains('Corbanu Reward', na=False)) &
+                (memo_history['datetime'] >= cutoff_time)
+            ]
+
+            # Sum rewards in last 24 hours
+            total_recent_rewards = Decimal(int(corbanu_rewards['amount_pft'].sum()))
+
+            remaining_limit = max(Decimal(self.MAX_DAILY_REWARD_VALUE) - total_recent_rewards, Decimal(0))
+                    
+            logger.debug(f"Corbanu rewards in last 24h for {account_address}: {total_recent_rewards} PFT")
+            logger.debug(f"Remaining daily reward limit: {remaining_limit} PFT")
+            
+            return remaining_limit
+        
+        except Exception as e:
+            logger.error(f"Error checking daily reward limit: {str(e)}")
+            return Decimal(0)  # Return 0 on error to prevent rewards
+        
+    def get_corbanu_context(
+            self,
+            account_address: str,
+            memo_history: Optional[pd.DataFrame] = None,
+            n_memos_in_context: int = constants.MAX_CHUNK_MESSAGES_IN_CONTEXT,
+    ) -> str:
+        """Get Corbanu context for a user"""
+        if memo_history is None:
+            memo_history = self.pft_utils.get_account_memo_history(account_address=account_address)
+
+        try:
+            google_url = self.pft_utils.get_latest_outgoing_context_doc_link(
+                account_address=account_address, 
+                memo_history=memo_history
+            )
+            # Retrieve google doc text and limit to 10000 characters
+            core_element__google_doc_text = self.pft_utils.get_google_doc_text(google_url)[:self.GOOGLE_DOC_TEXT_CHAR_LIMIT]
+        except Exception as e:
+            logger.error(f"Failed retrieving user google doc: {e}")
+            logger.error(traceback.format_exc())
+            core_element__google_doc_text = 'Error retrieving google doc'
+
+        try:
+            core_element__user_log_history = self.get_recent_corbanu_interactions(
+                account_address=account_address,
+                num_messages=n_memos_in_context
+            )
+        except Exception as e:
+            logger.error(f"Failed retrieving user memo history: {e}")
+            logger.error(traceback.format_exc())
+            core_element__user_log_history = 'Error retrieving user memo history'
+
+        corbanu_context_string = f"""
+        ***<<< ALL CORBANU QUESTION GENERATION CONTEXT STARTS HERE >>>***
+        The following is the user's full planning document that they have assembled
+        to inform Post Fiat Task Management System for task generation and planning
+        <<USER PLANNING DOC STARTS HERE>>
+        {core_element__google_doc_text}
+        <<USER PLANNING DOC ENDS HERE>>
+        The following is the users last {n_memos_in_context} interactions with Corbanu
+        <<< USER CORBANU INTERACTIONS START HERE>>
+        {core_element__user_log_history}
+        <<< USER CORBANU INTERACTIONS END HERE>>
+        ***<<< ALL CORBANU QUESTION GENERATION CONTEXT ENDS HERE >>>***
+        """
+
+        return corbanu_context_string
+
+    def get_recent_corbanu_interactions(
+            self,
+            account_address: str,
+            num_messages: int = 10
+    ) -> str:
+        """Get recent Corbanu interactions for a user"""
+        try:
+            # Get all messages and select relevant columns
+            messages_df = self.pft_utils.get_all_account_compressed_messages_for_remembrancer(
+                account_address=account_address,
+            )[['processed_message', 'datetime', 'memo_format']]
+
+            # Filter for Corbanu messages
+            corbanu_messages = messages_df[messages_df['memo_format'] == 'Corbanu']
+
+            if corbanu_messages.empty:
+                return json.dumps({})
+            
+            # Get most recent messages, sort by time, and convert to JSON
+            recent_messages = (corbanu_messages
+                .tail(num_messages)
+                .sort_values('datetime')
+                .set_index('datetime')['processed_message']
+                .to_json()
+            )
+
+            return recent_messages
+
+        except Exception as e:
+            logger.error(f"CorbanuChatBot.get_recent_corbanu_interactions: Failed to get recent Corbanu interactions for account {account_address}: {e}")
+            return json.dumps({})

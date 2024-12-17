@@ -41,6 +41,32 @@ class GenericPFTUtilities(Protocol):
         """Construct a handshake memo"""
         ...
 
+    def construct_standardized_xrpl_memo(self, memo_data: str, memo_type: str, memo_format: str) -> Memo:
+        """Construct a standardized memo object for XRPL transactions"""
+        ...
+
     def spawn_wallet_from_seed(self, seed: str) -> Wallet:
         """Spawn a wallet from a seed"""
+        ...
+
+    def get_latest_outgoing_context_doc_link(
+        self, 
+        account_address: str,
+        memo_history: pd.DataFrame = None
+    ) -> Optional[str]:
+        """Get the most recent Google Doc context link sent by this wallet.
+        Handles both encrypted and unencrypted links for backwards compatibility.
+        """
+        ...
+
+    def get_google_doc_text(self, google_url: str) -> Optional[str]:
+        """Get the text of a Google Doc"""
+        ...
+
+    def get_recent_user_memos(self, account_address: str, num_messages: int) -> str:
+        """Get the most recent messages from a user's memo history"""
+        ...
+
+    def get_all_account_compressed_messages_for_remembrancer(self, account_address: str) -> pd.DataFrame:
+        """Convenience method for getting all messages for a user from the remembrancer's perspective"""
         ...

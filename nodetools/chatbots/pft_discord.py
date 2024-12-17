@@ -262,9 +262,6 @@ class MyClient(discord.Client):
                     ephemeral=True
                 )
 
-# In your MyClient.__init__ method or somewhere appropriate:
-
-
         # In the corbanu_offering command:
         @self.tree.command(name="corbanu_offering", description="Generate a Corbanu offering")
         async def corbanu_offering(interaction: discord.Interaction):
@@ -292,12 +289,21 @@ class MyClient(discord.Client):
                     ephemeral=True
                 )
                 return
+            
+            # Return the existing question if the user has one
+            if user_id in self.user_questions:
+                await interaction.response.send_message(
+                    f"Corbanu Offering:\n\n{self.user_questions[user_id]}",
+                    ephemeral=True
+                )
+                return
 
             # Defer the response since generating the Corbanu offering might take time
             await interaction.response.defer(ephemeral=True)
 
             try:
                 # Initialize the CorbanuChatBot instance
+                logger.debug(f"MyClient.corbanu_offering: {interaction.user.name} has requested a Corbanu offering. Initializing CorbanuChatBot instance.")
                 corbanu = CorbanuChatBot(
                     account_address=wallet.classic_address,
                     openrouter=self.openrouter,
@@ -305,29 +311,29 @@ class MyClient(discord.Client):
                     pft_utils=self.generic_pft_utilities
                 )
 
+                # NOTE: Even without recent conversation history, Claude sonnet 3.5 has too much context to generate a non-duplicate question
                 # Retrieve the user's recent conversation messages
-                conversation_history = self.conversations.get(user_id, [])
-                recent_messages = conversation_history[-5:]
-                user_chat_history = "\n".join(
-                    f"{msg['role'].upper()}: {msg['content']}" for msg in recent_messages
-                )
-                user_context = corbanu.user_context_parser.get_full_user_context_string(account_address=wallet.classic_address,
-                                                                         get_google_doc=True,
-                                                                         get_historical_memos=True,
-                                                                         n_task_context_history=20)
-                # Generate an O1 question as the Corbanu offering using actual recent user chat history
-                question = corbanu.generate_o1_question(user_chat_history=user_chat_history,user_context=user_context)
+                # conversation_history = self.conversations.get(user_id, [])
+                # recent_messages = conversation_history[-5:]
+                # user_chat_history = "\n".join(
+                #     f"{msg['role'].upper()}: {msg['content']}" for msg in recent_messages
+                # )
+
+                # Generate a question as the Corbanu offering 
+                question = await corbanu.generate_question()
+                logger.debug(f"MyClient.corbanu_offering: Question generated for {interaction.user.name}: {question}")
 
                 # Store the question so we can use it in /corbanu_reply
                 self.user_questions[user_id] = question
 
                 await interaction.followup.send(
-                    f"Corbanu Offering (O1 Question):\n\n{question}",
+                    f"Corbanu Offering:\n\n{question}",
                     ephemeral=True
                 )
 
             except Exception as e:
                 logger.error(f"Error in corbanu_offering: {str(e)}")
+                logger.error(traceback.format_exc())
                 await interaction.followup.send(
                     f"An error occurred while generating Corbanu offering: {str(e)}", 
                     ephemeral=True
@@ -371,6 +377,8 @@ class MyClient(discord.Client):
 
             try:
                 question = self.user_questions[user_id]
+                logger.debug(f"MyClient.corbanu_reply: Received user answer for {interaction.user.name}.\nQuestion:\n{question}\nAnswer: \n{answer}")
+                
                 corbanu = CorbanuChatBot(
                     account_address=wallet.classic_address,
                     openrouter=self.openrouter,
@@ -378,7 +386,7 @@ class MyClient(discord.Client):
                     pft_utils=self.generic_pft_utilities
                 )
 
-                scoring = corbanu.generate_user_question_scoring_output(
+                scoring = await corbanu.generate_user_question_scoring_output(
                     original_question=question,
                     user_answer=answer,
                     account_address=wallet.classic_address
@@ -408,24 +416,25 @@ class MyClient(discord.Client):
                     wait=True
                 )
 
-                if encrypt:
-                    handshake_success, user_key, counterparty_key, message_obj = await self._ensure_handshake(
-                        interaction=interaction,
-                        seed=seed,
-                        counterparty=self.remembrancer,
-                        username=user_name,
-                        command_name="corbanu_reply",
-                        message_obj=message_obj
-                    )
-                    if not handshake_success:
-                        return
-                    
-                    await message_obj.edit(content="Handshake verified. Proceeding to send memo...")
+                handshake_success, user_key, counterparty_key, message_obj = await self._ensure_handshake(
+                    interaction=interaction,
+                    seed=seed,
+                    counterparty=self.remembrancer,
+                    username=user_name,
+                    command_name="corbanu_reply",
+                    message_obj=message_obj
+                )
+                if not handshake_success:
+                    logger.error(f"MyClient.corbanu_reply: Handshake failed for {interaction.user.name}.")
+                    await message_obj.edit(content="Handshake failed. Aborting operation.")
+                    return
+                
+                await message_obj.edit(content="Handshake verified. Proceeding to send memo...")
 
                 # Send Q&A from user wallet to remembrancer
                 response = self.generic_pft_utilities.send_memo(
                     wallet_seed_or_wallet=wallet,
-                    username=user_name,
+                    username="Corbanu",  # This is memo_format
                     destination=self.remembrancer,
                     memo=full_message,
                     chunk=True,
@@ -435,12 +444,11 @@ class MyClient(discord.Client):
                 )
 
                 # Verify that the large message was successfully sent
-                # response may be a list if chunked; take last element
-                last_response = response[-1] if isinstance(response, list) else response
-                if not self.generic_pft_utilities.verify_transaction_response(last_response):
+                if not self.generic_pft_utilities.verify_transaction_response(response):
                     await message_obj.edit(content="Failed to send Q&A message to remembrancer.")
                     return
 
+                last_response = response[-1] if isinstance(response, list) else response
                 transaction_info = self.generic_pft_utilities.extract_transaction_info_from_response_object(
                     response=last_response
                 )
@@ -457,6 +465,16 @@ class MyClient(discord.Client):
                 foundation_wallet = self.generic_pft_utilities.spawn_wallet_from_seed(foundation_seed)
 
                 short_reward_message = "Corbanu Reward"
+
+                # Check daily reward limit
+                remaining_daily_limit = corbanu.check_daily_reward_limit(account_address=wallet.classic_address)
+                reward_value = min(reward_value, remaining_daily_limit)
+
+                # Check per-offering reward limit
+                reward_value = min(reward_value, corbanu.MAX_PER_OFFERING_REWARD_VALUE)
+
+                logger.debug(f"MyClient.corbanu_reply: Sending reward of {reward_value} PFT to {wallet.classic_address}")
+                
                 reward_tx = self.generic_pft_utilities.send_memo(
                     wallet_seed_or_wallet=foundation_wallet,
                     destination=wallet.classic_address,
@@ -487,6 +505,7 @@ class MyClient(discord.Client):
 
             except Exception as e:
                 logger.error(f"Error in corbanu_reply: {str(e)}")
+                logger.error(traceback.format_exc())
                 error_chunks = self.chunk_message(f"An error occurred while processing your reply: {str(e)}")
                 for chunk in error_chunks:
                     await interaction.followup.send(chunk, ephemeral=True)
@@ -592,11 +611,11 @@ class MyClient(discord.Client):
                 )
 
                 # Verify transaction
-                last_response = send_response[-1] if isinstance(send_response, list) else send_response
-                if not self.generic_pft_utilities.verify_transaction_response(last_response):
+                if not self.generic_pft_utilities.verify_transaction_response(send_response):
                     await message_obj.edit(content="Failed to send the summarized Q&A record to remembrancer.")
                     return
 
+                last_response = send_response[-1] if isinstance(send_response, list) else send_response
                 transaction_info = self.generic_pft_utilities.extract_transaction_info_from_response_object(last_response)
                 clean_string = transaction_info['clean_string']
 
@@ -606,11 +625,10 @@ class MyClient(discord.Client):
 
             except Exception as e:
                 logger.error(f"Error in corbanu_request: {str(e)}")
+                logger.error(traceback.format_exc())
                 error_chunks = self.chunk_message(f"An error occurred: {str(e)}")
                 for chunk in error_chunks:
                     await interaction.followup.send(chunk, ephemeral=True)
-
-
 
         @self.tree.command(name="pf_send", description="Open a transaction form")
         async def pf_send(interaction: Interaction):

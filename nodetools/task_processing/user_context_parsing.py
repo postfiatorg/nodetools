@@ -76,7 +76,7 @@ class UserTaskParser:
         memo_history: Optional[pd.DataFrame] = None,
         get_google_doc: bool = True,
         get_historical_memos: bool = True,
-        n_task_context_history: int = constants.MAX_CHUNK_MESSAGES_IN_CONTEXT,
+        n_memos_in_context: int = constants.MAX_CHUNK_MESSAGES_IN_CONTEXT,
         n_pending_proposals_in_context: int = constants.MAX_PENDING_PROPOSALS_IN_CONTEXT,
         n_acceptances_in_context: int = constants.MAX_ACCEPTANCES_IN_CONTEXT,
         n_verification_in_context: int = constants.MAX_ACCEPTANCES_IN_CONTEXT,
@@ -169,7 +169,7 @@ class UserTaskParser:
             try:
                 core_element__user_log_history = self.generic_pft_utilities.get_recent_user_memos(
                     account_address=account_address,
-                    num_messages=n_task_context_history
+                    num_messages=n_memos_in_context
                 )
             except Exception as e:
                 logger.error(f"Failed retrieving user memo history: {e}")
@@ -187,7 +187,7 @@ class UserTaskParser:
 
         These are the tasks that the user has been proposed and has refused.
         The user has provided a refusal reason with each one. Only their most recent
-        {n_task_context_history} refused tasks are showing 
+        {n_refusals_in_context} refused tasks are showing 
         <<REFUSED TASKS START HERE >>
         {refusal_string}
         <<REFUSED TASKS END HERE>>

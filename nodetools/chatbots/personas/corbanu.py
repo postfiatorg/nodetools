@@ -57,11 +57,6 @@ Please ingest the user context below
 __full_user_context__
 <<<FULL USER CONTEXT ENDS HERE >>> 
 
-Here is the User Chat History 
-<<< FULL USER CHAT HISTORY STARTS HERE >>>
-__user_chat_history__
-<<< FULL USER CHAT HISTORY ENDS HERE >>> 
-
 Identify an asset they have not yet responded to you about. Specifically - you should focus on
 an asset (whether a stock, a cryptocurrency, an FX cross) that based on their context they're likely to have a view on.
 If they've been talking about health routines, consider a gym stock. If they've been talking about crypto, consider

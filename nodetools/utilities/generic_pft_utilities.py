@@ -1062,7 +1062,11 @@ class GenericPFTUtilities:
             if decompress and processed_data.startswith('COMPRESSED__'):
                 processed_data = processed_data.replace('COMPRESSED__', '', 1)
                 # logger.debug(f"GenericPFTUtilities.process_memo_data: Decompressing data: {processed_data}")
-                processed_data = self.decompress_string(processed_data)
+                try:
+                    processed_data = self.decompress_string(processed_data)
+                except Exception as e:
+                    # logger.warning(f"GenericPFTUtilities.process_memo_data: Error decompressing data: {e}")
+                    return processed_data
 
             # Handle encryption
             if decrypt and processed_data.startswith('WHISPER__'):
@@ -1123,6 +1127,18 @@ class GenericPFTUtilities:
         except Exception as e:
             logger.warning(f"GenericPFTUtilities.process_memo_data: Error processing memo {memo_type}: {e}")
             return processed_data
+        
+    def get_all_account_compressed_messages_for_remembrancer(
+        self,
+        account_address: str,
+    ) -> pd.DataFrame:
+        """Convenience method for getting all messages for a user from the remembrancer's perspective"""
+        return self.get_all_account_compressed_messages(
+            account_address=account_address,
+            channel_private_key=self.credential_manager.get_credential(
+                f"{self.node_config.remembrancer_name}__v1xrpsecret"
+            )
+        )
 
     def get_all_account_compressed_messages(
         self,
@@ -1224,6 +1240,7 @@ class GenericPFTUtilities:
 
                 processed_messages.append({
                     'memo_type': msg_id,
+                    'memo_format': first_txn['memo_format'],
                     'processed_message': processed_message if processed_message else "[PROCESSING FAILED]",
                     'datetime': first_txn['datetime'],
                     'direction': first_txn['direction'],

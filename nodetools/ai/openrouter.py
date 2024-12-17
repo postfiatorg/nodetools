@@ -8,6 +8,7 @@ import json
 import time
 from asyncio import Semaphore
 from nodetools.utilities.credentials import CredentialManager
+from loguru import logger
 
 class OpenRouterTool:
     """
@@ -74,6 +75,7 @@ class OpenRouterTool:
         """
         Async version of generate_simple_text_output
         """
+        logger.debug(f"OpenRouterTool.generate_simple_text_output_async: Model: {model}")
         completion = await self.async_client.chat.completions.create(
             extra_headers=self._prepare_headers(),
             model=model,
@@ -81,6 +83,7 @@ class OpenRouterTool:
             max_tokens=max_tokens,
             temperature=temperature
         )
+        logger.debug(f"OpenRouterTool.generate_simple_text_output_async: Completion: {completion}")
         return completion.choices[0].message.content
 
     def generate_dataframe(self, model, messages, max_tokens=None, temperature=None):
