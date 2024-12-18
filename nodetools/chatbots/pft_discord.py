@@ -2339,10 +2339,9 @@ Note: XRP wallets need 15 XRP to transact.
                 seed = self.user_seeds[user_id]
                 
                 try:
-                    generic_pft_utilities = GenericPFTUtilities(node_name=constants.NODE_NAME)
                     logger.debug(f"MyClient.tactics: Spawning wallet to fetch info for {message.author.name}")
-                    user_wallet = generic_pft_utilities.spawn_wallet_from_seed(seed=seed)
-                    memo_history = generic_pft_utilities.get_account_memo_history(user_wallet.classic_address)
+                    user_wallet = self.generic_pft_utilities.spawn_wallet_from_seed(seed=seed)
+                    memo_history = self.generic_pft_utilities.get_account_memo_history(user_wallet.classic_address)
                     full_user_context = self.user_task_parser.get_full_user_context_string(user_wallet.classic_address, memo_history=memo_history)
                     
                     openai_request_tool = OpenAIRequestTool()
@@ -2391,15 +2390,17 @@ Note: XRP wallets need 15 XRP to transact.
 
                     # Check PFT balance
                     pft_balance = self.generic_pft_utilities.get_account_pft_balance(wallet_address)
-                    if pft_balance < 25000 or not (config.RuntimeConfig.USE_TESTNET and config.RuntimeConfig.DISABLE_PFT_REQUIREMENTS):
-                        await message.reply(
-                            f"You need at least 25,000 PFT to use the coach command. Your current balance is {pft_balance:,.2f} PFT.", 
-                            mention_author=True
-                        )
-                        return
+                    logger.debug(f"MyClient.coach: PFT balance for {message.author.name} is {pft_balance}")
+                    if not (config.RuntimeConfig.USE_TESTNET and config.RuntimeConfig.DISABLE_PFT_REQUIREMENTS):
+                        if pft_balance < 25000:
+                            await message.reply(
+                                f"You need at least 25,000 PFT to use the coach command. Your current balance is {pft_balance:,.2f} PFT.", 
+                                mention_author=True
+                            )
+                            return
 
                     # Get user's full context
-                    memo_history = generic_pft_utilities.get_account_memo_history(account_address=wallet_address)
+                    memo_history = self.generic_pft_utilities.get_account_memo_history(account_address=wallet_address)
                     full_context = self.user_task_parser.get_full_user_context_string(account_address=wallet_address, memo_history=memo_history)
                     
                     # Get chat history
@@ -2438,7 +2439,7 @@ My specific question/request is: {user_query}"""
                     await message.add_reaction('⏳')
 
                     # Make the API call using o1_preview_simulated_request
-                    response = self.openai_request_tool.o1_preview_simulated_request(
+                    response = await self.openai_request_tool.o1_preview_simulated_request_async(
                         system_prompt=odv_system_prompt,
                         user_prompt=user_prompt
                     )
@@ -2460,6 +2461,8 @@ My specific question/request is: {user_query}"""
                     
                 except Exception as e:
                     await message.remove_reaction('⏳', self.user)
+                    logger.error(f"MyClient.coach: An error occurred while processing your request: {str(e)}")
+                    logger.error(traceback.format_exc())
                     error_msg = f"An error occurred while processing your request: {str(e)}"
                     await message.reply(error_msg, mention_author=True)
             else:
@@ -2545,7 +2548,7 @@ My specific question/request is: {user_query}"""
 
         if message.content.startswith('!wallet_info'):
             wallet_to_get = message.content.replace('!wallet_info','').strip()
-            account_info = self.generate_basic_balance_info_string(address=wallet_to_get)
+            account_info = self.generate_basic_balance_info_string(address=wallet_to_get, owns_wallet=False)
             await self.send_long_message(message, account_info)
 
         if message.content.startswith('!store_seed'):

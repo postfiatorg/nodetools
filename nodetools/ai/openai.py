@@ -230,8 +230,12 @@ class OpenAIRequestTool:
         async_write_df.to_sql('openai_chat_completions', dbconnx, if_exists='append', index=False)
         dbconnx.dispose()
         return async_write_df
+    
+    def o1_preview_simulated_request(self, system_prompt, user_prompt):
+        """Synchronous version of the o1 preview request"""
+        return asyncio.run(self.o1_preview_simulated_request_async(system_prompt, user_prompt))
 
-    def o1_preview_simulated_request(self,system_prompt,user_prompt):
+    async def o1_preview_simulated_request_async(self,system_prompt,user_prompt):
 
             content_replacement = f"""YOU ADHERE TO THE FOLLOWING INSTRUCTIONS WITHOUT BREAKING ROLE
             <INSTRUCTIONS FOR BEHAVIOR START HERE>
@@ -244,7 +248,7 @@ class OpenAIRequestTool:
             {user_prompt}
             <USER REQUEST ENDS HERE>
             """ 
-            response = self.client.chat.completions.create(
+            response = await self.async_client.chat.completions.create(
                 model="o1-preview",
                 messages=[
                     {
@@ -255,7 +259,7 @@ class OpenAIRequestTool:
             )
             return response 
 
-
+    # NOTE: Not used anywhere
     def o1_mini_simulated_request(self,system_prompt,user_prompt):
 
         content_replacement = f"""YOU ADHERE TO THE FOLLOWING INSTRUCTIONS WITHOUT BREAKING ROLE

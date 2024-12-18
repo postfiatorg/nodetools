@@ -6,4 +6,7 @@ class OpenAIRequestTool(Protocol):
 
     def o1_preview_simulated_request(self, system_prompt: str, user_prompt: str) -> str:
         ...
+
+    async def o1_preview_simulated_request_async(self, system_prompt: str, user_prompt: str) -> str:
+        ...
     
