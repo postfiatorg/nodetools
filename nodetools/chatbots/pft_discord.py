@@ -12,7 +12,7 @@ from nodetools.performance.monitor import PerformanceMonitor
 from nodetools.configuration.configuration import RuntimeConfig, get_network_config
 from nodetools.task_processing.user_context_parsing import UserTaskParser
 import asyncio
-from datetime import datetime, time
+from datetime import datetime, time, timezone
 import pytz
 import datetime
 import nodetools.configuration.constants as constants
@@ -33,6 +33,9 @@ import pytz
 
 
 class MyClient(discord.Client):
+
+    NON_EPHEMERAL_USERS = {402536023483088896}
+
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         # Get network configuration and set network-specific attributes
@@ -63,11 +66,9 @@ class MyClient(discord.Client):
         self.tree = app_commands.CommandTree(self)
 
     def is_special_user_non_ephemeral(self, interaction: discord.Interaction) -> bool:
-        """Return False if the user is ID 402536023483088896, else True."""
-        output = not (interaction.user.id == 402536023483088896)
-
-        return not (interaction.user.id == 402536023483088896)
-
+        """Return False if the user is not in the NON_EPHEMERAL_USERS set, else True."""
+        output = not (interaction.user.id in self.NON_EPHEMERAL_USERS)
+        return output
 
     def chunk_message(self, message, max_length=1900):
             """Split a message into multiple parts to avoid exceeding Discord's 2000-char limit."""
@@ -99,7 +100,6 @@ class MyClient(discord.Client):
         @self.tree.command(name="odv_sprint", description="Start an ODV sprint planning session")
         async def odv_sprint(interaction: discord.Interaction):
             user_id = interaction.user.id
-            ephemeral_setting = True
             ephemeral_setting = self.is_special_user_non_ephemeral(interaction)
             if user_id not in self.user_seeds:
                 await interaction.response.send_message(
@@ -123,7 +123,7 @@ class MyClient(discord.Client):
                 return
 
             # Defer early
-            await interaction.response.defer(ephemeral=True)
+            await interaction.response.defer(ephemeral=ephemeral_setting)
 
             try:
                 odv_planner = ODVSprintPlannerO1(
@@ -150,14 +150,13 @@ class MyClient(discord.Client):
                 logger.error(f"Error in odv_sprint: {str(e)}")
                 await interaction.followup.send(
                     f"An error occurred while initializing the ODV sprint planning session: {str(e)}", 
-                    ephemeral=ephemeral_setting
+                    ephemeral=True
                 )
 
         @self.tree.command(name="odv_sprint_reply", description="Continue the ODV sprint planning session")
         @app_commands.describe(message="Your next input to ODV")
         async def odv_sprint_reply(interaction: discord.Interaction, message: str):
             user_id = interaction.user.id
-            ephemeral_setting = True
             ephemeral_setting = self.is_special_user_non_ephemeral(interaction)
             if user_id not in self.sprint_planners:
                 await interaction.response.send_message(
@@ -180,21 +179,19 @@ class MyClient(discord.Client):
                 logger.error(f"Error in odv_sprint_reply: {str(e)}")
                 await interaction.followup.send(
                     f"An error occurred: {str(e)}", 
-                    ephemeral=ephemeral_setting
+                    ephemeral=True
                 )
-
 
         @self.tree.command(name="pf_death_march_start", description="Kick off a death march. Costs 1300 PFT per day.")
         @app_commands.describe(days="Number of days to continue the death march")
         async def pf_death_march_start(interaction: discord.Interaction, days: int):
             user_id = interaction.user.id
-            ephemeral_setting = True
             ephemeral_setting = self.is_special_user_non_ephemeral(interaction)
             # 1. Check user has a stored seed
             if user_id not in self.user_seeds:
                 await interaction.response.send_message(
                     "You must store a seed using /pf_store_seed first.", 
-                    ephemeral=ephemeral_setting
+                    ephemeral=True
                 )
                 return
 
@@ -210,7 +207,7 @@ class MyClient(discord.Client):
             if not initiation_check_success:
                 await interaction.response.send_message(
                     "You must perform the initiation rite first ( /pf_initiate ).", 
-                    ephemeral=ephemeral_setting
+                    ephemeral=True
                 )
                 return
 
@@ -220,7 +217,7 @@ class MyClient(discord.Client):
             try:
                 user_pft_balance = self.generic_pft_utilities.get_pft_balance(user_address)
             except:
-                await interaction.followup.send("Error fetching your PFT balance. Try again later.", ephemeral=ephemeral_setting)
+                await interaction.followup.send("Error fetching your PFT balance. Try again later.", ephemeral=True)
                 return
 
             cost = 10 * days
@@ -231,11 +228,6 @@ class MyClient(discord.Client):
                 )
                 return
 
-            # 4. Attempt transaction from user to node for cost
-            #    node wallet is presumably the "foundation_wallet" or something like that
-            foundation_seed = self.generic_pft_utilities.credential_manager.get_credential(
-                f"{self.node_config.node_name}__v1xrpsecret"
-            )
             # memo can be "DEATH_MARCH" or something
             memo_data = f"DEATH_MARCH Payment: {days} days"
             
@@ -256,12 +248,12 @@ class MyClient(discord.Client):
                     await interaction.followup.send("Transaction for Death March payment failed.", ephemeral=ephemeral_setting)
                     return
             except Exception as e:
-                await interaction.followup.send(f"An error occurred: {str(e)}", ephemeral=ephemeral_setting)
+                await interaction.followup.send(f"An error occurred: {str(e)}", ephemeral=True)
                 return
             
             # 5. Record the user’s "death march end time"
             #from datetime import timedelta, datetime
-            end_time = datetime.datetime.utcnow() + datetime.timedelta(days=days)
+            end_time = datetime.datetime.now(timezone.utc) + datetime.timedelta(days=days)
             self.death_march_users[user_id] = {
                 "end_time": end_time,
                 "channel_id": interaction.channel_id  # Save the channel ID
@@ -273,10 +265,10 @@ class MyClient(discord.Client):
                 "Check back or use /pf_death_march_end to stop it sooner (no refunds).",
                 ephemeral=ephemeral_setting
             )
+
         @self.tree.command(name="pf_death_march_end", description="End your Death March session early (no refunds).")
         async def pf_death_march_end(interaction: discord.Interaction):
             user_id = interaction.user.id
-            ephemeral_setting = True
             ephemeral_setting = self.is_special_user_non_ephemeral(interaction)
             if user_id in self.death_march_users:
                 del self.death_march_users[user_id]
@@ -290,12 +282,10 @@ class MyClient(discord.Client):
                     ephemeral=ephemeral_setting
                 )
 
-
         # Inside MyClient.setup_hook or a similar initialization section in your MyClient class
         @self.tree.command(name="odv_context_doc", description="Start an ODV context document improvement session")
         async def odv_context_doc(interaction: discord.Interaction):
             user_id = interaction.user.id
-            ephemeral_setting = True
             ephemeral_setting = self.is_special_user_non_ephemeral(interaction)
             # Check if the user has a stored seed
             if user_id not in self.user_seeds:
@@ -316,7 +306,7 @@ class MyClient(discord.Client):
             if not initiation_check_success:
                 await interaction.response.send_message(
                     "You must perform the initiation rite first. Run /pf_initiate to do so.", 
-                    ephemeral=ephemeral_setting
+                    ephemeral=True
                 )
                 return
 
@@ -354,14 +344,13 @@ class MyClient(discord.Client):
                 logger.error(f"Error in odv_context_doc: {str(e)}")
                 await interaction.followup.send(
                     f"An error occurred while initializing the ODV context document improvement session: {str(e)}", 
-                    ephemeral=ephemeral_setting
+                    ephemeral=True
                 )
 
         @self.tree.command(name="odv_context_doc_reply", description="Continue the ODV context document improvement session")
         @app_commands.describe(message="Your next input to ODV")
         async def odv_context_doc_reply(interaction: discord.Interaction, message: str):
             user_id = interaction.user.id
-            ephemeral_setting = True
             ephemeral_setting = self.is_special_user_non_ephemeral(interaction)
 
             # Check if we have a doc improver session in progress
@@ -385,21 +374,20 @@ class MyClient(discord.Client):
                 logger.error(f"Error in odv_context_doc_reply: {str(e)}")
                 await interaction.followup.send(
                     f"An error occurred: {str(e)}", 
-                    ephemeral=ephemeral_setting
+                    ephemeral=True
                 )
 
         # In the corbanu_offering command:
         @self.tree.command(name="corbanu_offering", description="Generate a Corbanu offering")
         async def corbanu_offering(interaction: discord.Interaction):
             user_id = interaction.user.id
-            ephemeral_setting = True
             ephemeral_setting = self.is_special_user_non_ephemeral(interaction)
 
             # Check if the user has a stored seed
             if user_id not in self.user_seeds:
                 await interaction.response.send_message(
                     "You must store a seed using /pf_store_seed before using this command.",
-                    ephemeral=ephemeral_setting
+                    ephemeral=True
                 )
                 return
 
@@ -414,7 +402,7 @@ class MyClient(discord.Client):
             if not initiation_check_success:
                 await interaction.response.send_message(
                     "You must perform the initiation rite first. Run /pf_initiate to do so.", 
-                    ephemeral=ephemeral_setting
+                    ephemeral=True
                 )
                 return
             
@@ -464,20 +452,19 @@ class MyClient(discord.Client):
                 logger.error(traceback.format_exc())
                 await interaction.followup.send(
                     f"An error occurred while generating Corbanu offering: {str(e)}", 
-                    ephemeral=ephemeral_setting
+                    ephemeral=True
                 )
 
         @self.tree.command(name="corbanu_reply", description="Reply to the last Corbanu offering")
         @app_commands.describe(answer="Your answer to the last Corbanu question")
         async def corbanu_reply(interaction: discord.Interaction, answer: str):
             user_id = interaction.user.id
-            ephemeral_setting = True
             ephemeral_setting = self.is_special_user_non_ephemeral(interaction)
 
             if user_id not in self.user_seeds:
                 await interaction.response.send_message(
                     "You must store a seed using /pf_store_seed before using this command.",
-                    ephemeral=ephemeral_setting
+                    ephemeral=True
                 )
                 return
 
@@ -492,7 +479,7 @@ class MyClient(discord.Client):
             if not initiation_check_success:
                 await interaction.response.send_message(
                     "You must perform the initiation rite first. Run /pf_initiate to do so.",
-                    ephemeral=ephemeral_setting
+                    ephemeral=True
                 )
                 return
 
@@ -617,7 +604,7 @@ class MyClient(discord.Client):
                 )
 
                 if not self.generic_pft_utilities.verify_transaction_response(reward_tx):
-                    await interaction.followup.send("Failed to send reward transaction.", ephemeral=ephemeral_setting)
+                    await interaction.followup.send("Failed to send reward transaction.", ephemeral=True)
                     return
 
                 # Confirm reward sent
@@ -638,19 +625,18 @@ class MyClient(discord.Client):
                 logger.error(traceback.format_exc())
                 error_chunks = self.chunk_message(f"An error occurred while processing your reply: {str(e)}")
                 for chunk in error_chunks:
-                    await interaction.followup.send(chunk, ephemeral=ephemeral_setting)
+                    await interaction.followup.send(chunk, ephemeral=True)
 
         @self.tree.command(name="corbanu_request", description="Send a request to Corbanu and get a response from Angron or Fulgrim")
         @app_commands.describe(message="Your message to Corbanu")
         async def corbanu_request(interaction: discord.Interaction, message: str):
             user_id = interaction.user.id
-            ephemeral_setting = True
             ephemeral_setting = self.is_special_user_non_ephemeral(interaction)
             # Check if the user has a stored seed
             if user_id not in self.user_seeds:
                 await interaction.response.send_message(
                     "You must store a seed using /pf_store_seed before using this command.",
-                    ephemeral=ephemeral_setting
+                    ephemeral=True
                 )
                 return
 
@@ -665,7 +651,7 @@ class MyClient(discord.Client):
             if not initiation_check_success:
                 await interaction.response.send_message(
                     "You must perform the initiation rite first. Run /pf_initiate to do so.", 
-                    ephemeral=ephemeral_setting
+                    ephemeral=True
                 )
                 return
 
@@ -759,18 +745,17 @@ class MyClient(discord.Client):
                 logger.error(traceback.format_exc())
                 error_chunks = self.chunk_message(f"An error occurred: {str(e)}")
                 for chunk in error_chunks:
-                    await interaction.followup.send(chunk, ephemeral=ephemeral_setting)
+                    await interaction.followup.send(chunk, ephemeral=True)
 
         @self.tree.command(name="pf_send", description="Open a transaction form")
         async def pf_send(interaction: Interaction):
             user_id = interaction.user.id
-            ephemeral_setting = True
             ephemeral_setting = self.is_special_user_non_ephemeral(interaction)
 
             # Check if the user has a stored seed
             if user_id not in self.user_seeds:
                 await interaction.response.send_message(
-                    "You must store a seed using /store_seed before initiating a transaction.", ephemeral=ephemeral_setting
+                    "You must store a seed using /store_seed before initiating a transaction.", ephemeral=True
                 )
                 return
 
@@ -783,7 +768,7 @@ class MyClient(discord.Client):
                 wallet_address=wallet.address
             )
             if not initiation_check_success:
-                await interaction.response.send_message("You must perform the initiation rite first. Run /pf_initiate to do so.", ephemeral=ephemeral_setting)
+                await interaction.response.send_message("You must perform the initiation rite first. Run /pf_initiate to do so.", ephemeral=True)
                 return
 
             class SimpleTransactionModal(discord.ui.Modal, title='Transaction Details'):
@@ -835,10 +820,9 @@ class MyClient(discord.Client):
         async def pf_accept_menu(interaction: discord.Interaction):
             # Fetch the user's seed
             user_id = interaction.user.id
-            ephemeral_setting = True
             ephemeral_setting = self.is_special_user_non_ephemeral(interaction)
             if user_id not in self.user_seeds:
-                await interaction.response.send_message("You must store a seed using /store_seed before accepting tasks.", ephemeral=ephemeral_setting)
+                await interaction.response.send_message("You must store a seed using /store_seed before accepting tasks.", ephemeral=True)
                 return
 
             seed = self.user_seeds[user_id]
@@ -853,7 +837,7 @@ class MyClient(discord.Client):
                 wallet_address=wallet.address
             )
             if not initiation_check_success:
-                await interaction.response.send_message("You must perform the initiation rite first. Run /pf_initiate to do so.", ephemeral=ephemeral_setting)
+                await interaction.response.send_message("You must perform the initiation rite first. Run /pf_initiate to do so.", ephemeral=True)
                 return
 
             # Fetch proposal acceptance pairs
@@ -953,10 +937,9 @@ class MyClient(discord.Client):
         async def pf_refuse_menu(interaction: discord.Interaction):
             # Fetch the user's seed
             user_id = interaction.user.id
-            ephemeral_setting = True
             ephemeral_setting = self.is_special_user_non_ephemeral(interaction)
             if user_id not in self.user_seeds:
-                await interaction.response.send_message("You must store a seed using /store_seed before refusing tasks.", ephemeral=ephemeral_setting)
+                await interaction.response.send_message("You must store a seed using /store_seed before refusing tasks.", ephemeral=True)
                 return
 
             seed = self.user_seeds[user_id]
@@ -970,7 +953,7 @@ class MyClient(discord.Client):
                 wallet_address=wallet.address
             )
             if not initiation_check_success:
-                await interaction.response.send_message("You must perform the initiation rite first. Run /pf_initiate to do so.", ephemeral=ephemeral_setting)
+                await interaction.response.send_message("You must perform the initiation rite first. Run /pf_initiate to do so.", ephemeral=True)
                 return
             
             # Fetch account history
@@ -1068,6 +1051,7 @@ class MyClient(discord.Client):
 
         @self.tree.command(name="wallet_info", description="Get information about a wallet")
         async def wallet_info(interaction: discord.Interaction, wallet_address: str):
+            ephemeral_setting = self.is_special_user_non_ephemeral(interaction)
             try:
                 account_info = self.generate_basic_balance_info_string(address=wallet_address, owns_wallet=False)
                 
@@ -1080,8 +1064,8 @@ class MyClient(discord.Client):
             except Exception as e:
                 await interaction.response.send_message(f"An error occurred: {str(e)}", ephemeral=ephemeral_setting)
 
-        @self.tree.command(name="pf_debug_full_user_context", description="Return the full user context")
-        async def pf_debug_full_user_context(interaction: discord.Interaction, wallet_address: str):
+        @self.tree.command(name="admin_debug_full_user_context", description="Return the full user context")
+        async def admin_debug_full_user_context(interaction: discord.Interaction, wallet_address: str):
             # Check if the user has permission (matches the specific ID)
             if interaction.user.id not in constants.DISCORD_SUPER_USER_IDS:
                 await interaction.response.send_message(
@@ -1110,17 +1094,38 @@ class MyClient(discord.Client):
                     ephemeral=True
                 )
 
+        @self.tree.command(name="admin_change_ephemeral_setting", description="Change the ephemeral setting for self")
+        async def admin_change_ephemeral_setting(interaction: discord.Interaction, public: bool):
+            # Check if the user has permission (matches the specific ID)
+            if interaction.user.id not in constants.DISCORD_SUPER_USER_IDS:
+                await interaction.response.send_message(
+                    "You don't have permission to use this command.", 
+                    ephemeral=True
+                )
+                return
+            
+            user_id = interaction.user.id
+            if public:
+                self.NON_EPHEMERAL_USERS.add(user_id)
+                setting = "PUBLIC"
+            else:
+                self.NON_EPHEMERAL_USERS.discard(user_id)
+                setting = "PRIVATE"
+            
+            await interaction.response.send_message(
+                f"Your messages will now be {setting}",
+                ephemeral=True
+            )
+
         @self.tree.command(name="pf_log", description="Send a long message to the remembrancer wallet")
         async def pf_remembrancer(interaction: discord.Interaction, message: str, encrypt: bool = False):
             user_id = interaction.user.id
-            ephemeral_setting = True
             ephemeral_setting = self.is_special_user_non_ephemeral(interaction)
-            print(f"Ephemeral setting is {ephemeral_setting} for user id {user_id}")
             # Check if the user has a stored seed
             if user_id not in client.user_seeds:
                 await interaction.response.send_message(
                     "You must store a seed using /pf_store_seed before using this command.",
-                    ephemeral=ephemeral_setting
+                    ephemeral=True
                 )
                 return
 
@@ -1135,7 +1140,7 @@ class MyClient(discord.Client):
                 wallet_address=wallet.address
             )
             if not initiation_check_success:
-                await interaction.response.send_message("You must perform the initiation rite first. Run /pf_initiate to do so.", ephemeral=ephemeral_setting)
+                await interaction.response.send_message("You must perform the initiation rite first. Run /pf_initiate to do so.", ephemeral=True)
                 return
 
             # Defer the response to avoid timeout for longer operations
@@ -1193,14 +1198,13 @@ class MyClient(discord.Client):
         @self.tree.command(name="pf_chart", description="Generate a chart of your PFT rewards and metrics")
         async def pf_chart(interaction: discord.Interaction):
             user_id = interaction.user.id
-            ephemeral_setting = True
             ephemeral_setting = self.is_special_user_non_ephemeral(interaction)
             
             # Check if the user has a stored seed
             if user_id not in self.user_seeds:
                 await interaction.response.send_message(
                     "You must store a seed using /pf_store_seed before generating a chart.", 
-                    ephemeral=ephemeral_setting
+                    ephemeral=True
                 )
                 return
 
@@ -1214,7 +1218,7 @@ class MyClient(discord.Client):
                 wallet_address=wallet.address
             )
             if not initiation_check_success:
-                await interaction.response.send_message("You must perform the initiation rite first. Run /pf_initiate to do so.", ephemeral=ephemeral_setting)
+                await interaction.response.send_message("You must perform the initiation rite first. Run /pf_initiate to do so.", ephemeral=True)
                 return
 
             # Defer the response since chart generation might take time
@@ -1250,7 +1254,7 @@ class MyClient(discord.Client):
             except Exception as e:
                 await interaction.followup.send(
                     f"An error occurred while generating your PFT chart: {str(e)}", 
-                    ephemeral=ephemeral_setting
+                    ephemeral=True
                 )
 
         @self.tree.command(
@@ -1300,13 +1304,12 @@ class MyClient(discord.Client):
         @self.tree.command(name="pf_outstanding", description="Show your outstanding tasks and verification tasks")
         async def pf_outstanding(interaction: discord.Interaction):
             user_id = interaction.user.id
-            ephemeral_setting = True
             ephemeral_setting = self.is_special_user_non_ephemeral(interaction)
             # Check if the user has a stored seed
             if user_id not in self.user_seeds:
                 await interaction.response.send_message(
                     "You must store a seed using /pf_store_seed before viewing outstanding tasks.", 
-                    ephemeral=ephemeral_setting
+                    ephemeral=True
                 )
                 return
 
@@ -1320,7 +1323,7 @@ class MyClient(discord.Client):
                 wallet_address=wallet.address
             )
             if not initiation_check_success:
-                await interaction.response.send_message("You must perform the initiation rite first. Run /pf_initiate to do so.", ephemeral=ephemeral_setting)
+                await interaction.response.send_message("You must perform the initiation rite first. Run /pf_initiate to do so.", ephemeral=True)
                 return
 
             # Defer the response to avoid timeout for longer operations
@@ -1347,18 +1350,17 @@ class MyClient(discord.Client):
                 logger.error(traceback.format_exc())
                 await interaction.followup.send(
                     f"An error occurred while fetching your outstanding tasks: {str(e)}", 
-                    ephemeral=ephemeral_setting
+                    ephemeral=True
                 )
 
         @self.tree.command(name="xrp_send", description="Send XRP to a destination address")
         async def xrp_send(interaction: discord.Interaction):
             user_id = interaction.user.id
-            ephemeral_setting = True
             ephemeral_setting = self.is_special_user_non_ephemeral(interaction)
             # Check if the user has a stored seed
             if user_id not in self.user_seeds:
                 await interaction.response.send_message(
-                    "You must store a seed using /pf_store_seed before initiating a transaction.", ephemeral=ephemeral_setting
+                    "You must store a seed using /pf_store_seed before initiating a transaction.", ephemeral=True
                 )
                 return
 
@@ -1428,7 +1430,7 @@ class MyClient(discord.Client):
                         
                         await interaction.followup.send(embed=embed, ephemeral=ephemeral_setting)
                     except Exception as e:
-                        await interaction.followup.send(f"An error occurred: {str(e)}", ephemeral=ephemeral_setting)
+                        await interaction.followup.send(f"An error occurred: {str(e)}", ephemeral=True)
 
             # Create and send the modal
             modal = XRPTransactionModal(seed=seed)
@@ -1471,12 +1473,11 @@ class MyClient(discord.Client):
         @self.tree.command(name="pf_initiate", description="Initiate your commitment")
         async def pf_initiate(interaction: discord.Interaction):
             user_id = interaction.user.id
-            ephemeral_setting = True
             ephemeral_setting = self.is_special_user_non_ephemeral(interaction)
             # Check if the user has a stored seed
             if user_id not in self.user_seeds:
                 await interaction.response.send_message(
-                    "You must store a seed using /store_seed before initiating.", ephemeral=ephemeral_setting
+                    "You must store a seed using /store_seed before initiating.", ephemeral=True
                 )
                 return
 
@@ -1494,7 +1495,7 @@ class MyClient(discord.Client):
                     require_initiation=False  # this means block re-initiations unless on testnet with ENABLE_REINITIATIONS = True
                 )
                 if not initiation_check_success:
-                    await interaction.response.send_message("You've already completed an initiation rite. Re-initiation is not allowed.", ephemeral=ephemeral_setting)
+                    await interaction.response.send_message("You've already completed an initiation rite. Re-initiation is not allowed.", ephemeral=True)
                     return
 
                 # Define the modal to collect Google Doc Link and Commitment
@@ -1560,13 +1561,12 @@ class MyClient(discord.Client):
         @self.tree.command(name="pf_update_link", description="Update your Google Doc link")
         async def pf_update_link(interaction: discord.Interaction):
             user_id = interaction.user.id
-            ephemeral_setting = True
             ephemeral_setting = self.is_special_user_non_ephemeral(interaction)
             # Check if the user has a stored seed
             if user_id not in self.user_seeds:
                 await interaction.response.send_message(
                     "You must store a seed using /pf_store_seed first.",
-                    ephemeral=ephemeral_setting
+                    ephemeral=True
                 )
                 return
             
@@ -1582,14 +1582,14 @@ class MyClient(discord.Client):
                     wallet_address=wallet.address
                 )
                 if not initiation_check_success:
-                    await interaction.response.send_message("You must perform the initiation rite first. Run /pf_initiate to do so.", ephemeral=ephemeral_setting)
+                    await interaction.response.send_message("You must perform the initiation rite first. Run /pf_initiate to do so.", ephemeral=True)
                     return
                 
                 # Define the modal for new Google Doc link
                 class UpdateLinkModal(discord.ui.Modal, title='Update Google Doc Link'):
                     def __init__(self, client_instance: discord.Client, *args, **kwargs):
                         super().__init__(*args, **kwargs)
-                        self.client = client_instance
+                        self.client: MyClient = client_instance
 
                     google_doc_link = discord.ui.TextInput(
                         label='Please enter new Google Doc Link', 
@@ -1625,23 +1625,22 @@ class MyClient(discord.Client):
 
                         except Exception as e:
                             logger.error(f"MyClient.pf_update_link: Error during update: {str(e)}")
-                            await interaction.followup.send(f"An error occurred during update: {str(e)}", ephemeral=ephemeral_setting)
+                            await interaction.followup.send(f"An error occurred during update: {str(e)}", ephemeral=True)
 
                 # Show modal immediately
                 await interaction.response.send_modal(UpdateLinkModal(client_instance=self))
 
             except Exception as e:
                 logger.error(f"MyClient.pf_update_link: Error during update: {str(e)}")
-                await interaction.followup.send(f"An error occurred during update: {str(e)}", ephemeral=ephemeral_setting)
+                await interaction.followup.send(f"An error occurred during update: {str(e)}", ephemeral=True)
 
         @self.tree.command(name="pf_request_task", description="Request a Post Fiat task")
         async def pf_task_slash(interaction: discord.Interaction, task_request: str):
             user_id = interaction.user.id
-            ephemeral_setting = True
             ephemeral_setting = self.is_special_user_non_ephemeral(interaction)
             # Check if the user has stored a seed
             if user_id not in self.user_seeds:
-                await interaction.response.send_message("You must store a seed using /pf_store_seed before generating a task.", ephemeral=ephemeral_setting)
+                await interaction.response.send_message("You must store a seed using /pf_store_seed before generating a task.", ephemeral=True)
                 return
 
             # Get the user's seed and other necessary information
@@ -1655,7 +1654,7 @@ class MyClient(discord.Client):
                 wallet_address=wallet.address
             )
             if not initiation_check_success:
-                await interaction.response.send_message("You must perform the initiation rite first. Run /pf_initiate to do so.", ephemeral=ephemeral_setting)
+                await interaction.response.send_message("You must perform the initiation rite first. Run /pf_initiate to do so.", ephemeral=True)
                 return
 
             # Defer the response to avoid timeout
@@ -1676,17 +1675,16 @@ class MyClient(discord.Client):
                 # Send the response
                 await interaction.followup.send(f"Task Requested with Details: {clean_string}", ephemeral=ephemeral_setting)
             except Exception as e:
-                await interaction.followup.send(f"An error occurred while processing your request: {str(e)}", ephemeral=ephemeral_setting)
+                await interaction.followup.send(f"An error occurred while processing your request: {str(e)}", ephemeral=True)
 
         @self.tree.command(name="pf_initial_verification", description="Submit a task for verification")
         async def pf_submit_for_verification(interaction: discord.Interaction):
             user_id = interaction.user.id
-            ephemeral_setting = True
             ephemeral_setting = self.is_special_user_non_ephemeral(interaction)
             # Check if the user has a stored seed
             if user_id not in self.user_seeds:
                 await interaction.response.send_message(
-                    "You must store a seed using /store_seed before submitting a task for verification.", ephemeral=ephemeral_setting
+                    "You must store a seed using /store_seed before submitting a task for verification.", ephemeral=True
                 )
                 return
 
@@ -1701,7 +1699,7 @@ class MyClient(discord.Client):
                 wallet_address=wallet.address
             )
             if not initiation_check_success:
-                await interaction.response.send_message("You must perform the initiation rite first. Run /pf_initiate to do so.", ephemeral=ephemeral_setting)
+                await interaction.response.send_message("You must perform the initiation rite first. Run /pf_initiate to do so.", ephemeral=True)
                 return
 
             # Fetch the tasks that are accepted but not completed
@@ -1811,7 +1809,7 @@ class MyClient(discord.Client):
             class WalletInfoModal(discord.ui.Modal, title='New XRP Wallet'):
                 def __init__(self, client):
                     super().__init__()
-                    self.client = client
+                    self.client: MyClient = client
 
                 address = discord.ui.TextInput(
                     label='Address (Do not modify)',
@@ -1828,8 +1826,6 @@ class MyClient(discord.Client):
 
                 async def on_submit(self, interaction: discord.Interaction):
                     user_id = interaction.user.id
-                    ephemeral_setting = True
-                    ephemeral_setting = self.is_special_user_non_ephemeral(interaction)
                     logger.debug(f"WalletInfoModal.on_submit: Storing seed for user {interaction.user.name} (ID: {user_id})")
                     self.client.user_seeds[user_id] = self.seed.value
 
@@ -1837,7 +1833,7 @@ class MyClient(discord.Client):
                         "Wallet created successfully. You must fund the wallet with 15+ XRP to use as a Post Fiat Wallet. "
                         "The seed is stored to Discord Hot Wallet. To store different seed use /pf_store_seed. "
                         "We recommend you often sweep the wallet to a cold wallet. Use the /pf_send command to do so",
-                        ephemeral=ephemeral_setting
+                        ephemeral=True
                     )
 
             # Create the modal with the client reference and send it
@@ -1847,8 +1843,6 @@ class MyClient(discord.Client):
         @self.tree.command(name="pf_show_seed", description="Show your stored seed")
         async def pf_show_seed(interaction: discord.Interaction):
             user_id = interaction.user.id
-            ephemeral_setting = True
-            ephemeral_setting = self.is_special_user_non_ephemeral(interaction)
             
             # Check if the user has a stored seed
             if user_id in self.user_seeds:
@@ -1858,13 +1852,13 @@ class MyClient(discord.Client):
                 await interaction.response.send_message(
                     f"Your stored seed is: {seed}\n"
                     "This message will be deleted in 30 seconds for security reasons.",
-                    ephemeral=ephemeral_setting,
+                    ephemeral=True,
                     delete_after=30
                 )
             else:
                 await interaction.response.send_message(
                     "No seed found for your account. Use /pf_store_seed to store a seed first.",
-                    ephemeral=ephemeral_setting
+                    ephemeral=True
                 )
         
         @self.tree.command(name="pf_guide", description="Show a guide of all available commands")
@@ -1920,7 +1914,6 @@ Note: XRP wallets need 15 XRP to transact.
         @self.tree.command(name="pf_my_wallet", description="Show your wallet information")
         async def pf_my_wallet(interaction: discord.Interaction):
             user_id = interaction.user.id
-            ephemeral_setting = True
             ephemeral_setting = self.is_special_user_non_ephemeral(interaction)
             # Defer the response to avoid timeout
             await interaction.response.defer(ephemeral=ephemeral_setting)
@@ -1928,7 +1921,7 @@ Note: XRP wallets need 15 XRP to transact.
             if user_id not in self.user_seeds:
                 await interaction.followup.send(
                     "No seed found for your account. Use /pf_store_seed to store a seed first.",
-                    ephemeral=ephemeral_setting
+                    ephemeral=True
                 )
                 return
 
@@ -1986,18 +1979,17 @@ Note: XRP wallets need 15 XRP to transact.
             except Exception as e:
                 error_message = f"An unexpected error occurred: {str(e)}. Please try again later or contact support if the issue persists."
                 logger.error(f"Full traceback: {traceback.format_exc()}")
-                await interaction.followup.send(error_message, ephemeral=ephemeral_setting)
+                await interaction.followup.send(error_message, ephemeral=True)
 
         @self.tree.command(name="pf_rewards", description="Show your recent Post Fiat rewards")
         async def pf_rewards(interaction: discord.Interaction):
             user_id = interaction.user.id
-            ephemeral_setting = True
             ephemeral_setting = self.is_special_user_non_ephemeral(interaction)
             # Check if the user has a stored seed
             if user_id not in self.user_seeds:
                 await interaction.response.send_message(
                     "You must store a seed using /pf_store_seed before viewing rewards.",
-                    ephemeral=ephemeral_setting
+                    ephemeral=True
                 )
                 return
 
@@ -2011,7 +2003,7 @@ Note: XRP wallets need 15 XRP to transact.
                 wallet_address=wallet.address
             )
             if not initiation_check_success:
-                await interaction.response.send_message("You must perform the initiation rite first. Run /pf_initiate to do so.", ephemeral=ephemeral_setting)
+                await interaction.response.send_message("You must perform the initiation rite first. Run /pf_initiate to do so.", ephemeral=True)
                 return
 
             # Defer the response to avoid timeout for longer operations
@@ -2025,42 +2017,26 @@ Note: XRP wallets need 15 XRP to transact.
                     await interaction.followup.send("You have no rewards to show.", ephemeral=ephemeral_setting)
                     return
 
-                reward_summary_map = self.generic_pft_utilities.get_reward_data(all_account_info=memo_history)
+                reward_summary_map = self.get_reward_data(all_account_info=memo_history)
                 recent_rewards = self.format_reward_summary(reward_summary_map['reward_summaries'].tail(10))
 
-                # Split the message into chunks if it's too long
-                chunks = []
-                while len(recent_rewards) > 0:
-                    if len(recent_rewards) > 1900:
-                        chunk = recent_rewards[:1900]
-                        last_newline = chunk.rfind('\n')
-                        if last_newline != -1:
-                            chunk = recent_rewards[:last_newline]
-                        chunks.append(f"```\n{chunk}\n```")
-                        recent_rewards = recent_rewards[len(chunk):]
-                    else:
-                        chunks.append(f"```\n{recent_rewards}\n```")
-                        recent_rewards = ""
-
-                # Send the first chunk
-                await interaction.followup.send(chunks[0], ephemeral=ephemeral_setting)
-
-                # Send the rest of the chunks
-                for chunk in chunks[1:]:
-                    await interaction.followup.send(chunk, ephemeral=ephemeral_setting)
+                await self.send_long_interaction_response(
+                    interaction=interaction,
+                    content=recent_rewards,
+                    ephemeral=ephemeral_setting
+                )
 
             except Exception as e:
-                await interaction.followup.send(f"An error occurred while fetching your rewards: {str(e)}", ephemeral=ephemeral_setting)
+                await interaction.followup.send(f"An error occurred while fetching your rewards: {str(e)}", ephemeral=True)
 
         @self.tree.command(name="pf_final_verification", description="Submit final verification for a task")
         async def pf_final_verification(interaction: discord.Interaction):
             user_id = interaction.user.id
-            ephemeral_setting = True
             ephemeral_setting = self.is_special_user_non_ephemeral(interaction)
             # Check if the user has a stored seed
             if user_id not in self.user_seeds:
                 await interaction.response.send_message(
-                    "You must store a seed using /store_seed before submitting final verification.", ephemeral=ephemeral_setting
+                    "You must store a seed using /store_seed before submitting final verification.", ephemeral=True
                 )
                 return
 
@@ -2074,7 +2050,7 @@ Note: XRP wallets need 15 XRP to transact.
                 wallet_address=wallet.address
             )
             if not initiation_check_success:
-                await interaction.response.send_message("You must perform the initiation rite first. Run /pf_initiate to do so.", ephemeral=ephemeral_setting)
+                await interaction.response.send_message("You must perform the initiation rite first. Run /pf_initiate to do so.", ephemeral=True)
                 return
 
             # Fetch the tasks that are in the verification queue
@@ -2508,7 +2484,7 @@ Note: XRP wallets need 15 XRP to transact.
         end_time   = time(24, 30)# e.g. 9:30 PM EST
 
         while not self.is_closed():
-            now_utc = datetime.utcnow()
+            now_utc = datetime.now(timezone.utc)
             logger.debug(f"death_march_checker: Checking at UTC time {now_utc}. Users in death march: {list(self.death_march_users.keys())}")
 
             # Iterate over a copy of the dict so we can safely remove items
@@ -2559,10 +2535,6 @@ Note: XRP wallets need 15 XRP to transact.
 
             # Sleep 60 seconds so we don’t spam
             await asyncio.sleep(60)
-
-
-
-
             
     async def on_message(self, message):
         if message.author.id == self.user.id:

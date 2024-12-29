@@ -15,7 +15,7 @@ DEFAULT_ANTHROPIC_MODEL = 'claude-3-5-sonnet-20241022'
 OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
 
 MIN_XRP_PER_TRANSACTION = Decimal('0.000001')  # Minimum XRP amount per transaction
-MIN_XRP_BALANCE = 12  # Minimum XRP balance to be able to perform a transaction
+MIN_XRP_BALANCE = 2  # Minimum XRP balance to be able to perform a transaction
 
 # Maximum chunk size for a memo
 MAX_MEMO_CHUNK_SIZE = 900
