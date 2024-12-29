@@ -943,6 +943,36 @@ class MyClient(discord.Client):
             except Exception as e:
                 await interaction.response.send_message(f"An error occurred: {str(e)}", ephemeral=True)
 
+        @self.tree.command(name="pf_debug_full_user_context", description="Return the full user context")
+        async def pf_debug_full_user_context(interaction: discord.Interaction, wallet_address: str):
+            # Check if the user has permission (matches the specific ID)
+            if interaction.user.id not in constants.DISCORD_SUPER_USER_IDS:
+                await interaction.response.send_message(
+                    "You don't have permission to use this command.", 
+                    ephemeral=True
+                )
+                return
+
+            try:
+                await interaction.response.defer(ephemeral=True)
+
+                full_user_context = self.user_task_parser.get_full_user_context_string(
+                    account_address=wallet_address,
+                    n_memos_in_context=20
+                )
+
+                await self.send_long_interaction_response(
+                        interaction, 
+                        f"\n{full_user_context}", 
+                        ephemeral=True
+                    )
+            except Exception as e:
+                logger.error(f"Error in pd_debug_full_user_context: {str(e)}")
+                await interaction.followup.send(
+                    f"An error occurred while fetching the full user context: {str(e)}", 
+                    ephemeral=True
+                )
+
         @self.tree.command(name="pf_log", description="Send a long message to the remembrancer wallet")
         async def pf_remembrancer(interaction: discord.Interaction, message: str, encrypt: bool = False):
             user_id = interaction.user.id
@@ -2117,7 +2147,6 @@ Note: XRP wallets need 15 XRP to transact.
         await self.tree.sync()
         logger.debug('MyClient.on_ready: Slash commands synced across all guilds.')
 
-
     async def send_message_chunks(self, channel, message, user):
         max_chunk_size = 1900
         max_chunks = 5
@@ -2162,21 +2191,30 @@ Note: XRP wallets need 15 XRP to transact.
             await channel.send(to_send)
 
     async def send_long_interaction_response(self, interaction: discord.Interaction, content: str, ephemeral: bool = True):
-        max_length = 1900
-        lines = content.split('\n')
-        current_chunk = ""
-
-        for line in lines:
-            if len(current_chunk) + len(line) + 1 > max_length:
-                # Send the current chunk
-                await interaction.followup.send(current_chunk.strip(), ephemeral=ephemeral)
-                current_chunk = line + "\n"
-            else:
-                current_chunk += line + "\n"
-
-        # Send any remaining content
-        if current_chunk.strip():
-            await interaction.followup.send(current_chunk.strip(), ephemeral=ephemeral)
+        max_chunk_size = 1900  # Leave room for code block formatting
+        prefix = "```\n"
+        suffix = "\n```"
+        wrapper_length = len(prefix) + len(suffix)
+        
+        # Split content into chunks based on character count
+        chunks = []
+        while content:
+            if len(content) <= max_chunk_size - wrapper_length:
+                chunks.append(content)
+                break
+                
+            # Find the last space within the limit to avoid splitting words
+            split_index = content[:max_chunk_size - wrapper_length].rfind(' ')
+            if split_index == -1:  # No space found, force split at max length
+                split_index = max_chunk_size - wrapper_length
+                
+            chunks.append(content[:split_index])
+            content = content[split_index:].lstrip()  # Remove leading whitespace from next chunk
+        
+        # Send each chunk with code block formatting
+        for chunk in chunks:
+            formatted_chunk = f"{prefix}{chunk}{suffix}"
+            await interaction.followup.send(formatted_chunk, ephemeral=ephemeral)
         
     async def send_long_message(self, message, long_message):
         sent_messages = []
