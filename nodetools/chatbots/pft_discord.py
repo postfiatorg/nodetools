@@ -3201,7 +3201,7 @@ My specific question/request is: {user_query}"""
             """Format task ID and extract date"""
             try:
                 datetime_str = task_id.split('__')[0]
-                date_obj = datetime.datetime.strptime(datetime_str, '%Y-%m-%d_%H:%M')
+                date_obj = datetime.strptime(datetime_str, '%Y-%m-%d_%H:%M')
                 formatted_date = date_obj.strftime('%d %b %Y %H:%M')
                 return task_id, formatted_date
             except (ValueError, IndexError):
