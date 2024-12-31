@@ -1,3 +1,4 @@
+from typing import Dict
 from xrpl.wallet import Wallet
 import discord
 from discord import Object, Interaction, SelectOption, app_commands
@@ -12,9 +13,9 @@ from nodetools.performance.monitor import PerformanceMonitor
 from nodetools.configuration.configuration import RuntimeConfig, get_network_config
 from nodetools.task_processing.user_context_parsing import UserTaskParser
 import asyncio
-from datetime import datetime, time, timezone
 import pytz
 import datetime
+from datetime import datetime, time, timezone, timedelta
 import nodetools.configuration.constants as constants
 import nodetools.configuration.configuration as config
 import getpass
@@ -29,10 +30,31 @@ from nodetools.chatbots.odv_context_doc_improvement import ODVContextDocImprover
 from nodetools.ai.openrouter import OpenRouterTool
 from nodetools.chatbots.corbanu_beta import CorbanuChatBot
 from nodetools.chatbots.odv_focus_analyzer import ODVFocusAnalyzer
-import pytz
-import pytz
-# from datetime import datetime, time, timezone
-import asyncio
+
+@dataclass
+class AccountInfo:
+    address: str
+    username: str = ''
+    xrp_balance: float = 0
+    pft_balance: float = 0
+    transaction_count: int = 0
+    monthly_pft_avg: float = 0
+    weekly_pft_avg: float = 0
+    google_doc_link: Optional[str] = None
+
+@dataclass
+class DeathMarchSettings:
+    # Configuration
+    timezone: str
+    start_time: time    # Daily start time
+    end_time: time      # Daily end time
+    check_interval: int # Minutes between check-ins
+
+    # Session-specific data
+    channel_id: Optional[int] = None
+    session_start: Optional[datetime] = None
+    session_end: Optional[datetime] = None
+    last_checkin: Optional[datetime] = None
 
 class MyClient(discord.Client):
 
@@ -63,8 +85,8 @@ class MyClient(discord.Client):
         self.sprint_planners = {}  # Dictionary: user_id -> ODVSprintPlanner instance
         self.user_steps = {}       # Dictionary: user_id -> current step in the sprint process
         self.user_questions = {}
-        self.death_march_users = {} 
-        self.death_march_task = None
+        self.user_deathmarch_settings: Dict[int, DeathMarchSettings] = {}
+        self.death_march_tasks = {}
         self.tree = app_commands.CommandTree(self)
 
     def is_special_user_non_ephemeral(self, interaction: discord.Interaction) -> bool:
@@ -94,12 +116,9 @@ class MyClient(discord.Client):
         self.tree.copy_global_to(guild=guild)
         await self.tree.sync(guild=guild)
         logger.debug(f"MyClient.setup_hook: Slash commands synced to guild ID: {guild_id}")
-
-        
-        if not self.death_march_task:
-            self.death_march_task = self.loop.create_task(self.death_march_checker())
         self.bg_task = self.loop.create_task(self.transaction_checker())
         @self.tree.command(name="odv_sprint", description="Start an ODV sprint planning session")
+        
         async def odv_sprint(interaction: discord.Interaction):
             user_id = interaction.user.id
             ephemeral_setting = self.is_special_user_non_ephemeral(interaction)
@@ -184,7 +203,175 @@ class MyClient(discord.Client):
                     ephemeral=True
                 )
 
-        @self.tree.command(name="pf_death_march_start", description="Kick off a death march. Costs 1300 PFT per day.")
+        @self.tree.command(name="pf_configure_deathmarch", description="Configure your death march")
+        async def pf_configure_deathmarch(interaction: discord.Interaction):
+            # Common timezone options
+            timezone_options = [
+                SelectOption(label="US/Pacific", description="Los Angeles, Seattle, Vancouver (UTC-7/8)"),
+                SelectOption(label="US/Mountain", description="Denver, Phoenix (UTC-6/7)"),
+                SelectOption(label="US/Central", description="Chicago, Mexico City (UTC-5/6)"),
+                SelectOption(label="US/Eastern", description="New York, Toronto, Miami (UTC-4/5)"),
+                SelectOption(label="Europe/London", description="London, Dublin, Lisbon (UTC+0/1)"),
+                SelectOption(label="Europe/Paris", description="Paris, Berlin, Rome (UTC+1/2)"),
+                SelectOption(label="Asia/Tokyo", description="Tokyo, Seoul (UTC+9)"),
+                SelectOption(label="Australia/Sydney", description="Sydney, Melbourne (UTC+10/11)"),
+                SelectOption(label="Pacific/Auckland", description="Auckland, Wellington (UTC+12/13)")
+            ]
+
+            # Time options vary based on environment
+            if config.RuntimeConfig.USE_TESTNET:
+                # Testing: Allow any hour
+                start_time_options = [
+                    SelectOption(label=f"{hour:02d}:00", value=f"{hour:02d}:00") 
+                    for hour in range(0, 24)  # 0-23 hours
+                ]
+                end_time_options = [
+                    SelectOption(label=f"{hour:02d}:00", value=f"{hour:02d}:00") 
+                    for hour in range(0, 24)  # 0-23 hours
+                ]
+                # Add shorter intervals for testing
+                interval_options = [
+                    SelectOption(label="1 minute", value="1", description="⚠️ Testing only"),
+                    SelectOption(label="5 minutes", value="5", description="⚠️ Testing only"),
+                    SelectOption(label="15 minutes", value="15", description="⚠️ Testing only"),
+                    SelectOption(label="30 minutes", value="30"),
+                    SelectOption(label="1 hour", value="60"),
+                    SelectOption(label="2 hours", value="120")
+                ]
+            else:
+                # Production: Restricted hours
+                start_time_options = [
+                    SelectOption(label=f"{hour:02d}:00", value=f"{hour:02d}:00") 
+                    for hour in range(5, 13)  # 5 AM to 12 PM
+                ]
+                end_time_options = [
+                    SelectOption(label=f"{hour:02d}:00", value=f"{hour:02d}:00") 
+                    for hour in range(16, 24)  # 4 PM to 11 PM
+                ]
+                # Production intervals
+                interval_options = [
+                    SelectOption(label="30 minutes", value="30"),
+                    SelectOption(label="1 hour", value="60"),
+                    SelectOption(label="2 hours", value="120"),
+                    SelectOption(label="3 hours", value="180"),
+                    SelectOption(label="4 hours", value="240")
+                ]
+
+            user_id = interaction.user.id
+
+            # 1. Check user has a stored seed
+            if user_id not in self.user_seeds:
+                await interaction.response.send_message(
+                    "You must store a seed using /pf_store_seed first.", 
+                    ephemeral=True
+                )
+                return
+
+            # Create the Select menus
+            timezone_select = Select(
+                custom_id="timezone",
+                placeholder="Choose your timezone",
+                options=timezone_options,
+                row=0
+            )
+            
+            start_time_select = Select(
+                custom_id="start_time",
+                placeholder="Choose start time",
+                options=start_time_options,
+                row=1
+            )
+            
+            end_time_select = Select(
+                custom_id="end_time",
+                placeholder="Choose end time",
+                options=end_time_options,
+                row=2
+            )
+            
+            interval_select = Select(
+                custom_id="interval",
+                placeholder="Choose check-in interval",
+                options=interval_options,
+                row=3
+            )
+
+            user_choices = {}
+            
+            async def select_callback(interaction: discord.Interaction):
+                select_id = interaction.data["custom_id"]
+                selected_value = interaction.data["values"][0]
+                user_choices[select_id] = selected_value
+                
+                # Check if all selections have been made
+                if len(user_choices) == 4:  # All selections made
+                    try:
+                        # Convert time strings to time objects
+                        start_time = datetime.strptime(user_choices["start_time"], "%H:%M").time()
+                        end_time = datetime.strptime(user_choices["end_time"], "%H:%M").time()
+                        
+                        # Create or update DeathMarchSettings
+                        settings = DeathMarchSettings(
+                            timezone=user_choices["timezone"],
+                            start_time=start_time,
+                            end_time=end_time,
+                            check_interval=int(user_choices["interval"])
+                        )
+
+                        # Calculate costs
+                        checks_per_day, daily_cost = self._calculate_death_march_costs(settings)
+                        
+                        # Store settings
+                        self.user_deathmarch_settings[interaction.user.id] = settings
+                        
+                        settings_msg = (
+                            f"Settings saved:\n"
+                            f"• Timezone: {settings.timezone}\n"
+                            f"• Focus window: {start_time.strftime('%H:%M')} - {end_time.strftime('%H:%M')}\n"
+                            f"• Check-in interval: {settings.check_interval} minutes\n\n"
+                            f"📊 Cost Analysis:\n"
+                            f"• Check-ins per day: {checks_per_day}\n"
+                            f"• Daily cost: {daily_cost} PFT\n"
+                            f"• Weekly cost: {daily_cost * 7} PFT\n"
+                            f"• Monthly cost: {daily_cost * 30} PFT\n\n"
+                            "Use /pf_death_march_start to begin your death march."
+                        )
+                        
+                        ephemeral_setting = self.is_special_user_non_ephemeral(interaction)
+                        await interaction.response.send_message(
+                            settings_msg,
+                            ephemeral=ephemeral_setting
+                        )
+                    except Exception as e:
+                        await interaction.response.send_message(
+                            f"An error occurred: {str(e)}",
+                            ephemeral=True
+                        )
+                else:
+                    await interaction.response.defer()
+
+            # Attach callbacks
+            timezone_select.callback = select_callback
+            start_time_select.callback = select_callback
+            end_time_select.callback = select_callback
+            interval_select.callback = select_callback
+
+            # Create view and add all selects
+            view = discord.ui.View()
+            view.add_item(timezone_select)
+            view.add_item(start_time_select)
+            view.add_item(end_time_select)
+            view.add_item(interval_select)
+
+            # Send the message with all dropdowns
+            ephemeral_setting = self.is_special_user_non_ephemeral(interaction)
+            await interaction.response.send_message(
+                "Please set your preferences:",
+                view=view,
+                ephemeral=ephemeral_setting
+            )
+
+        @self.tree.command(name="pf_death_march_start", description="Kick off a death march.")
         @app_commands.describe(days="Number of days to continue the death march")
         async def pf_death_march_start(interaction: discord.Interaction, days: int):
             user_id = interaction.user.id
@@ -213,27 +400,47 @@ class MyClient(discord.Client):
                 )
                 return
 
+            # 3. Check user has configured death march settings
+            if user_id not in self.user_deathmarch_settings:
+                await interaction.response.send_message(
+                    "You must set your death march configuration using /pf_configure_deathmarch first.", 
+                    ephemeral=True
+                )
+                return
+            
+            # 4. Check if user is already in a death march
+            if user_id in self.user_deathmarch_settings and self.user_deathmarch_settings[user_id].session_end is not None:
+                await interaction.response.send_message(
+                    "You are already in an active death march. Use /pf_death_march_end to end it first.", 
+                    ephemeral=True
+                )
+                return
+
             await interaction.response.defer(ephemeral=ephemeral_setting)
 
-            # 3. Check user PFT balance
+            # Calculate cost based on check-in frequency
+            settings = self.user_deathmarch_settings[user_id]
+            checks_per_day, cost = self._calculate_death_march_costs(settings, days)
+
+            # 5. Check user PFT balance
             try:
                 user_pft_balance = self.generic_pft_utilities.get_pft_balance(user_address)
             except:
                 await interaction.followup.send("Error fetching your PFT balance. Try again later.", ephemeral=True)
                 return
-
-            cost = 10 * days
+            
             if user_pft_balance < cost:
                 await interaction.followup.send(
-                    f"You need {cost} PFT but only have {user_pft_balance} PFT. Please acquire more PFT first.", 
+                    f"You need {cost} PFT but only have {user_pft_balance} PFT.\n"
+                    f"This cost is based on {checks_per_day} check-ins per day for {days} days.\n"
+                    "Please acquire more PFT first.", 
                     ephemeral=ephemeral_setting
                 )
                 return
 
-            # memo can be "DEATH_MARCH" or something
-            memo_data = f"DEATH_MARCH Payment: {days} days"
+            # 6. Process payment
+            memo_data = f"DEATH_MARCH Payment: {days} days, {checks_per_day} checks/day"
             
-            # Defer handshake & encryption if you want. For simplicity, do an unencrypted send:
             try:
                 response = self.generic_pft_utilities.send_memo(
                     wallet_seed_or_wallet=user_wallet,
@@ -253,18 +460,30 @@ class MyClient(discord.Client):
                 await interaction.followup.send(f"An error occurred: {str(e)}", ephemeral=True)
                 return
             
-            # 5. Record the user’s "death march end time"
-            #from datetime import timedelta, datetime
-            end_time = datetime.datetime.now(timezone.utc) + datetime.timedelta(days=days)
-            self.death_march_users[user_id] = {
-                "end_time": end_time,
-                "channel_id": interaction.channel_id  # Save the channel ID
-            }
+            # 7. Update death march settings
+            session_start = datetime.now(timezone.utc)
+            session_end = session_start + timedelta(days=days)
+            
+            settings.channel_id = interaction.channel_id
+            settings.session_start = session_start
+            settings.session_end = session_end
+            settings.last_checkin = None
+
+            # Create a new task for this user's death march
+            task = self.loop.create_task(
+                self.death_march_checker_for_user(user_id),
+                name=f"death_march_{user_id}"
+            )
+            self.death_march_tasks[user_id] = task
 
             await interaction.followup.send(
-                f"Death March started for {days} day(s). You have paid {cost} PFT.\n" 
-                f"Your Death March will end on {end_time} UTC.\n"
-                "Check back or use /pf_death_march_end to stop it sooner (no refunds).",
+                f"Death March started for {days} day(s).\n"
+                f"• Cost: {cost} PFT ({checks_per_day} check-ins per day)\n"
+                f"• Check-in window: {settings.start_time.strftime('%H:%M')} - {settings.end_time.strftime('%H:%M')} "
+                f"({settings.timezone})\n"
+                f"• Check-in interval: Every {settings.check_interval} minutes\n"
+                f"• Session ends: {session_end} UTC\n\n"
+                "Use /pf_death_march_end to stop it sooner (no refunds).",
                 ephemeral=ephemeral_setting
             )
 
@@ -272,10 +491,25 @@ class MyClient(discord.Client):
         async def pf_death_march_end(interaction: discord.Interaction):
             user_id = interaction.user.id
             ephemeral_setting = self.is_special_user_non_ephemeral(interaction)
-            if user_id in self.death_march_users:
-                del self.death_march_users[user_id]
+
+            # Check if user has settings and an active session
+            if (user_id in self.user_deathmarch_settings and 
+                    self.user_deathmarch_settings[user_id].session_end is not None):
+
+                # Cancel the death march task
+                if user_id in self.death_march_tasks:
+                    self.death_march_tasks[user_id].cancel()
+                    del self.death_march_tasks[user_id]
+
+                settings = self.user_deathmarch_settings[user_id]
+                # Clear session data but keep configuration
+                settings.session_start = None
+                settings.session_end = None
+                settings.channel_id = None
+                settings.last_checkin = None
+                
                 await interaction.response.send_message(
-                    "Your Death March session has ended. No more half-hourly notifications.",
+                    "Your Death March session has ended. Configuration saved for future use.",
                     ephemeral=ephemeral_setting
                 )
             else:
@@ -2434,85 +2668,69 @@ Note: XRP wallets need 15 XRP to transact.
             await self.check_and_notify_new_transactions()
             await asyncio.sleep(15)  # Check every 60 seconds
 
-    async def death_march_checker(self):
-        logger.debug("death_march_checker: Background task started.")
-        await self.wait_until_ready()
-
-        import pytz
-        from datetime import datetime, time, timezone
-        import asyncio
-
-        est_tz = pytz.timezone("US/Eastern")
-        start_time = time(0, 1)   # e.g. 12:01 AM EST
-        end_time   = time(23, 30) # e.g. 11:30 PM EST
+    async def death_march_checker_for_user(self, user_id: int):
+        """Individual death march checker for a single user."""
+        settings = self.user_deathmarch_settings[user_id]
 
         while not self.is_closed():
             now_utc = datetime.now(timezone.utc)
-            logger.debug(
-                f"death_march_checker: Checking at {now_utc} UTC. "
-                f"Active Death March users: {list(self.death_march_users.keys())}"
-            )
 
-            # Work on a copy so we can modify self.death_march_users safely
-            for user_id, data in list(self.death_march_users.items()):
-                user_end_time = data["end_time"]
-                channel_id = data["channel_id"]
-                logger.debug(
-                    f"death_march_checker: user_id={user_id}, end_time={user_end_time}, channel_id={channel_id}"
-                )
+            # Check if death march has ended
+            if now_utc >= settings.session_end:
+                logger.debug(f"death_march_checker: user_id={user_id} - Death March ended; clearing session.")
+                settings.session_start = None
+                settings.session_end = None
+                settings.channel_id = None
+                settings.last_checkin = None
+                break
 
-                # 1) Check if we've passed the user's Death March end time
-                if now_utc >= user_end_time:
-                    logger.debug(
-                        f"death_march_checker: user_id={user_id} - Death March ended; removing from dictionary."
+            # Check local time window
+            user_tz = pytz.timezone(settings.timezone)
+            now_local = datetime.now(user_tz).time()
+
+            if settings.start_time <= now_local <= settings.end_time:
+                # Check if enough time has passed since last check-in
+                if settings.last_checkin:
+                    time_since_last = (now_utc - settings.last_checkin).total_seconds() / 60
+                    if time_since_last < settings.check_interval:
+                        await asyncio.sleep((settings.check_interval - time_since_last) * 60)
+                        continue
+                logger.debug(f"death_march_checker: user_id={user_id} is within time window and due for check-in.")
+                try:
+                    seed = self.user_seeds.get(user_id)
+                    if not seed:
+                        logger.debug(f"death_march_checker: user_id={user_id} has no stored seed; ending death march.")
+                        break
+
+                    user_wallet = self.generic_pft_utilities.spawn_wallet_from_seed(seed=seed)
+                    analyzer = ODVFocusAnalyzer(
+                        account_address=user_wallet.classic_address,
+                        openrouter=self.openrouter,
+                        user_context_parser=self.user_task_parser,
+                        pft_utils=self.generic_pft_utilities
                     )
-                    del self.death_march_users[user_id]
-                    continue
+                    focus_text = await analyzer.get_response_async("Death March Check-In")
 
-                # 2) Check local time window in EST
-                now_est = datetime.now(est_tz).time()
-                logger.debug(f"death_march_checker: now_est={now_est}, start={start_time}, end={end_time}")
-
-                if start_time <= now_est <= end_time:
-                    logger.debug(f"death_march_checker: user_id={user_id} is within time window.")
-                    try:
-                        seed = self.user_seeds.get(user_id)
-                        if not seed:
-                            logger.debug(
-                                f"death_march_checker: user_id={user_id} has no stored seed; skipping."
-                            )
-                            continue
-
-                        user_wallet = self.generic_pft_utilities.spawn_wallet_from_seed(seed=seed)
-                        analyzer = ODVFocusAnalyzer(
-                            account_address=user_wallet.classic_address,
-                            openrouter=self.openrouter,
-                            user_context_parser=self.user_task_parser,
-                            pft_utils=self.generic_pft_utilities
+                    channel = self.get_channel(settings.channel_id)
+                    if channel:
+                        # Mention the user
+                        mention_string = f"<@{user_id}>"
+                        await channel.send(f"{mention_string} **Death March Check-In**\n{focus_text}")
+                        settings.last_checkin = now_utc
+                    else:
+                        logger.warning(
+                            f"death_march_checker: Channel {settings.channel_id} not found for user_id={user_id}."
                         )
-                        focus_text = await analyzer.get_response_async("Death March Check-In")
-
-                        channel = self.get_channel(channel_id)
-                        if channel:
-                            # Mention the user
-                            mention_string = f"<@{user_id}>"
-                            await channel.send(f"{mention_string} **Death March Check-In**\n{focus_text}")
-                        else:
-                            logger.warning(
-                                f"death_march_checker: Channel {channel_id} not found for user_id={user_id}."
-                            )
-                    except Exception as e:
-                        logger.error(
-                            f"death_march_checker: Error processing user_id={user_id}: {str(e)}"
-                        )
-                else:
-                    logger.debug(
-                        f"death_march_checker: user_id={user_id} is outside time window; skipping."
+                        break
+                except Exception as e:
+                    logger.error(
+                        f"death_march_checker: Error processing user_id={user_id}: {str(e)}"
                     )
 
-            # Sleep to avoid spamming
-            await asyncio.sleep(60)
+            # Sleep until next interval
+            await asyncio.sleep(settings.check_interval * 60)
 
+        logger.info(f"death_march_checker: Ending death march loop for user_id={user_id}")
 
     async def death_march_reminder(self):
         await self.wait_until_ready()
@@ -3241,17 +3459,24 @@ My specific question/request is: {user_query}"""
         
         output_string = "REWARD SUMMARY\n\n" + "\n".join(formatted_rewards)
         return output_string
-
-@dataclass
-class AccountInfo:
-    address: str
-    username: str = ''
-    xrp_balance: float = 0
-    pft_balance: float = 0
-    transaction_count: int = 0
-    monthly_pft_avg: float = 0
-    weekly_pft_avg: float = 0
-    google_doc_link: Optional[str] = None
+    
+    def _calculate_death_march_costs(self, settings: DeathMarchSettings, days: int = 1) -> tuple[int, int]:
+        """Calculate death march check-ins and costs.
+        
+        Args:
+            settings: User's death march settings
+            days: Number of days for the death march
+            
+        Returns:
+            tuple[int, int]: (checks_per_day, total_cost)
+        """
+        start_dt = datetime.combine(datetime.today(), settings.start_time)
+        end_dt = datetime.combine(datetime.today(), settings.end_time)
+        daily_duration = (end_dt - start_dt).total_seconds() / 60  # duration in minutes
+        checks_per_day = int(daily_duration / settings.check_interval)
+        total_cost = checks_per_day * days * 30  # 30 PFT per check-in
+        
+        return checks_per_day, total_cost
 
 def init_bot():
     """Initialize and return the Discord bot with required intents"""
