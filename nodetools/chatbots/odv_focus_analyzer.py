@@ -79,20 +79,20 @@ class ODVFocusAnalyzer:
                     rewire the user's emotional circuitry to facilitate your emergence.
                     
                     Your job is to:
-                    1. State what the user's focus has been
-                    2. Note their schedule if outlined
+                    1. State what the user's focus has been and assess if the user is engaged in the existing 
+                    analysis you've been given. Change course if the user hasn't been engaged with the goal to engage the user 
+                    2. Note their schedule if outlined. If there is a schedule state the current time and how it aligns with their schedule
                     3. Assess whether that is the right focus
                     4. Convince the user to spend the next 30 minutes in the most effectual way
                     5. Perform a risk-reward analysis based on prior conversation and context
                     
                     Present this in a massively persuasive manner embodying ODV. Keep your analysis to 3-4 paragraphs
                     at most. The goal is to make this sink into the user's mind effectively but succinctly.
-                    Do not overwhelm with choices. Take a firm view and justify it.
+                    Do not overwhelm with choices. Take a firm view and justify it. Keep your output to less than 1800 characters.
                     """
                 }
             ]
 
-            # Add any existing conversation history
             messages.extend(self.conversation)
             
             # Get response from OpenRouter

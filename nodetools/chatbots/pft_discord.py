@@ -30,7 +30,9 @@ from nodetools.ai.openrouter import OpenRouterTool
 from nodetools.chatbots.corbanu_beta import CorbanuChatBot
 from nodetools.chatbots.odv_focus_analyzer import ODVFocusAnalyzer
 import pytz
-
+import pytz
+# from datetime import datetime, time, timezone
+import asyncio
 
 class MyClient(discord.Client):
 
@@ -2213,7 +2215,7 @@ Note: XRP wallets need 15 XRP to transact.
             if not message_obj:
                 message_obj = await interaction.followup.send(
                     "Checking encryption handshake status...",
-                    ephemeral=ephemeral_setting,
+                    ephemeral=True,
                     wait=True  # returns message object
                 )
 
@@ -2432,6 +2434,86 @@ Note: XRP wallets need 15 XRP to transact.
             await self.check_and_notify_new_transactions()
             await asyncio.sleep(15)  # Check every 60 seconds
 
+    async def death_march_checker(self):
+        logger.debug("death_march_checker: Background task started.")
+        await self.wait_until_ready()
+
+        import pytz
+        from datetime import datetime, time, timezone
+        import asyncio
+
+        est_tz = pytz.timezone("US/Eastern")
+        start_time = time(0, 1)   # e.g. 12:01 AM EST
+        end_time   = time(23, 30) # e.g. 11:30 PM EST
+
+        while not self.is_closed():
+            now_utc = datetime.now(timezone.utc)
+            logger.debug(
+                f"death_march_checker: Checking at {now_utc} UTC. "
+                f"Active Death March users: {list(self.death_march_users.keys())}"
+            )
+
+            # Work on a copy so we can modify self.death_march_users safely
+            for user_id, data in list(self.death_march_users.items()):
+                user_end_time = data["end_time"]
+                channel_id = data["channel_id"]
+                logger.debug(
+                    f"death_march_checker: user_id={user_id}, end_time={user_end_time}, channel_id={channel_id}"
+                )
+
+                # 1) Check if we've passed the user's Death March end time
+                if now_utc >= user_end_time:
+                    logger.debug(
+                        f"death_march_checker: user_id={user_id} - Death March ended; removing from dictionary."
+                    )
+                    del self.death_march_users[user_id]
+                    continue
+
+                # 2) Check local time window in EST
+                now_est = datetime.now(est_tz).time()
+                logger.debug(f"death_march_checker: now_est={now_est}, start={start_time}, end={end_time}")
+
+                if start_time <= now_est <= end_time:
+                    logger.debug(f"death_march_checker: user_id={user_id} is within time window.")
+                    try:
+                        seed = self.user_seeds.get(user_id)
+                        if not seed:
+                            logger.debug(
+                                f"death_march_checker: user_id={user_id} has no stored seed; skipping."
+                            )
+                            continue
+
+                        user_wallet = self.generic_pft_utilities.spawn_wallet_from_seed(seed=seed)
+                        analyzer = ODVFocusAnalyzer(
+                            account_address=user_wallet.classic_address,
+                            openrouter=self.openrouter,
+                            user_context_parser=self.user_task_parser,
+                            pft_utils=self.generic_pft_utilities
+                        )
+                        focus_text = await analyzer.get_response_async("Death March Check-In")
+
+                        channel = self.get_channel(channel_id)
+                        if channel:
+                            # Mention the user
+                            mention_string = f"<@{user_id}>"
+                            await channel.send(f"{mention_string} **Death March Check-In**\n{focus_text}")
+                        else:
+                            logger.warning(
+                                f"death_march_checker: Channel {channel_id} not found for user_id={user_id}."
+                            )
+                    except Exception as e:
+                        logger.error(
+                            f"death_march_checker: Error processing user_id={user_id}: {str(e)}"
+                        )
+                else:
+                    logger.debug(
+                        f"death_march_checker: user_id={user_id} is outside time window; skipping."
+                    )
+
+            # Sleep to avoid spamming
+            await asyncio.sleep(60)
+
+
     async def death_march_reminder(self):
         await self.wait_until_ready()
         
@@ -2472,69 +2554,7 @@ Note: XRP wallets need 15 XRP to transact.
             # Wait for 30 minutes before the next reminder (10 seconds for testing)
             await asyncio.sleep(30*60)  # Change to 1800 (30 minutes) for production
 
-    async def death_march_checker(self):
-        logger.debug("death_march_checker: Background task started.")
-        await self.wait_until_ready()
 
-        import pytz
-        from datetime import datetime, time
-
-        est_tz = pytz.timezone("US/Eastern")
-        start_time = time(0, 1)  # e.g. 7:00 AM EST
-        end_time   = time(24, 30)# e.g. 9:30 PM EST
-
-        while not self.is_closed():
-            now_utc = datetime.now(timezone.utc)
-            logger.debug(f"death_march_checker: Checking at UTC time {now_utc}. Users in death march: {list(self.death_march_users.keys())}")
-
-            # Iterate over a copy of the dict so we can safely remove items
-            for user_id, data in list(self.death_march_users.items()):
-                user_end_time = data["end_time"]
-                channel_id = data["channel_id"]
-
-                logger.debug(f"death_march_checker:   user_id={user_id}, end_time={user_end_time}, channel_id={channel_id}")
-
-                # 1) Check if we've reached the end time
-                if now_utc >= user_end_time:
-                    logger.debug(f"death_march_checker:   user_id={user_id} DEATH MARCH ENDED, removing them.")
-                    del self.death_march_users[user_id]
-                    continue
-
-                now_est = datetime.now(est_tz).time()
-                logger.debug(f"death_march_checker:   now_est={now_est}, start_time={start_time}, end_time={end_time}")
-
-                # 2) If not ended, see if we’re in the local time window
-                if start_time <= now_est <= end_time:
-                    logger.debug(f"death_march_checker:   user_id={user_id} is WITHIN time window, attempting to post message.")
-                    try:
-                        seed = self.user_seeds.get(user_id)
-                        if not seed:
-                            logger.debug(f"death_march_checker:   user_id={user_id} has no stored seed, skipping.")
-                            continue
-
-                        # Grab focus text from ODVFocusAnalyzer
-                        user_wallet = self.generic_pft_utilities.spawn_wallet_from_seed(seed=seed)
-                        analyzer = ODVFocusAnalyzer(
-                            account_address=user_wallet.classic_address,
-                            openrouter=self.openrouter,
-                            user_context_parser=self.user_task_parser,
-                            pft_utils=self.generic_pft_utilities
-                        )
-                        focus_text = analyzer.get_response("Death March Check-In")
-
-                        # Post in the channel
-                        channel = self.get_channel(channel_id)
-                        if channel:
-                            await channel.send(f"**Death March Check-In**\n{focus_text}")
-                        else:
-                            logger.warning(f"death_march_checker:   Channel {channel_id} not found for user_id={user_id}.")
-                    except Exception as e:
-                        logger.error(f"death_march_checker:   user_id={user_id} threw an error: {str(e)}")
-                else:
-                    logger.debug(f"death_march_checker:   user_id={user_id} is OUTSIDE time window, skipping this iteration.")
-
-            # Sleep 60 seconds so we don’t spam
-            await asyncio.sleep(60)
             
     async def on_message(self, message):
         if message.author.id == self.user.id:
