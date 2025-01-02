@@ -225,11 +225,9 @@ class MyClient(discord.Client):
 3. /pf_log: take notes re your workflows, with optional encryption
 
 ## Post Fiat operates on a Google Document.
-1. Place your Funded Wallet Address at the top of the Google Document 
-2. Set the Document to be shared (File/Share/Share With Others/Anyone With Link)
-3. Note this is fully public as are transactions on the XRP ledger
-4. The PF Initiate Function requires a document and a verbal committment
-5. After your address place a section like
+1. Set your Document to be shared (File/Share/Share With Others/Anyone With Link)
+2. The PF Initiate Function requires a document and a verbal committment
+3. Place the following section in your document:
 ___x TASK VERIFICATION SECTION START x___ 
 task verification details are here 
 ___x TASK VERIFICATION SECTION END x___
@@ -238,7 +236,7 @@ ___x TASK VERIFICATION SECTION END x___
 You can run a local version of the wallet. Please reference the Post Fiat Github
 https://github.com/postfiatorg/pftpyclient
 
-Note: XRP wallets need 15 XRP to transact.
+Note: XRP wallets need 1 XRP to transact. We recommend you fund your wallet with a bit more to start.
 """
             
             await interaction.response.send_message(guide_text, ephemeral=True)
@@ -460,7 +458,7 @@ Note: XRP wallets need 15 XRP to transact.
 
             # Check if the user has a stored seed
             if user_id not in self.user_seeds:
-                await interaction.response.send_message(
+                await interaction.followup.send(
                     "You must store a seed using /store_seed before initiating.", 
                     ephemeral=ephemeral_setting
                 )
@@ -480,7 +478,7 @@ Note: XRP wallets need 15 XRP to transact.
                     require_initiation=False  # this means block re-initiations unless on testnet with ENABLE_REINITIATIONS = True
                 )
                 if not initiation_check_success:
-                    await interaction.response.send_message(
+                    await interaction.followup.send(
                         "You've already completed an initiation rite. Re-initiation is not allowed.", 
                         ephemeral=ephemeral_setting
                     )
@@ -488,7 +486,7 @@ Note: XRP wallets need 15 XRP to transact.
 
                 # Create a button to trigger the modal
                 async def button_callback(button_interaction: discord.Interaction):
-                    await interaction.response.send_modal(
+                    await button_interaction.response.send_modal(
                         InitiationModal(
                             seed=seed,
                             username=username,
@@ -1672,7 +1670,7 @@ Note: XRP wallets need 15 XRP to transact.
             view.add_item(select)
 
             # Send the message with the dropdown menu
-            await interaction.response.send_message("Please choose a task to refuse:", view=view, ephemeral=ephemeral_setting)
+            await interaction.followup.send("Please choose a task to refuse:", view=view, ephemeral=ephemeral_setting)
 
         @self.tree.command(name="pf_initial_verification", description="Submit a task for verification")
         async def pf_submit_for_verification(interaction: discord.Interaction):
@@ -2209,132 +2207,146 @@ Note: XRP wallets need 15 XRP to transact.
         await self.tree.sync()
         logger.debug('MyClient.on_ready: Slash commands synced across all guilds.')
 
-    async def send_message_chunks(self, channel, message, user):
-        max_chunk_size = 1900
-        max_chunks = 5
-
-        # Split the message into chunks
-        chunks = []
-        current_chunk = ""
-        for line in message.split("\n"):
-            if len(current_chunk) + len(line) + 1 <= max_chunk_size:
-                current_chunk += line + "\n"
-            else:
-                chunks.append(current_chunk.strip())
-                current_chunk = line + "\n"
-        if current_chunk:
-            chunks.append(current_chunk.strip())
-
-        # Send the message chunks
-        for i, chunk in enumerate(chunks[:max_chunks], start=1):
-            formatted_chunk = f"```\n{chunk}\n```"
-            if i == 1:
-                await channel.send(f"{user.mention}\n{formatted_chunk}")
-            else:
-                await channel.send(formatted_chunk)
-            await asyncio.sleep(1)
-
-        # Send a message if there are more chunks than the maximum allowed
-        if len(chunks) > max_chunks:
-            remaining_chunks = len(chunks) - max_chunks
-            await channel.send(f"... ({remaining_chunks} more chunk(s) omitted)")
-
-    async def send_long_message_to_channel(self, channel, long_message):
-        while len(long_message) > 0:
-            if len(long_message) > 1999:
-                cutoff = long_message[:1999].rfind(' ')  # Find last space within limit
-                if cutoff == -1:
-                    cutoff = 1999  # No spaces found; cut off at limit
-                to_send = long_message[:cutoff]
-                long_message = long_message[cutoff:]
-            else:
-                to_send = long_message
-                long_message = ''
-            await channel.send(to_send)
-
-    async def send_long_interaction_response(self, interaction: discord.Interaction, content: str, ephemeral: bool = True):
-        max_chunk_size = 1900  # Leave room for code block formatting
-        prefix = "```\n"
-        suffix = "\n```"
-        wrapper_length = len(prefix) + len(suffix)
+    async def _split_message_into_chunks(self, content: str, max_chunk_size: int = 1900) -> list[str]:
+        """Split a message into chunks that fit within Discord's message limit.
         
-        # Split content into chunks based on character count
+        Args:
+            content: The message content to split
+            max_chunk_size: Maximum size for each chunk (default: 1900 to leave room for formatting)
+            
+        Returns:
+            List of message chunks
+        """
         chunks = []
         while content:
-            if len(content) <= max_chunk_size - wrapper_length:
+            if len(content) <= max_chunk_size:
                 chunks.append(content)
                 break
                 
             # Find the last space within the limit to avoid splitting words
-            split_index = content[:max_chunk_size - wrapper_length].rfind(' ')
+            split_index = content[:max_chunk_size].rfind(' ')
             if split_index == -1:  # No space found, force split at max length
-                split_index = max_chunk_size - wrapper_length
+                split_index = max_chunk_size
                 
             chunks.append(content[:split_index])
-            content = content[split_index:].lstrip()  # Remove leading whitespace from next chunk
+            content = content[split_index:].lstrip()  # Remove leading whitespace
+            
+        return chunks
+    
+    async def _format_chunk(self, chunk: str, code_block: bool = False) -> str:
+        """Format a message chunk with optional code block formatting.
         
-        # Send each chunk with code block formatting
+        Args:
+            chunk: The message chunk to format
+            code_block: Whether to wrap the chunk in a code block
+            
+        Returns:
+            Formatted message chunk
+        """
+        if code_block:
+            return f"```\n{chunk}\n```"
+        return chunk
+    
+    async def _send_long_message(
+        self,
+        content: str,
+        *,
+        channel: Optional[discord.abc.GuildChannel] = None,
+        message: Optional[discord.Message] = None,
+        interaction: Optional[discord.Interaction] = None,
+        code_block: bool = False,
+        ephemeral: bool = True,
+        mention_author: bool = True,
+        delete_after: Optional[int] = None
+    ) -> list[discord.Message]:
+        """Send a long message, splitting it into chunks if necessary.
+        
+        Args:
+            content: The message content to send
+            channel: Discord channel to send to (optional)
+            message: Original message to reply to (optional) 
+            interaction: Discord interaction to respond to (optional)
+            code_block: Whether to wrap chunks in code blocks
+            ephemeral: Whether interaction responses should be ephemeral
+            mention_author: Whether to mention author in replies
+            delete_after: Number of seconds after which to delete messages
+            
+        Returns:
+            List of sent messages
+        """
+        sent_messages = []
+        chunks = await self._split_message_into_chunks(content)
+        
         for chunk in chunks:
-            formatted_chunk = f"{prefix}{chunk}{suffix}"
-            await interaction.followup.send(formatted_chunk, ephemeral=ephemeral)
+            formatted_chunk = await self._format_chunk(chunk, code_block)
+            
+            try:
+                if interaction:
+                    # For slash commands
+                    await interaction.followup.send(formatted_chunk, ephemeral=ephemeral)
+                elif channel:
+                    # For direct channel messages
+                    sent = await channel.send(formatted_chunk)
+                    sent_messages.append(sent)
+                elif message:
+                    # For message replies
+                    sent = await message.reply(formatted_chunk, mention_author=mention_author)
+                    sent_messages.append(sent)
+                else:
+                    raise ValueError("Must provide either channel, message, or interaction")
+                    
+            except discord.errors.HTTPException as e:
+                logger.error(f"Error sending message chunk: {e}")
+                continue
+                
+        if delete_after and sent_messages:
+            await asyncio.sleep(delete_after)
+            for sent in sent_messages:
+                try:
+                    await sent.delete()
+                except discord.errors.NotFound:
+                    pass  # Message already deleted
+                    
+            if message:
+                try:
+                    await message.delete()
+                except discord.errors.NotFound:
+                    pass  # Original message already deleted
+                    
+        return sent_messages
+
+    async def send_long_message_to_channel(self, channel, long_message):
+        return await self._send_long_message(long_message, channel=channel)
+
+    async def send_long_interaction_response(self, interaction: discord.Interaction, content: str, ephemeral: bool = True):
+        return await self._send_long_message(
+            content,
+            interaction=interaction,
+            code_block=True,
+            ephemeral=ephemeral
+        )
         
     async def send_long_message(self, message, long_message):
-        sent_messages = []
-        while len(long_message) > 0:
-            if len(long_message) > 1999:
-                cutoff = long_message[:1999].rfind(' ')  # Find last space within limit
-                if cutoff == -1:
-                    cutoff = 1999  # No spaces found; cut off at limit
-                to_send = long_message[:cutoff]
-                long_message = long_message[cutoff:]
-            else:
-                to_send = long_message
-                long_message = ''
-            sent_message = await message.reply(to_send, mention_author=True)
-            sent_messages.append(sent_message)
-        return sent_messages
+        return await self._send_long_message(
+            content=long_message,
+            message=message,
+            mention_author=True
+        )
 
     async def send_long_message_then_delete(self, message, long_message, delete_after):
-        sent_messages = await self.send_long_message(message, long_message)
-        await asyncio.sleep(delete_after)
-        for sent_message in sent_messages:
-            try:
-                await sent_message.delete()
-            except discord.errors.NotFound:
-                pass  # Message was already deleted
-        try:
-            await message.delete()
-        except discord.errors.NotFound:
-            pass  # Message was already deleted
+        return await self._send_long_message(
+            long_message,
+            message=message,
+            delete_after=delete_after
+        )
 
     async def send_long_escaped_message(self, message, long_message):
-        sent_messages = []
-        chunk_size = 1950  # Reduced to account for added formatting
-
-        # Split the message into chunks, preserving newlines
-        chunks = []
-        current_chunk = ""
-        for line in long_message.split('\n'):
-            if len(current_chunk) + len(line) + 1 > chunk_size:
-                chunks.append(current_chunk)
-                current_chunk = line + '\n'
-            else:
-                current_chunk += line + '\n'
-        if current_chunk:
-            chunks.append(current_chunk)
-
-        # Send chunks with proper formatting
-        for chunk in chunks:
-            to_send = f"```\n{chunk.rstrip()}\n```"
-
-            # Ensure we don't exceed Discord's message limit
-            if len(to_send) > 2000:
-                to_send = to_send[:1997] + "```"
-
-            sent_message = await message.reply(to_send, mention_author=True)
-            sent_messages.append(sent_message)
-
-        return sent_messages
+        return await self._send_long_message(
+            long_message,
+            message=message,
+            code_block=True,
+            mention_author=True
+        )
 
     async def check_and_notify_new_transactions(self):
         CHANNEL_ID = self.node_config.discord_activity_channel_id
@@ -2715,89 +2727,6 @@ My specific question/request is: {user_query}"""
                     await message.reply(error_message, mention_author=True)
             else:
                 await message.reply("You must store a seed using /pf_store_seed before getting tactical advice.", mention_author=True)
-
-
-        if message.content.startswith('!new_wallet'):
-            wallet_maker =  generic_pft_utilities.create_xrp_wallet()
-            await self.send_long_message_then_delete(message, wallet_maker, delete_after=60)
-
-        if message.content.startswith('!wallet_info'):
-            wallet_to_get = message.content.replace('!wallet_info','').strip()
-            account_info = self.generate_basic_balance_info_string(address=wallet_to_get, owns_wallet=False)
-            await self.send_long_message(message, account_info)
-
-        if message.content.startswith('!store_seed'):
-            # Extract the seed from the message
-            seed = message.content.replace('!store_seed', '').strip()
-            # Store the seed for the user
-            self.user_seeds[user_id] = seed
-            await message.reply("Seed stored successfully.", mention_author=True)
-
-        if message.content.startswith('!show_seed'):
-            # Retrieve and show the stored seed for the user
-            if user_id in self.user_seeds:
-                seed = self.user_seeds[user_id]
-                await self.send_long_message_then_delete(message, f"Your stored seed is: {seed}", delete_after=30)
-            else:
-                await message.reply("No seed found for your account.", mention_author=True)
-
-        if message.content.startswith('!pf_task'):
-            if user_id in self.user_seeds:
-                message_to_send = message.content.replace('!pf_task', '').strip()
-                task_id = generic_pft_utilities.generate_custom_id()
-                user_name = message.author.name
-                memo_to_send = generic_pft_utilities.construct_standardized_xrpl_memo(memo_data=message_to_send, memo_format = user_name, memo_type=task_id)
-                seed = self.user_seeds[user_id]
-                response = post_fiat_task_generation_system.discord__send_postfiat_request(user_request= message_to_send, user_name=user_name, user_seed=seed)
-                transaction_info = generic_pft_utilities.extract_transaction_info_from_response_object(response=response)
-                clean_string = transaction_info['clean_string']
-                await self.send_long_message(message, f"Task Requested with Details {clean_string}")
-            else:
-                await message.reply("You must store a seed before generating a task.", mention_author=True)
-
-        if message.content.startswith('!my_wallet'):
-            # Retrieve and show the stored seed for the user
-            if user_id in self.user_seeds:
-                seed = self.user_seeds[user_id]
-                logger.debug(f"MyClient.my_wallet: Spawning wallet to fetch info for {message.author.name}")
-                wallet = generic_pft_utilities.spawn_wallet_from_seed(seed)
-                wallet_address = wallet.address
-                account_info = self.generate_basic_balance_info_string(address=wallet_address)
-                await self.send_long_message(message, f"Based on your seed your linked {account_info}")
-            else:
-                await message.reply("No seed found for your account.", mention_author=True)
-
-
-        if message.content.startswith('!pf_initiate'):
-            # check that xrp wallet is funded
-            
-            if user_id not in self.user_seeds:
-                await message.reply("You must store a seed before initiating.", mention_author=True)
-                return
-            seed = self.user_seeds[user_id]
-            logger.debug(f"MyClient.pf_initiate: Spawning wallet to initiate for {message.author.name}")
-            wallet = generic_pft_utilities.spawn_wallet_from_seed(seed)
-            wallet_address = wallet.classic_address
-            xrp_balance = generic_pft_utilities.get_xrp_balance(address=wallet_address)
-            if xrp_balance < constants.MIN_XRP_BALANCE:
-                await message.reply(f"You must fund your wallet with at least {constants.MIN_XRP_BALANCE} XRP before initiating.", mention_author=True)
-                return
-
-            memo_history = generic_pft_utilities.get_account_memo_history(account_address=wallet_address,pft_only=False)
-            if len(memo_history[memo_history['memo_type']=="INITIATION_RITE"]) > 0:
-                await message.reply("You have already performed an initiation rite with this wallet.", mention_author=True)
-                return
-
-        if message.content.startswith('!pf_outstanding'):
-            seed = self.user_seeds[user_id]
-            if user_id not in self.user_seeds:
-                await message.reply("You must store a seed before getting outstanding tasks.", mention_author=True)
-                return
-            logger.debug(f"MyClient.pf_outstanding: Spawning wallet to fetch tasks for {message.author.name}")
-            wallet = generic_pft_utilities.spawn_wallet_from_seed(seed)
-            wallet_address = wallet.classic_address
-            output_message = self.create_full_outstanding_pft_string(account_address=wallet_address)
-            await self.send_long_escaped_message(message, output_message)
 
     def generate_basic_balance_info_string(self, address: str, owns_wallet: bool = True) -> str:
         """Generate account information summary including balances and stats.

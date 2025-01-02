@@ -156,6 +156,7 @@ class InitiationModal(discord.ui.Modal, title='Initiation Rite'):
         self.ephemeral_setting = ephemeral_setting
 
     async def on_submit(self, interaction: discord.Interaction):
+        await interaction.response.defer(ephemeral=self.ephemeral_setting)
         
         try:
             handshake_success, user_key, node_key, message_obj = await self.client._ensure_handshake(
@@ -212,6 +213,8 @@ class UpdateLinkModal(discord.ui.Modal, title='Update Google Doc Link'):
     )
 
     async def on_submit(self, interaction: discord.Interaction):
+        await interaction.response.defer(ephemeral=self.ephemeral_setting)
+
         try:
             handshake_success, user_key, node_key, message_obj = await self.client._ensure_handshake(
                 interaction=interaction,
@@ -275,6 +278,8 @@ class AcceptanceModal(Modal):
         self.add_item(self.acceptance_string)
 
     async def on_submit(self, interaction: discord.Interaction):
+        await interaction.response.defer(ephemeral=self.ephemeral_setting)
+
         acceptance_string = self.acceptance_string.value
         
         # Call the discord__task_acceptance function
@@ -323,7 +328,6 @@ class RefusalModal(Modal):
         self.add_item(self.refusal_string)
 
     async def on_submit(self, interaction: discord.Interaction):
-        # Defer the response to avoid interaction timeout
         await interaction.response.defer(ephemeral=self.ephemeral_setting)
         
         refusal_string = self.refusal_string.value
@@ -373,7 +377,9 @@ class CompletionModal(Modal):
         )
         self.add_item(self.completion_justification)
 
-    async def on_submit(self, interaction: discord.Interaction):  
+    async def on_submit(self, interaction: discord.Interaction):
+        await interaction.response.defer(ephemeral=self.ephemeral_setting)
+
         completion_string = self.completion_justification.value
         
         # Call the discord__initial_submission function
@@ -422,6 +428,8 @@ class VerificationModal(Modal):
         self.add_item(self.verification_justification)
 
     async def on_submit(self, interaction: discord.Interaction):
+        await interaction.response.defer(ephemeral=self.ephemeral_setting)
+        
         justification_string = self.verification_justification.value
         
         # Call the discord__final_submission function
