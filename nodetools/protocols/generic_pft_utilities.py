@@ -70,3 +70,15 @@ class GenericPFTUtilities(Protocol):
     def get_all_account_compressed_messages_for_remembrancer(self, account_address: str) -> pd.DataFrame:
         """Convenience method for getting all messages for a user from the remembrancer's perspective"""
         ...
+
+    def extract_transaction_info_from_response_object(self, response) -> dict:
+        """
+        Extract key information from an XRPL transaction response object.
+
+        Args:
+        response (Response): The XRPL transaction response object.
+
+        Returns:
+        dict: A dictionary containing extracted transaction information.
+        """
+        ...
