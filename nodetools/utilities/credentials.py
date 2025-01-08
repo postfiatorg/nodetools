@@ -97,15 +97,23 @@ class CredentialManager:
 
     def verify_password(self, password) -> bool:
         """Verify password by attempting to decrypt a known credential"""
+        # If database doesn't exist yet or is empty, accept any valid password
+        if not self.db_path.exists():
+            return True
+        
         test_key = self._derive_encryption_key(password)
         try:
             with sqlite3.connect(self.db_path) as conn:
                 cursor = conn.cursor()
-                cursor.execute("""
-                    SELECT encrypted_value FROM credentials 
-                    WHERE key like '%postgresconnstring'
-                    LIMIT 1;
-                """)
+                cursor.execute("SELECT COUNT(*) FROM credentials")
+                count = cursor.fetchone()[0]
+                
+                # If no credentials exist yet, accept any valid password
+                if count == 0:
+                    return True
+                
+                # Otherwise verify by attempting to decrypt an existing credential
+                cursor.execute("SELECT encrypted_value FROM credentials LIMIT 1")
                 row = cursor.fetchone()
                 if row:
                     fernet = Fernet(test_key)
