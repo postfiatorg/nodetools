@@ -314,21 +314,25 @@ class MemoProcessor:
         first_tx = group.memos[0]
         structure = MemoStructure.from_transaction(first_tx)
 
-        if structure.is_standardized_format:
-            if StandardizedMemoProcessor.validate_group(group):
-                return await StandardizedMemoProcessor.process_group(
+        try:
+            if structure.is_standardized_format:
+                if StandardizedMemoProcessor.validate_group(group):
+                    return await StandardizedMemoProcessor.process_group(
+                        group,
+                        credential_manager=credential_manager,
+                        message_encryption=message_encryption,
+                        node_config=node_config
+                    )
+                else:
+                    logger.warning("Invalid standardized format group")
+                    return None
+            else:
+                return await LegacyMemoProcessor.process_group(
                     group,
                     credential_manager=credential_manager,
                     message_encryption=message_encryption,
                     node_config=node_config
                 )
-            else:
-                logger.warning("Invalid standardized format group")
-                return None
-        else:
-            return await LegacyMemoProcessor.process_group(
-                group,
-                credential_manager=credential_manager,
-                message_encryption=message_encryption,
-                node_config=node_config
-            )
+        except Exception as e:
+            logger.error(f"Error processing group: {str(e)}")
+            return None
