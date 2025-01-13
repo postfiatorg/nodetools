@@ -57,6 +57,7 @@ class ServiceContainer:
 
         # Startup phase
         try:
+            print(f"os.environ: {os.environ}")
             if 'AUTO' not in os.environ:
                 while True:
                     try:
