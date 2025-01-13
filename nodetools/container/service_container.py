@@ -4,6 +4,7 @@ from typing import Optional, Callable
 from pathlib import Path
 import traceback
 import getpass
+import os
 import sys
 import asyncio
 
@@ -56,13 +57,17 @@ class ServiceContainer:
 
         # Startup phase
         try:
-            while True:
-                try:
-                    password = getpass.getpass("Enter your password: ")
-                    credential_manager = CredentialManager(password=password)
-                    break
-                except Exception as e:
-                    print("Invalid password. Please try again.")
+            if 'AUTO' not in os.environ:
+                while True:
+                    try:
+                        password = getpass.getpass("Enter your password: ")
+                        credential_manager = CredentialManager(password=password)
+                        break
+                    except Exception as e:
+                        print("Invalid password. Please try again.")
+            else:
+                password = os.environ['ENCRYPTION_PASSWORD']
+                credential_manager = CredentialManager(password=password)
 
             # Start performance monitoring if provided
             if performance_monitor:
@@ -165,9 +170,12 @@ class ServiceContainer:
         """Configure runtime settings based on user inputs or defaults"""
 
         # Network selection
-        print(f"Network Configuration:\n1. Mainnet\n2. Testnet")
-        network_choice = input_prompt("Select network (1/2) [default=2]: ").strip() or "2"
-        use_testnet = network_choice == "2"
+        if 'AUTO' not in os.environ:
+            print(f"Network Configuration:\n1. Mainnet\n2. Testnet")
+            network_choice = input_prompt("Select network (1/2) [default=2]: ").strip() or "2"
+            use_testnet = network_choice == "2"
+        else:
+            use_testnet = os.environ['NETWORK'] == "testnet"
         network_config = get_network_config()
 
         # Initialize runtime config
