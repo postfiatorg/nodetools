@@ -58,17 +58,8 @@ class ServiceContainer:
         # Startup phase
         try:
             print(f"os.environ: {os.environ}")
-            if 'AUTO' not in os.environ:
-                while True:
-                    try:
-                        password = getpass.getpass("Enter your password: ")
-                        credential_manager = CredentialManager(password=password)
-                        break
-                    except Exception as e:
-                        print("Invalid password. Please try again.")
-            else:
-                password = os.environ['ENCRYPTION_PASSWORD']
-                credential_manager = CredentialManager(password=password)
+            password = os.environ['ENCRYPTION_PASSWORD']
+            credential_manager = CredentialManager(password=password)
 
             # Start performance monitoring if provided
             if performance_monitor:
