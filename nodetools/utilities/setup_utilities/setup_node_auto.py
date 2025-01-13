@@ -11,7 +11,7 @@ def setup_node_auto():
     network_suffix = '_testnet' if network == 'testnet' else ''
     encryption_password = os.environ['ENCRYPTION_PASSWORD']
     credentials_dict = {
-        'postgresconnstring': os.environ['PG_CONN_STRING'],
+        f'{node_name}{network_suffix}_postgresconnstring': os.environ['PG_CONN_STRING'],
         f'{node_name}{network_suffix}__v1xrpsecret': os.environ['PFT_XRP_WALLET'],
         'openrouter': os.environ['OPENROUTER_API_KEY'],
         'openai': os.environ['OPENAI_API_KEY'],
