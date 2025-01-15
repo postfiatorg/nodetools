@@ -7,10 +7,10 @@ WITH user_info AS (
 UPDATE authorized_addresses
 SET 
     is_authorized = FALSE,
-    flag_type = $2,                                          -- 'YELLOW' or 'RED'
+    flag_type = $2::varchar,                          -- 'YELLOW' or 'RED'
     flag_expires_at = CASE 
-        WHEN $2 = 'YELLOW' THEN CURRENT_TIMESTAMP + INTERVAL '1 day'
-        WHEN $2 = 'RED' THEN CURRENT_TIMESTAMP + INTERVAL '10 days'
+        WHEN $2::varchar = 'YELLOW' THEN CURRENT_TIMESTAMP + INTERVAL '1 day'
+        WHEN $2::varchar = 'RED' THEN CURRENT_TIMESTAMP + INTERVAL '10 days'
     END,
     deauthorized_at = CURRENT_TIMESTAMP
 FROM user_info
