@@ -304,25 +304,24 @@ def init_database(drop_tables: bool = False, create_db: bool = False):
                 print("Please ensure the database exists and you have proper permissions.")
                 return
 
-            if drop_tables:
-                confirm = input(f"WARNING: This will drop existing {network_type} tables. Are you sure you want to continue? (y/n): ")
-                if confirm.lower() != "y":
-                    print("Database initialization cancelled.")
-                    return
-
             engine = create_engine(db_conn_string)
 
             try:
                 with engine.connect() as connection:
-                    # Drop core tables
-                    connection.execute(text("DROP TABLE IF EXISTS transaction_processing_results CASCADE;"))
-                    connection.execute(text("DROP TABLE IF EXISTS transaction_memos CASCADE;"))
-                    connection.execute(text("DROP TABLE IF EXISTS postfiat_tx_cache CASCADE;"))
-                    connection.execute(text("DROP TABLE IF EXISTS pft_holders CASCADE;"))
-                    connection.execute(text("DROP TABLE IF EXISTS authorized_addresses CASCADE;"))
+                    
+                    if drop_tables:
+                        confirm = input(f"WARNING: This will drop existing {network_type} tables. Are you sure you want to continue? (y/n): ")
+                        if confirm.lower() != "y":
+                            print("Database initialization cancelled.")
+                            return
+                        connection.execute(text("DROP TABLE IF EXISTS transaction_processing_results CASCADE;"))
+                        connection.execute(text("DROP TABLE IF EXISTS transaction_memos CASCADE;"))
+                        connection.execute(text("DROP TABLE IF EXISTS postfiat_tx_cache CASCADE;"))
+                        connection.execute(text("DROP TABLE IF EXISTS pft_holders CASCADE;"))
+                        connection.execute(text("DROP TABLE IF EXISTS authorized_addresses CASCADE;"))
 
-                    connection.commit()
-                    print("Dropped existing tables.")
+                        connection.commit()
+                        print("Dropped existing tables.")
 
                     # Initialize core database objects
                     print("\nInitializing core database objects...")
