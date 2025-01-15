@@ -18,7 +18,7 @@ MAX_CHUNK_SIZE = 1024
 XRP_MEMO_STRUCTURAL_OVERHEAD = 100  # JSON structure, quotes, etc.
 
 # Verification Constants
-VERIFY_STATE_INTERVAL = 900  # 15 minutes
+VERIFY_STATE_INTERVAL = 15  # 15 seconds
 
 # Maximum history length
 MAX_HISTORY = 15  # TODO: rename this to something more descriptive
