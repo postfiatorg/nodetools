@@ -65,7 +65,6 @@ class GenericPFTUtilities:
             self,
             network_config: NetworkConfig,
             node_config: NodeConfig,
-            runtime_config: RuntimeConfig,
             credential_manager: CredentialManager,
             db_connection_manager: DBConnectionManager,
             transaction_repository: TransactionRepository,
@@ -74,7 +73,6 @@ class GenericPFTUtilities:
             # Get network and node configurations
             self.network_config = network_config
             self.node_config = node_config
-            self.runtime_config = runtime_config
             self.pft_issuer = self.network_config.issuer_address
             self.node_address = self.node_config.node_address
             self.node_name = self.node_config.node_name
@@ -85,7 +83,7 @@ class GenericPFTUtilities:
             # Determine endpoint with fallback logic
             self.https_url = (
                 self.network_config.local_rpc_url 
-                if self.runtime_config.HAS_LOCAL_NODE and self.network_config.local_rpc_url is not None
+                if RuntimeConfig.HAS_LOCAL_NODE and self.network_config.local_rpc_url is not None
                 else self.network_config.public_rpc_url
             )
             logger.debug(f"Using https endpoint: {self.https_url}")
