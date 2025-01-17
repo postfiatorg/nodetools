@@ -134,7 +134,7 @@ class GenericPFTUtilities(Protocol):
         """
         ...
 
-    def extract_transaction_info_from_response_object(self, response):
+    def extract_transaction_info_from_response_object(self, response) -> dict:
         """
         Extract key information from an XRPL transaction response object.
 

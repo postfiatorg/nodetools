@@ -13,7 +13,7 @@ OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
 
 # XRPL CONSTANTS
 MIN_XRP_PER_TRANSACTION = Decimal('0.000001')  # Minimum XRP amount per transaction
-MIN_XRP_BALANCE = 1  # Minimum XRP balance to be able to perform a transaction, corresponding to XRP reserve
+MIN_XRP_BALANCE = 2  # Minimum XRP balance to be able to perform a transaction, corresponding to XRP reserve
 MAX_CHUNK_SIZE = 1024
 XRP_MEMO_STRUCTURAL_OVERHEAD = 100  # JSON structure, quotes, etc.
 
