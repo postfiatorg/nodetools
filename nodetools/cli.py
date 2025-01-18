@@ -4,7 +4,6 @@ import os
 from nodetools.utilities.setup_utilities import (
     arbitrary_credentials,
     db_init,
-    db_init_auto,
     setup_node,
     setup_node_auto,
     update_credentials,
@@ -32,19 +31,12 @@ def main():
     args = parser.parse_args()
 
     if args.command == 'init-db':
-        if 'AUTO' not in os.environ:
-            db_init.main(
-                drop_tables=args.drop_tables,
-                create_db=args.create_db,
-                help_install=args.help_install,
-                revoke_privileges=args.revoke_privileges
-            )
-        else:
-            db_init_auto.main(
-                drop_tables=False,
-                create_db=args.create_db,
-                help_install=False,
-                revoke_privileges=False)
+        db_init.main(
+            drop_tables=args.drop_tables,
+            create_db=args.create_db,
+            help_install=args.help_install,
+            revoke_privileges=args.revoke_privileges
+        )
     elif args.command == 'setup-node':
         if 'AUTO' not in os.environ:
             setup_node.main()
