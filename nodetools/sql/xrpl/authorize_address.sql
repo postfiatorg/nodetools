@@ -6,4 +6,6 @@ DO UPDATE SET
     is_authorized = TRUE,
     deauthorized_at = NULL,
     auth_source = $2,
-    auth_source_user_id = $3;
+    auth_source_user_id = $3,
+    flag_type = NULL,                -- Clear any flags
+    flag_expires_at = NULL;          -- Clear flag expiry

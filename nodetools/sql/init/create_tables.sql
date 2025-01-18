@@ -46,5 +46,8 @@ CREATE TABLE IF NOT EXISTS authorized_addresses (
     deauthorized_at TIMESTAMP WITH TIME ZONE,
     auth_source VARCHAR(50),  -- e.g., 'discord', 'twitter', etc.
     auth_source_user_id VARCHAR(50),  -- Store external IDs as strings for flexibility
-    CONSTRAINT valid_xrp_address CHECK (address ~ '^r[1-9A-HJ-NP-Za-km-z]{25,34}$')
+    flag_type VARCHAR(10),                                    -- 'YELLOW' or 'RED' or NULL
+    flag_expires_at TIMESTAMP WITH TIME ZONE,                 -- When the flag cool-off period ends
+    CONSTRAINT valid_xrp_address CHECK (address ~ '^r[1-9A-HJ-NP-Za-km-z]{25,34}$'),
+    CONSTRAINT valid_flag_type CHECK (flag_type IN ('YELLOW', 'RED') OR flag_type IS NULL)
 );

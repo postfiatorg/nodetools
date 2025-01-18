@@ -472,22 +472,6 @@ class TransactionRepository:
             query_category='xrpl',
             params=params
         )
-
-    async def is_address_authorized(self, account_address: str) -> bool:
-        """Check if an address is authorized to interact with the node.
-    
-        Args:
-            account_address: XRPL account address to check
-            
-        Returns:
-            bool: True if address is authorized, False otherwise
-        """
-        result = await self._execute_query(
-            query_name='is_address_authorized',
-            query_category='xrpl',
-            params=[account_address]
-        )
-        return result[0]['is_authorized'] if result else False
     
     async def authorize_address(
         self,
@@ -528,6 +512,83 @@ class TransactionRepository:
             query_category='xrpl',
             params=params
         )
+
+    async def flag_address(
+        self,
+        address: str,
+        flag_type: str,
+    ) -> None:
+        """Flag an address with either YELLOW or RED flag status.
+        
+        Args:
+            address: XRPL address to flag
+            flag_type: Either 'YELLOW' or 'RED'
+        """
+        if flag_type not in ('YELLOW', 'RED'):
+            raise ValueError("flag_type must be either 'YELLOW' or 'RED'")
+            
+        params = [address, flag_type]
+        
+        await self._execute_mutation(
+            query_name='flag_address',
+            query_category='xrpl',
+            params=params
+        )
+
+    async def is_address_authorized(self, account_address: str) -> bool:
+        """Check if an address is authorized to interact with the node.
+    
+        Args:
+            account_address: XRPL account address to check
+            
+        Returns:
+            bool: True if address is authorized, False otherwise
+        """
+        # First clear any expired flags for the address' auth source user
+        await self._execute_mutation(
+            query_name='clear_expired_flags',
+            query_category='xrpl',
+            params=[]
+        )
+
+        # Then check if the address is authorized
+        result = await self._execute_query(
+            query_name='is_address_authorized',
+            query_category='xrpl',
+            params=[account_address]
+        )
+        return result[0]['is_authorized'] if result else False
+
+    async def check_if_user_is_flagged(
+        self,
+        auth_source: str,
+        auth_source_user_id: str
+    ) -> bool:
+        """Check if a user has any active flags.
+        
+        Args:
+            auth_source: Source of authorization (e.g. 'discord', 'twitter')
+            auth_source_user_id: User ID from the auth source
+            
+        Returns:
+            Optional[Tuple[int, str]]: If flagged, returns (cooldown_seconds, flag_type), else None
+        """
+        # First clear any expired flags
+        await self._execute_mutation(
+            query_name='clear_expired_flags',
+            query_category='xrpl',
+            params=[]
+        )
+        
+        # Then check for active flags
+        result = await self._execute_query(
+            query_name='check_if_user_is_flagged',
+            query_category='xrpl',
+            params=[auth_source, auth_source_user_id]
+        )
+        if result and result[0]['cooldown_seconds'] is not None:
+            return (result[0]['cooldown_seconds'], result[0]['flag_type'])
+        return None
 
     async def get_address_handshakes(
         self,

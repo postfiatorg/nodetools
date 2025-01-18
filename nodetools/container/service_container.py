@@ -32,7 +32,6 @@ from ..utilities.transaction_orchestrator import TransactionOrchestrator
 class ServiceContainer:
     """Container for NodeTools service initialization and management"""
     dependencies: Dependencies
-    runtime_config: RuntimeConfig
     xrpl_monitor: XRPLWebSocketMonitor
     transaction_orchestrator: TransactionOrchestrator
     db_connection_manager: DBConnectionManager
@@ -73,7 +72,7 @@ class ServiceContainer:
             if performance_monitor:
                 performance_monitor.start()
 
-            runtime_config = cls.configure_runtime(input_prompt=input)
+            cls.configure_runtime(input_prompt=input)
 
         except KeyboardInterrupt:
             print("\nStartup cancelled")
@@ -105,7 +104,6 @@ class ServiceContainer:
             pft_utilities = GenericPFTUtilities(
                 network_config=network_config,
                 node_config=node_config,
-                runtime_config=runtime_config,
                 credential_manager=credential_manager,
                 db_connection_manager=db_connection_manager,
                 transaction_repository=transaction_repository,
@@ -151,7 +149,6 @@ class ServiceContainer:
 
             return cls(
                 dependencies=deps,
-                runtime_config=runtime_config,
                 xrpl_monitor=xrpl_monitor,
                 transaction_orchestrator=transaction_orchestrator,
                 db_connection_manager=db_connection_manager
@@ -166,7 +163,7 @@ class ServiceContainer:
     def configure_runtime(
         cls,
         input_prompt: Callable[[str], str] = input
-    ) -> RuntimeConfig:
+    ) -> None:
         """Configure runtime settings based on user inputs or defaults"""
 
         # Network selection
@@ -178,9 +175,7 @@ class ServiceContainer:
             use_testnet = os.environ['NETWORK'] == "testnet"
         network_config = get_network_config()
 
-        # Initialize runtime config
-        runtime_config = RuntimeConfig()
-        runtime_config.USE_TESTNET = use_testnet
+        RuntimeConfig.USE_TESTNET = use_testnet
 
         # Load network configuration based on selection
         network_config = get_network_config()
@@ -192,17 +187,15 @@ class ServiceContainer:
             use_local = input(
                 "Do you have a local node configured? (y/n) [default=n]: "
             ).strip() or "n"
-            runtime_config.HAS_LOCAL_NODE = use_local.lower() == "y"
+            RuntimeConfig.HAS_LOCAL_NODE = use_local.lower() == "y"
         else:
             print(f"\nNo local node configuration available for {network_config.name}")
-            runtime_config.HAS_LOCAL_NODE = False
+            RuntimeConfig.HAS_LOCAL_NODE = False
 
         logger.debug(f"\nInitializing services for {network_config.name}...")
         logger.info(
-            f"Using {'local' if runtime_config.HAS_LOCAL_NODE else 'public'} endpoints..."
+            f"Using {'local' if RuntimeConfig.HAS_LOCAL_NODE else 'public'} endpoints..."
         )
-
-        return runtime_config
 
     @property
     def running(self):

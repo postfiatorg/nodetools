@@ -116,6 +116,35 @@ class TransactionRepository(Protocol):
         """
         ...
 
+    async def flag_address(
+        self,
+        address: str,
+        flag_type: str,
+    ) -> None:
+        """Flag an address with either YELLOW or RED flag status.
+        
+        Args:
+            address: XRPL address to flag
+            flag_type: Either 'YELLOW' or 'RED'
+        """
+        ...
+
+    async def check_if_user_is_flagged(
+        self,
+        auth_source: str,
+        auth_source_user_id: str
+    ) -> bool:
+        """Check if a user has any active flags.
+        
+        Args:
+            auth_source: Source of authorization (e.g. 'discord', 'twitter')
+            auth_source_user_id: User ID from the auth source
+            
+        Returns:
+            bool: True if user has active flags, False otherwise
+        """
+        ...
+
     async def get_address_handshakes(
         self,
         channel_address: str,
